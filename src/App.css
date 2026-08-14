@@ -1,0 +1,9 @@
+/* Layout helpers — visual tokens live in index.css / Tailwind */
+
+.app-root {
+  display: flex;
+  height: 100%;
+  min-height: 100%;
+  flex-direction: column;
+  color: var(--ams-fg);
+}

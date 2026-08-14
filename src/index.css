@@ -1,0 +1,239 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+  --font-sans: "IBM Plex Sans", "Segoe UI", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "IBM Plex Sans", "Segoe UI", ui-sans-serif, system-ui, sans-serif;
+
+  --color-background: var(--ams-bg);
+  --color-foreground: var(--ams-fg);
+  --color-card: var(--ams-card);
+  --color-card-elevated: var(--ams-card-elevated);
+  --color-muted: var(--ams-muted);
+  --color-border: var(--ams-border);
+  --color-primary: var(--ams-primary);
+  --color-primary-foreground: var(--ams-primary-fg);
+  --color-primary-soft: var(--ams-primary-soft);
+  --color-accent: var(--ams-accent);
+  --color-destructive: var(--ams-destructive);
+  --color-success: var(--ams-success);
+  --color-warning: var(--ams-warning);
+  --color-ring: var(--ams-ring);
+
+  --radius-lg: 0.75rem;
+  --radius-md: 0.5rem;
+  --radius-sm: 0.375rem;
+}
+
+:root {
+  color-scheme: light;
+  --ams-bg: #eef4f2;
+  --ams-fg: #12201c;
+  --ams-card: #ffffff;
+  --ams-card-elevated: #f7faf9;
+  --ams-muted: #5a6b66;
+  --ams-border: rgba(18, 32, 28, 0.12);
+  --ams-primary: #009d8b;
+  --ams-primary-fg: #ffffff;
+  --ams-primary-soft: rgba(0, 157, 139, 0.12);
+  --ams-accent: #0d7a6c;
+  --ams-destructive: #b42318;
+  --ams-success: #1b7a3d;
+  --ams-warning: #9a6700;
+  --ams-ring: rgba(0, 157, 139, 0.4);
+  --ams-surface: rgba(255, 255, 255, 0.78);
+  --ams-header: rgba(255, 255, 255, 0.82);
+  --ams-sidebar: rgba(255, 255, 255, 0.62);
+  --ams-bg-glow-1: #cfe8e2;
+  --ams-bg-glow-2: #d9e4f0;
+  --ams-progress-from: #009d8b;
+  --ams-progress-to: #2bc4ae;
+  --ams-table-head: rgba(0, 157, 139, 0.08);
+  --ams-row-hover: rgba(0, 157, 139, 0.06);
+  --ams-row-active: rgba(0, 157, 139, 0.14);
+  --ams-scrollbar-size: 6px;
+  --ams-scrollbar-thumb: rgba(18, 32, 28, 0.22);
+  --ams-scrollbar-thumb-hover: rgba(0, 157, 139, 0.55);
+  --ams-scrollbar-track: transparent;
+}
+
+.dark {
+  color-scheme: dark;
+  --ams-bg: #0c1210;
+  --ams-fg: #e8efec;
+  --ams-card: #151c19;
+  --ams-card-elevated: #1b2420;
+  --ams-muted: #8f9f98;
+  --ams-border: rgba(232, 239, 236, 0.12);
+  --ams-primary: #1ab5a0;
+  --ams-primary-fg: #04201b;
+  --ams-primary-soft: rgba(26, 181, 160, 0.16);
+  --ams-accent: #3dceb8;
+  --ams-destructive: #f97066;
+  --ams-success: #3dd68c;
+  --ams-warning: #fac515;
+  --ams-ring: rgba(26, 181, 160, 0.45);
+  --ams-surface: rgba(21, 28, 25, 0.88);
+  --ams-header: rgba(12, 18, 16, 0.88);
+  --ams-sidebar: rgba(15, 22, 19, 0.92);
+  --ams-bg-glow-1: #14332c;
+  --ams-bg-glow-2: #1a2838;
+  --ams-progress-from: #1ab5a0;
+  --ams-progress-to: #4ad4be;
+  --ams-table-head: rgba(26, 181, 160, 0.1);
+  --ams-row-hover: rgba(26, 181, 160, 0.08);
+  --ams-row-active: rgba(26, 181, 160, 0.18);
+  --ams-scrollbar-thumb: rgba(232, 239, 236, 0.18);
+  --ams-scrollbar-thumb-hover: rgba(26, 181, 160, 0.55);
+  --ams-scrollbar-track: transparent;
+}
+
+@layer base {
+  * {
+    @apply border-border;
+    scrollbar-width: thin;
+    scrollbar-color: var(--ams-scrollbar-thumb) var(--ams-scrollbar-track);
+  }
+
+  *::-webkit-scrollbar {
+    width: var(--ams-scrollbar-size);
+    height: var(--ams-scrollbar-size);
+  }
+
+  *::-webkit-scrollbar-track {
+    background: var(--ams-scrollbar-track);
+    border-radius: 9999px;
+  }
+
+  *::-webkit-scrollbar-thumb {
+    background: var(--ams-scrollbar-thumb);
+    border-radius: 9999px;
+    border: 1px solid transparent;
+    background-clip: padding-box;
+  }
+
+  *::-webkit-scrollbar-thumb:hover {
+    background: var(--ams-scrollbar-thumb-hover);
+    background-clip: padding-box;
+  }
+
+  *::-webkit-scrollbar-corner {
+    background: transparent;
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    margin: 0;
+    font-family: var(--font-sans);
+    color: var(--ams-fg);
+    background-color: var(--ams-bg);
+    background-image:
+      radial-gradient(ellipse 80% 50% at 15% -10%, var(--ams-bg-glow-1) 0%, transparent 55%),
+      radial-gradient(ellipse 55% 40% at 100% 0%, var(--ams-bg-glow-2) 0%, transparent 50%),
+      linear-gradient(180deg, var(--ams-bg) 0%, color-mix(in srgb, var(--ams-bg) 88%, #000) 100%);
+    background-attachment: fixed;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  ::selection {
+    background: var(--ams-primary-soft);
+    color: var(--ams-fg);
+  }
+}
+
+@layer utilities {
+  .ams-surface {
+    background: var(--ams-surface);
+    border: 1px solid var(--ams-border);
+  }
+
+  .ams-header-bg {
+    background: var(--ams-header);
+  }
+
+  .ams-sidebar-bg {
+    background: var(--ams-sidebar);
+  }
+
+  [data-tauri-drag-region],
+  [data-tauri-drag-region="deep"] {
+    cursor: default;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+}
+
+@keyframes ams-progress-indeterminate {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(400%);
+  }
+}
+
+/* Header settings cluster: snappy flyout under the gear */
+.ams-settings-cluster-menu {
+  --ams-cluster-ease: cubic-bezier(0.2, 0.9, 0.2, 1);
+  visibility: hidden;
+  transition: visibility 0s linear 240ms;
+}
+
+.ams-settings-cluster-menu[data-open="true"] {
+  visibility: visible;
+  transition-delay: 0s;
+}
+
+.ams-settings-cluster-item {
+  opacity: 0;
+  transform: translateY(-0.85rem) scale(0.86);
+  transition:
+    opacity 200ms var(--ams-cluster-ease),
+    transform 240ms var(--ams-cluster-ease);
+  transition-delay: 0ms;
+  will-change: opacity, transform;
+}
+
+.ams-settings-cluster-menu[data-open="true"] .ams-settings-cluster-item {
+  opacity: 1;
+  transform: translateY(0) scale(1);
+  transition-delay: calc(var(--ams-cluster-i, 0) * 55ms);
+}
+
+.ams-settings-cluster-menu[data-open="false"] .ams-settings-cluster-item {
+  transition-duration: 160ms, 200ms;
+  transition-delay: calc((1 - var(--ams-cluster-i, 0)) * 40ms);
+}
+
+/* Edge/Chromium native password reveal — we use Lucide Eye instead */
+input[type="password"]::-ms-reveal,
+input[type="password"]::-ms-clear {
+  display: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ams-settings-cluster-menu {
+    transition: none;
+  }
+
+  .ams-settings-cluster-item {
+    transition: none;
+    will-change: auto;
+    transform: none;
+  }
+
+  .ams-settings-cluster-menu[data-open="false"] .ams-settings-cluster-item {
+    opacity: 0;
+  }
+
+  .ams-settings-cluster-menu[data-open="true"] .ams-settings-cluster-item {
+    opacity: 1;
+  }
+}

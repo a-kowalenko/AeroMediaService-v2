@@ -1,0 +1,222 @@
+# Release — build updater artifacts and publish to the public releases repo.
+#
+# Trigger: push a version tag (v0.1.0, v1.2.3, …).
+# Target:  https://github.com/a-kowalenko/aero-media-service-releases
+#
+# Required secrets (private repo):
+#   RELEASES_GITHUB_TOKEN              — PAT with Contents R/W on the releases repo
+#   TAURI_SIGNING_PRIVATE_KEY          — updater private key
+#   TAURI_SIGNING_PRIVATE_KEY_PASSWORD — key password (optional if key has none)
+#
+# The public releases repo must have at least one commit on its default branch
+# (e.g. README). Tags for releases are created there pointing at that branch tip.
+#
+# Optional later: APPLE_* / Windows Authenticode (not required for unsigned shipping).
+
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing or new tag to release (e.g. v0.1.1)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  RELEASES_OWNER: a-kowalenko
+  RELEASES_REPO: aero-media-service-releases
+
+jobs:
+  # Create tag + GitHub Release on the public repo once (avoids Win/Mac/Linux race +
+  # invalid target_commitish when the tag only exists in the private repo).
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+      release_id: ${{ steps.ensure.outputs.release_id }}
+      release_notes: ${{ steps.ensure.outputs.release_notes }}
+    steps:
+      - name: Resolve release tag
+        id: meta
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG="${{ inputs.tag }}"
+          else
+            TAG="${GITHUB_REF_NAME}"
+          fi
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-].*)?$ ]]; then
+            echo "Invalid tag '$TAG' (expected vX.Y.Z)" >&2
+            exit 1
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Using tag: $TAG"
+
+      - name: Ensure tag and release on public repo
+        id: ensure
+        env:
+          GH_TOKEN: ${{ secrets.RELEASES_GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.meta.outputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${GH_TOKEN}" ]; then
+            echo "Missing secret RELEASES_GITHUB_TOKEN" >&2
+            exit 1
+          fi
+
+          REPO="${RELEASES_OWNER}/${RELEASES_REPO}"
+
+          # Patchnotes from private source commits (between previous tag and this one).
+          # Use the workflow token for the private source repo (not the releases PAT).
+          NOTES=$(GH_TOKEN="${GITHUB_TOKEN}" gh api \
+            --method POST \
+            -H "Accept: application/vnd.github+json" \
+            "/repos/${{ github.repository }}/releases/generate-notes" \
+            -f tag_name="${TAG}" \
+            --jq .body 2>/dev/null || true)
+          if [ -z "${NOTES}" ]; then
+            NOTES="Aero Media Service ${TAG}"$'\n\n'"Automatischer Build aus dem privaten Source-Repository."
+          fi
+          DELIM="NOTES_EOF_$(openssl rand -hex 8)"
+          {
+            echo "release_notes<<${DELIM}"
+            printf '%s\n' "${NOTES}"
+            echo "${DELIM}"
+          } >> "$GITHUB_OUTPUT"
+
+          DEFAULT_BRANCH=$(gh api "repos/${REPO}" --jq .default_branch)
+          echo "Releases repo default branch: ${DEFAULT_BRANCH}"
+
+          if ! SHA=$(gh api "repos/${REPO}/git/ref/heads/${DEFAULT_BRANCH}" --jq .object.sha); then
+            echo "ERROR: Branch '${DEFAULT_BRANCH}' missing or repo has no commits." >&2
+            echo "Open ${REPO}, add a README commit on the default branch, then re-run." >&2
+            exit 1
+          fi
+          echo "Default branch SHA: ${SHA}"
+
+          # Create lightweight tag on the public repo if it does not exist yet.
+          if gh api "repos/${REPO}/git/ref/tags/${TAG}" >/dev/null 2>&1; then
+            echo "Tag ${TAG} already exists on ${REPO}"
+          else
+            echo "Creating tag ${TAG} on ${REPO} → ${SHA}"
+            gh api "repos/${REPO}/git/refs" \
+              -f ref="refs/tags/${TAG}" \
+              -f sha="${SHA}"
+          fi
+
+          # Create published release if missing.
+          if RELEASE_ID=$(gh api "repos/${REPO}/releases/tags/${TAG}" --jq .id 2>/dev/null); then
+            echo "Release for ${TAG} already exists (id=${RELEASE_ID})"
+          else
+            echo "Creating release ${TAG}"
+            NOTES_FILE="$(mktemp)"
+            printf '%s\n' "${NOTES}" > "${NOTES_FILE}"
+            # Do not mark as Latest — promote manually in the releases UI
+            # after verifying assets (updater still uses /releases/latest/).
+            gh release create "${TAG}" \
+              --repo "${REPO}" \
+              --title "Aero Media Service ${TAG}" \
+              --notes-file "${NOTES_FILE}" \
+              --latest=false
+            rm -f "${NOTES_FILE}"
+            RELEASE_ID=$(gh api "repos/${REPO}/releases/tags/${TAG}" --jq .id)
+          fi
+
+          echo "release_id=${RELEASE_ID}" >> "$GITHUB_OUTPUT"
+
+  release:
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows-latest
+            args: ""
+          # Apple Silicon (M1+) — native on macos-latest (arm64)
+          - platform: macos-latest
+            args: "--target aarch64-apple-darwin"
+          # Intel Mac — cross-compile from arm64 runner
+          - platform: macos-latest
+            args: "--target x86_64-apple-darwin"
+          # Linux x86_64 AppImage (WebKitGTK / patchelf via apt)
+          - platform: ubuntu-22.04
+            args: "--bundles appimage"
+
+    runs-on: ${{ matrix.platform }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Require updater signing secrets
+        shell: bash
+        run: |
+          if [ -z "${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}" ]; then
+            echo "Missing secret TAURI_SIGNING_PRIVATE_KEY" >&2
+            exit 1
+          fi
+          if [ -z "${{ secrets.RELEASES_GITHUB_TOKEN }}" ]; then
+            echo "Missing secret RELEASES_GITHUB_TOKEN" >&2
+            exit 1
+          fi
+
+      - name: Install Linux system dependencies
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential curl wget file \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: npm
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          # Both macOS targets so Intel can be cross-built on arm64 runners.
+          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: "./src-tauri -> target"
+          key: ${{ matrix.args || 'host' }}
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build and upload to existing release
+        uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.RELEASES_GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          owner: ${{ env.RELEASES_OWNER }}
+          repo: ${{ env.RELEASES_REPO }}
+          tagName: ${{ needs.prepare.outputs.tag }}
+          releaseId: ${{ needs.prepare.outputs.release_id }}
+          releaseName: Aero Media Service ${{ needs.prepare.outputs.tag }}
+          releaseBody: ${{ needs.prepare.outputs.release_notes }}
+          releaseDraft: false
+          prerelease: false
+          uploadUpdaterJson: true
+          updaterJsonPreferNsis: true
+          args: ${{ matrix.args }}
