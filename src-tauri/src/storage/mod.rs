@@ -1,4 +1,5 @@
 pub mod config;
+pub mod customers;
 pub mod history;
 pub mod legacy_migrate;
 pub mod logging;

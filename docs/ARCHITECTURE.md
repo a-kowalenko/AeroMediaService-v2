@@ -32,7 +32,7 @@ AeroMediaService-v2/
 │   │   ├── upload/             # Queue, Control, Checkpoint
 │   │   ├── cloud/              # Dropbox, Custom API
 │   │   ├── notify/             # E-Mail, SMS, WhatsApp
-│   │   ├── storage/            # Config, Secrets, History, Logging
+│   │   ├── storage/            # Config, Secrets, History, Customers, Logging
 │   │   ├── model/              # Kunde, Marker, Status
 │   │   ├── util/               # Archive, Shortener, Validation
 │   │   └── commands/           # Tauri IPC
@@ -47,10 +47,13 @@ AeroMediaService-v2/
 ## Datenfluss
 
 ```
+Kunden-UI (Aufnahme / Warteschlange)
+    │ schreibt Pure-Contact-_fertig.txt
+    ▼
 Monitor-Ordner
     │ Ordner stabil?
     ▼
-Marker lesen (.fertig / Upload-Marker)
+Marker lesen (_fertig.txt / API-Marker)
     │ Kunde aus Marker ODER Custom-API-Lookup
     ▼
 Upload-Queue (tokio)
@@ -65,7 +68,7 @@ E-Mail / SMS / WhatsApp
 History aktualisieren → Archiv (erfolg / fehler / abgebrochen)
     │ Events
     ▼
-React UI (Log, History, Status, Progress)
+React UI (Log, History, Kunden, Status, Progress)
 ```
 
 ## Legacy-Referenz

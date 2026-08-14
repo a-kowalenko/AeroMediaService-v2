@@ -83,8 +83,9 @@ Vollständiges Mapping: `@docs/MIGRATION.md`
 - ✅ Phase 9: Settings vollständig + App-Shell
 - ✅ Phase 10: Updater, Build, CI, Plattformen
 - ✅ Phase 11: Polish (Wizard, Titlebar/Theme, History-Virtualisierung, Legacy-Migration)
+- ✅ Phase 12: Kundenaufnahme & Marker-Zuweisung (Fertig-App-Features)
 
-**Nächster Schritt:** — (Phasen 0–11 erledigt)
+**Nächster Schritt:** — (Phasen 0–12 erledigt)
 
 ---
 

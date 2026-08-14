@@ -3,6 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import { Play, Square } from "lucide-react";
 import { AppChrome } from "@/components/chrome";
 import { ConnectionStatusIndicator } from "@/components/ConnectionStatusIndicator";
+import { CustomersPanel } from "@/components/CustomersPanel";
 import { HistoryTable } from "@/components/HistoryTable";
 import { LoadingOverlay } from "@/components/LoadingOverlay";
 import { LogConsole } from "@/components/LogConsole";
@@ -13,6 +14,7 @@ import { StatusLight } from "@/components/StatusLight";
 import { UpdateDialog } from "@/components/UpdateDialog";
 import { UploadPanel } from "@/components/UploadPanel";
 import { Button } from "@/components/ui/button";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   CONNECTION_STATUS_CHANGED,
   MONITORING_STATUS_CHANGED,
@@ -471,7 +473,29 @@ function App() {
           </aside>
 
           <main className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
-            <HistoryTable />
+            <Tabs
+              defaultValue="history"
+              className="flex min-h-0 flex-1 flex-col overflow-hidden"
+            >
+              <div className="shrink-0 border-b border-border px-3 pt-2 sm:px-4">
+                <TabsList>
+                  <TabsTrigger value="history">Historie</TabsTrigger>
+                  <TabsTrigger value="customers">Kunden</TabsTrigger>
+                </TabsList>
+              </div>
+              <TabsContent
+                value="history"
+                className="mt-0 flex min-h-0 flex-1 flex-col overflow-hidden data-[state=inactive]:hidden"
+              >
+                <HistoryTable />
+              </TabsContent>
+              <TabsContent
+                value="customers"
+                className="mt-0 flex min-h-0 flex-1 flex-col overflow-hidden data-[state=inactive]:hidden"
+              >
+                <CustomersPanel />
+              </TabsContent>
+            </Tabs>
           </main>
         </div>
 

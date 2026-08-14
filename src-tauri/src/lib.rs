@@ -14,19 +14,22 @@ mod updater;
 use std::sync::Arc;
 
 use commands::{
-    auto_connect_cloud, cancel_upload, channels_delivered, clear_history, connect_active_cloud,
-    connect_custom_api, connect_dropbox, delete_history_items, disconnect_active_cloud,
-    disconnect_custom_api, disconnect_dropbox, finish_dropbox_oauth, get_app_version,
-    get_cloud_connection_status, get_history, get_history_entry, get_manual_status_warnings,
-    get_monitoring_status, get_recent_logs, get_sandbox_warnings, get_secret, get_setting,
-    get_sms_balance, get_upload_control_state, get_upload_queue, lookup_share_link,
+    assign_customer_to_folder, auto_connect_cloud, cancel_upload, channels_delivered, clear_history,
+    connect_active_cloud, connect_custom_api, connect_dropbox, delete_customer, delete_history_items,
+    disconnect_active_cloud, disconnect_custom_api, disconnect_dropbox, finish_dropbox_oauth,
+    get_app_version, get_assignment_history, get_cloud_connection_status, get_history,
+    get_history_entry, get_manual_status_warnings, get_monitoring_status, get_recent_logs,
+    get_sandbox_warnings, get_secret, get_setting, get_sms_balance, get_upload_control_state,
+    get_upload_queue, list_customers, list_media_folders_cmd, lookup_share_link,
     migrate_legacy_settings, pause_upload, resend_history_notifications, reset_setup,
-    resume_upload, retry_upload, save_history_contact, save_secret, save_setting,
-    set_manual_status, start_dropbox_oauth, start_monitoring, stop_monitoring, sync_sms_journal,
-    test_link_shortener, verify_dropbox_status, ConfigState,
+    resume_upload, retry_upload, save_customer, save_history_contact, save_secret, save_setting,
+    set_customer_processed, set_manual_status, start_dropbox_oauth, start_monitoring,
+    stop_monitoring, sync_sms_journal, test_link_shortener, update_customer, verify_dropbox_status,
+    ConfigState,
 };
 use cloud::CloudState;
 use monitor::MonitorState;
+use storage::customers::CustomerState;
 use storage::history::HistoryState;
 use storage::logging::{init_logging, log_info, log_warn, set_log_emitter};
 use tauri::{Emitter, Listener, Manager};
@@ -55,6 +58,9 @@ pub fn run() {
     let history_state = HistoryState::new().unwrap_or_else(|e| {
         panic!("failed to initialize history store: {e}");
     });
+    let customer_state = CustomerState::new().unwrap_or_else(|e| {
+        panic!("failed to initialize customer store: {e}");
+    });
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
@@ -64,6 +70,7 @@ pub fn run() {
         .manage(monitor_state)
         .manage(upload_state)
         .manage(history_state)
+        .manage(customer_state)
         .invoke_handler(tauri::generate_handler![
             get_app_version,
             get_setting,
@@ -94,6 +101,14 @@ pub fn run() {
             set_manual_status,
             channels_delivered,
             sync_sms_journal,
+            list_customers,
+            save_customer,
+            update_customer,
+            delete_customer,
+            set_customer_processed,
+            list_media_folders_cmd,
+            assign_customer_to_folder,
+            get_assignment_history,
             get_cloud_connection_status,
             verify_dropbox_status,
             start_dropbox_oauth,

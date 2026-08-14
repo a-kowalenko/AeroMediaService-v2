@@ -172,7 +172,7 @@ src-tauri/src/
   upload/           # worker, control, registry, checkpoint, retry
   cloud/            # traits, dropbox, custom_api, manifest
   notify/           # email, sms, whatsapp, message, resend, sms_sync
-  storage/          # config, secrets, history, logging
+  storage/          # config, secrets, history, customers, logging
   model/            # kunde, marker, validation, history_status, manual_status
   util/             # archive, link_shortener
 ```
@@ -187,6 +187,8 @@ src/
     StatusLight.tsx
     MonitorLog.tsx
     HistoryTable.tsx
+    CustomersPanel.tsx
+    FolderSelectionModal.tsx
     SettingsDialog.tsx
     SetupWizard.tsx
     ResendNotificationsDialog.tsx
@@ -195,6 +197,8 @@ src/
     chrome/                 # AppChrome, Titlebar (Phase 11)
   store/
     appStore.ts
+    historyStore.ts
+    customerStore.ts
     themeStore.ts
   lib/
     tauri.ts
@@ -558,6 +562,35 @@ Phase 11 ist erledigt. Optional: weitere Polish-Feinschliffe nach Bedarf.
 
 ---
 
+### Phase 12 — Kundenaufnahme & Marker-Zuweisung (Fertig-App)
+
+**Ziel:** Kunden erfassen, Warteschlange führen und `_fertig.txt` in Medienordner schreiben — ohne externe Fertig App.
+
+**Scope:**
+- [x] SQLite-Kundenwarteschlange (`customers.db`)
+- [x] Tauri-Commands: CRUD, Status, Ordnerliste, Zuweisung
+- [x] UI: Formular (+ Clipboard-JSON), Kundenliste, Ordner-Browser, Zuweisungs-Verlauf
+- [x] Marker-Schreiben über `write_fertig_marker` (Pure Contact)
+- [x] Belegt-Check: `_fertig.txt` / `_in_verarbeitung.txt`
+
+**Referenz (nur lesen):**
+```
+@C:\Users\Kowalenko\WebstormProjects\fertig-app\electron\main.js
+@C:\Users\Kowalenko\WebstormProjects\fertig-app\src\pages\FormPage.jsx
+@C:\Users\Kowalenko\WebstormProjects\fertig-app\src\pages\PersonsPage.jsx
+```
+
+**Nicht in dieser Phase:** Fertig-App-Datenmigration, API-Marker-Erzeugung.
+
+**Prompt:**
+```
+Implementiere Phase 12 aus @docs/IMPLEMENTATION_PLAN.md
+Regeln: @AGENTS.md
+Nur Phase 12. Danach cargo test && npm run tauri dev.
+```
+
+---
+
 ## 9. Config-Schema
 
 ### Nicht-sensibel (Auswahl)
@@ -622,3 +655,4 @@ Updater-Endpoint und Signing: siehe [`docs/RELEASE.md`](./RELEASE.md) (analog Ae
 | 9 | Settings + Shell | ✅ |
 | 10 | Updater / CI / Plattformen | ✅ |
 | 11 | Polish | ✅ |
+| 12 | Kundenaufnahme & Marker-Zuweisung | ✅ |

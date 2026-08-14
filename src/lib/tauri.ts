@@ -363,3 +363,107 @@ export function listAvailableVersions(): Promise<AvailableRelease[]> {
 export function installSpecificVersion(updaterJsonUrl: string): Promise<string> {
   return invoke<string>("install_specific_version", { updaterJsonUrl });
 }
+
+/* ── Customer intake (Fertig-App replacement) ─────────────────────── */
+
+export type Customer = {
+  id: string;
+  vorname: string;
+  nachname: string;
+  email: string;
+  telefon: string;
+  processed: boolean;
+  assigned_path: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type AssignmentHistoryEntry = {
+  id: string;
+  customer_id: string;
+  vorname: string;
+  nachname: string;
+  email: string;
+  telefon: string;
+  file_path: string;
+  created_at: string;
+};
+
+export type FolderState = "ready" | "busy" | "occupied";
+
+export type MediaFolderInfo = {
+  name: string;
+  path: string;
+  is_ready: boolean;
+  block_reason: string | null;
+  folder_state: FolderState;
+};
+
+export type MediaDirectoryListing = {
+  path: string;
+  parent: string;
+  folders: MediaFolderInfo[];
+};
+
+export type AssignResult = {
+  file_path: string;
+};
+
+export function listCustomers(
+  search?: string,
+  filter?: "all" | "unprocessed" | "processed",
+): Promise<Customer[]> {
+  return invoke<Customer[]>("list_customers", {
+    search: search ?? "",
+    filter: filter ?? "all",
+  });
+}
+
+export function saveCustomer(
+  vorname: string,
+  nachname: string,
+  email: string,
+  telefon?: string,
+): Promise<Customer> {
+  return invoke<Customer>("save_customer", {
+    vorname,
+    nachname,
+    email,
+    telefon: telefon ?? "",
+  });
+}
+
+export function updateCustomer(customer: Customer): Promise<Customer> {
+  return invoke<Customer>("update_customer", { customer });
+}
+
+export function deleteCustomer(id: string): Promise<void> {
+  return invoke("delete_customer", { id });
+}
+
+export function setCustomerProcessed(
+  id: string,
+  processed: boolean,
+): Promise<Customer> {
+  return invoke<Customer>("set_customer_processed", { id, processed });
+}
+
+export function listMediaFolders(path?: string | null): Promise<MediaDirectoryListing> {
+  return invoke<MediaDirectoryListing>("list_media_folders_cmd", {
+    path: path ?? null,
+  });
+}
+
+export function assignCustomerToFolder(
+  id: string,
+  targetPath: string,
+): Promise<AssignResult> {
+  return invoke<AssignResult>("assign_customer_to_folder", {
+    id,
+    targetPath,
+  });
+}
+
+export function getAssignmentHistory(): Promise<AssignmentHistoryEntry[]> {
+  return invoke<AssignmentHistoryEntry[]>("get_assignment_history");
+}

@@ -1,4 +1,5 @@
 pub mod cloud;
+pub mod customers;
 pub mod history;
 pub mod monitor;
 pub mod operator;
@@ -10,6 +11,10 @@ pub use cloud::{
     disconnect_active_cloud, disconnect_custom_api, disconnect_dropbox, finish_dropbox_oauth,
     get_cloud_connection_status, get_sms_balance, start_dropbox_oauth, test_link_shortener,
     verify_dropbox_status,
+};
+pub use customers::{
+    assign_customer_to_folder, delete_customer, get_assignment_history, list_customers,
+    list_media_folders_cmd, save_customer, set_customer_processed, update_customer,
 };
 pub use history::{clear_history, delete_history_items, get_history, get_history_entry};
 pub use monitor::{get_monitoring_status, start_monitoring, stop_monitoring};

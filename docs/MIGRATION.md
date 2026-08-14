@@ -77,6 +77,7 @@ C:\Users\Kowalenko\PycharmProjects\AeroMediaService
 | ✅ | `settings.py` | `src/components/SettingsDialog.tsx` |
 | ✅ | `utils/loading_overlay.py` | `src/components/LoadingOverlay.tsx` |
 | ✅ | `utils/updater.py` | Tauri Updater + `UpdateDialog.tsx` + Settings Extras |
+| ✅ | Fertig App (Companion) | `CustomersPanel` + `storage/customers.rs` (Phase 12) |
 
 ## Nicht portieren
 
