@@ -137,6 +137,13 @@ function boolFromSetting(value: string, fallback = false): boolean {
   return v !== "false" && v !== "0" && v !== "no";
 }
 
+/** Persist a secret only when non-empty — empty bulk-save must not wipe the keyring. */
+async function persistSecret(key: string, value: string): Promise<void> {
+  const trimmed = value.trim();
+  if (!trimmed) return;
+  await saveSecret(key, trimmed);
+}
+
 async function pickDirectory(current: string): Promise<string | null> {
   try {
     const selected = await openDirectoryDialog({
@@ -548,8 +555,11 @@ export function SettingsDialog({
         setDbStatus(nativeStatus);
         setCustomDbStatus(customStatus);
         setSmsBalance(balance || "Unbekannt");
-      } catch {
-        // Keyring unavailable in browser preview.
+      } catch (err) {
+        setError(
+          `Geheimnisse konnten nicht geladen werden (Keyring): ${err}. ` +
+            "API-URLs und Tokens werden ggf. leer angezeigt — bitte nicht speichern, sonst bleiben sie leer.",
+        );
       }
     } catch (err) {
       setError(`Einstellungen konnten nicht geladen werden: ${err}`);
@@ -628,24 +638,25 @@ export function SettingsDialog({
       await saveSetting("shortener_expires_preset", shortener.shortener_expires_preset);
       await saveSetting("twilio_whatsapp_from", whatsapp.twilio_whatsapp_from.trim());
 
-      await saveSecret("db_app_key", dropbox.db_app_key.trim());
-      await saveSecret("db_app_secret", dropbox.db_app_secret.trim());
-      await saveSecret("custom_api_url", customApi.custom_api_url.trim());
-      await saveSecret("custom_api_bearer_token", customApi.custom_api_bearer_token.trim());
-      await saveSecret("aero_customer_base_url", customApi.aero_customer_base_url.trim());
-      await saveSecret("aero_customer_api_token", customApi.aero_customer_api_token.trim());
-      await saveSecret("custom_db_app_key", customApi.custom_db_app_key.trim());
-      await saveSecret("custom_db_app_secret", customApi.custom_db_app_secret.trim());
-      await saveSecret("smtp_user", email.smtp_user.trim());
-      await saveSecret("smtp_pass", email.smtp_pass);
-      await saveSecret("imap_user", email.imap_user.trim());
-      await saveSecret("imap_pass", email.imap_pass);
-      await saveSecret("seven_api_key", sms.seven_api_key.trim());
-      await saveSecret("seven_sandbox_api_key", sms.seven_sandbox_api_key.trim());
-      await saveSecret("shortener_base_url", shortener.shortener_base_url.trim());
-      await saveSecret("shortener_api_key", shortener.shortener_api_key.trim());
-      await saveSecret("twilio_account_sid", whatsapp.twilio_account_sid.trim());
-      await saveSecret("twilio_auth_token", whatsapp.twilio_auth_token.trim());
+      await persistSecret("db_app_key", dropbox.db_app_key);
+      await persistSecret("db_app_secret", dropbox.db_app_secret);
+      await persistSecret("custom_api_url", customApi.custom_api_url);
+      await persistSecret("custom_api_bearer_token", customApi.custom_api_bearer_token);
+      await persistSecret("aero_customer_base_url", customApi.aero_customer_base_url);
+      await persistSecret("aero_customer_api_token", customApi.aero_customer_api_token);
+      await persistSecret("custom_db_app_key", customApi.custom_db_app_key);
+      await persistSecret("custom_db_app_secret", customApi.custom_db_app_secret);
+      await persistSecret("smtp_user", email.smtp_user);
+      // Passwords may intentionally contain leading/trailing spaces — only skip if blank.
+      if (email.smtp_pass.length > 0) await saveSecret("smtp_pass", email.smtp_pass);
+      await persistSecret("imap_user", email.imap_user);
+      if (email.imap_pass.length > 0) await saveSecret("imap_pass", email.imap_pass);
+      await persistSecret("seven_api_key", sms.seven_api_key);
+      await persistSecret("seven_sandbox_api_key", sms.seven_sandbox_api_key);
+      await persistSecret("shortener_base_url", shortener.shortener_base_url);
+      await persistSecret("shortener_api_key", shortener.shortener_api_key);
+      await persistSecret("twilio_account_sid", whatsapp.twilio_account_sid);
+      await persistSecret("twilio_auth_token", whatsapp.twilio_auth_token);
 
       setGeneral((prev) => ({
         ...prev,
@@ -665,8 +676,8 @@ export function SettingsDialog({
     setDbBusy(true);
     setError("");
     try {
-      await saveSecret("db_app_key", dropbox.db_app_key.trim());
-      await saveSecret("db_app_secret", dropbox.db_app_secret.trim());
+      await persistSecret("db_app_key", dropbox.db_app_key);
+      await persistSecret("db_app_secret", dropbox.db_app_secret);
       if (dbStatus === "Verbunden") {
         const result = await disconnectDropbox("native");
         setDbStatus(result.status);
@@ -697,8 +708,8 @@ export function SettingsDialog({
   async function toggleCustomDropbox() {
     setCustomBusy(true);
     try {
-      await saveSecret("custom_db_app_key", customApi.custom_db_app_key.trim());
-      await saveSecret("custom_db_app_secret", customApi.custom_db_app_secret.trim());
+      await persistSecret("custom_db_app_key", customApi.custom_db_app_key);
+      await persistSecret("custom_db_app_secret", customApi.custom_db_app_secret);
       if (customDbStatus === "Verbunden" || customDbStatus.startsWith("Verbunden")) {
         const result = await disconnectDropbox("custom");
         setCustomDbStatus(result.status);
@@ -729,10 +740,10 @@ export function SettingsDialog({
   async function toggleCustomApi() {
     setCustomBusy(true);
     try {
-      await saveSecret("custom_api_url", customApi.custom_api_url.trim());
-      await saveSecret("custom_api_bearer_token", customApi.custom_api_bearer_token.trim());
-      await saveSecret("aero_customer_base_url", customApi.aero_customer_base_url.trim());
-      await saveSecret("aero_customer_api_token", customApi.aero_customer_api_token.trim());
+      await persistSecret("custom_api_url", customApi.custom_api_url);
+      await persistSecret("custom_api_bearer_token", customApi.custom_api_bearer_token);
+      await persistSecret("aero_customer_base_url", customApi.aero_customer_base_url);
+      await persistSecret("aero_customer_api_token", customApi.aero_customer_api_token);
       await saveSetting(
         "custom_api_upload_endpoint",
         customApi.custom_api_upload_endpoint.trim() || "/upload",

@@ -35,7 +35,22 @@ impl CustomApiClient {
 
         self.set_credentials(Some(api_base_url.clone()), Some(api_key.clone()));
 
-        let url = format!("{}/health", api_base_url.trim_end_matches('/'));
+        let health_path = crate::storage::config::runtime_setting("custom_api_health_endpoint");
+        let health_path = {
+            let trimmed = health_path.trim();
+            if trimmed.is_empty() {
+                "/health".to_string()
+            } else if trimmed.starts_with('/') {
+                trimmed.to_string()
+            } else {
+                format!("/{trimmed}")
+            }
+        };
+        let url = format!(
+            "{}{}",
+            api_base_url.trim_end_matches('/'),
+            health_path
+        );
         let response = match self
             .http
             .get(&url)
