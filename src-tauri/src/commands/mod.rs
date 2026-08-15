@@ -1,3 +1,4 @@
+pub mod bridge;
 pub mod cloud;
 pub mod customers;
 pub mod history;
@@ -6,6 +7,7 @@ pub mod operator;
 pub mod settings;
 pub mod upload;
 
+pub use bridge::{apply_bridge_config, get_bridge_status};
 pub use cloud::{
     auto_connect_cloud, connect_active_cloud, connect_custom_api, connect_dropbox,
     disconnect_active_cloud, disconnect_custom_api, disconnect_dropbox, finish_dropbox_oauth,

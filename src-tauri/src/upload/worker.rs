@@ -9,6 +9,9 @@ use tokio::sync::mpsc::UnboundedReceiver;
 
 use crate::cloud::{CloudClient, CloudError};
 use crate::events;
+use crate::model::handoff::{
+    write_job_outbox, OutboxError, OutboxState, CODE_CANCELLED,
+};
 use crate::model::kunde::Kunde;
 use crate::model::marker::remove_upload_markers;
 use crate::storage::logging;
@@ -84,6 +87,14 @@ pub async fn process_job(
         logging::log_info(&format!("Beginne Verarbeitung von: {dir_name}"));
     }
 
+    write_job_outbox(
+        local_dir_path,
+        job.correlation_id.as_deref(),
+        OutboxState::Uploading,
+        None,
+        None,
+    );
+
     events::emit_job_active(true);
     let outcome = run_single_job(local_dir_path, dir_name, kunde, client, control).await;
     events::emit_job_active(false);
@@ -108,6 +119,14 @@ pub async fn process_job(
                     notify.sms_id.as_deref(),
                 ),
             );
+            // Final outbox status before archive move (P1b); outbox file stays on share.
+            write_job_outbox(
+                local_dir_path,
+                job.correlation_id.as_deref(),
+                OutboxState::Completed,
+                None,
+                Some(ARCHIVE_SUCCESS),
+            );
             if let Some(moved) = archive::archive_directory(archive_path, local_dir_path, ARCHIVE_SUCCESS)
             {
                 emit_archive_history(&moved);
@@ -121,6 +140,16 @@ pub async fn process_job(
             events::emit(
                 events::UPLOAD_HISTORY_UPDATE,
                 kunde_history(dir_name, "Abgebrochen", kunde),
+            );
+            write_job_outbox(
+                local_dir_path,
+                job.correlation_id.as_deref(),
+                OutboxState::Failed,
+                Some(OutboxError {
+                    code: CODE_CANCELLED.into(),
+                    message: "Upload abgebrochen.".into(),
+                }),
+                Some(ARCHIVE_CANCELLED),
             );
             if let Some(moved) =
                 archive::archive_directory(archive_path, local_dir_path, ARCHIVE_CANCELLED)
@@ -142,6 +171,16 @@ pub async fn process_job(
                     "status": "Fehler",
                     "error_msg": err,
                 }),
+            );
+            write_job_outbox(
+                local_dir_path,
+                job.correlation_id.as_deref(),
+                OutboxState::Failed,
+                Some(OutboxError {
+                    code: "upload_failed".into(),
+                    message: err.clone(),
+                }),
+                Some(ARCHIVE_ERROR),
             );
             if let Some(moved) =
                 archive::archive_directory(archive_path, local_dir_path, ARCHIVE_ERROR)
@@ -416,6 +455,7 @@ mod tests {
             dir_path: dir.to_path_buf(),
             kunde: sample_kunde(),
             use_dropbox_client: false,
+            correlation_id: None,
         }
     }
 

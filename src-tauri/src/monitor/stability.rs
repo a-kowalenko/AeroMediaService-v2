@@ -6,9 +6,9 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use crate::model::marker::{MARKER_FERTIG, MARKER_PROCESSING};
+use crate::model::handoff::{is_ignored_handoff_name, HANDOFF_DIRNAME};
+use crate::model::marker::MARKER_FERTIG;
 use crate::storage::logging;
-use crate::upload::checkpoint::CHECKPOINT_FILENAME;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ObserveResult {
@@ -65,11 +65,7 @@ fn normalize_lexically(path: &Path) -> PathBuf {
     out
 }
 
-fn is_ignored_filename(name: &str) -> bool {
-    name == MARKER_FERTIG || name == MARKER_PROCESSING || name == CHECKPOINT_FILENAME
-}
-
-/// Sum of file sizes and count, ignoring marker/checkpoint filenames.
+/// Sum of file sizes and count, ignoring handoff/marker/checkpoint noise files.
 pub fn folder_content_fingerprint(dir_path: &Path) -> FolderFingerprint {
     let mut total_bytes = 0u64;
     let mut file_count = 0u64;
@@ -77,7 +73,7 @@ pub fn folder_content_fingerprint(dir_path: &Path) -> FolderFingerprint {
         let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
             return;
         };
-        if is_ignored_filename(name) {
+        if is_ignored_handoff_name(name) {
             return;
         }
         match fs::metadata(path) {
@@ -101,6 +97,11 @@ fn walk_files(dir: &Path, visit: &mut impl FnMut(&Path)) {
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if name == HANDOFF_DIRNAME {
+                continue;
+            }
             walk_files(&path, visit);
         } else if path.is_file() {
             visit(&path);
@@ -237,6 +238,8 @@ fn duration_from_secs(seconds: f64) -> Duration {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::marker::MARKER_PROCESSING;
+    use crate::upload::checkpoint::CHECKPOINT_FILENAME;
     use std::fs;
     use tempfile::tempdir;
 

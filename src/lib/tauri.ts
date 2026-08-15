@@ -59,6 +59,20 @@ export function stopMonitoring(): Promise<void> {
   return invoke("stop_monitoring");
 }
 
+export type BridgeStatus = {
+  running: boolean;
+  bind_addr: string;
+  last_error: string | null;
+};
+
+export function getBridgeStatus(): Promise<BridgeStatus> {
+  return invoke<BridgeStatus>("get_bridge_status");
+}
+
+export function applyBridgeConfig(): Promise<BridgeStatus> {
+  return invoke<BridgeStatus>("apply_bridge_config");
+}
+
 export type ByteProgress = {
   percent: number;
   current: number;

@@ -44,6 +44,9 @@ pub fn setting_default(key: &str) -> Option<&'static str> {
         "scan_interval" => Some(DEFAULT_SCAN_INTERVAL),
         "folder_stability_enabled" => Some("true"),
         "folder_stability_seconds" => Some(DEFAULT_FOLDER_STABILITY_SECONDS),
+        "manifest_required" => Some("false"),
+        "bridge_enabled" => Some("false"),
+        "bridge_bind" => Some("0.0.0.0:8787"),
         "selected_cloud_service" => Some("dropbox"),
         "custom_api_upload_mode" => Some("proxied_session"),
         "custom_api_upload_endpoint" => Some("/upload"),
@@ -150,6 +153,9 @@ mod tests {
         assert_eq!(setting_default("scan_interval"), Some("10"));
         assert_eq!(setting_default("folder_stability_enabled"), Some("true"));
         assert_eq!(setting_default("folder_stability_seconds"), Some("15"));
+        assert_eq!(setting_default("manifest_required"), Some("false"));
+        assert_eq!(setting_default("bridge_enabled"), Some("false"));
+        assert_eq!(setting_default("bridge_bind"), Some("0.0.0.0:8787"));
         assert_eq!(setting_default("selected_cloud_service"), Some("dropbox"));
         assert_eq!(setting_default("custom_api_upload_mode"), Some("proxied_session"));
         assert_eq!(setting_default("link_shortener_enabled"), Some("false"));

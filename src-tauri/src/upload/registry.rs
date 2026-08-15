@@ -20,6 +20,8 @@ pub struct UploadJob {
     pub dir_path: PathBuf,
     pub kunde: Kunde,
     pub use_dropbox_client: bool,
+    /// ATS handoff correlation id when a valid manifest was present (P1b outbox).
+    pub correlation_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -256,6 +258,7 @@ mod tests {
                 ..Kunde::default()
             },
             use_dropbox_client: false,
+            correlation_id: None,
         }
     }
 

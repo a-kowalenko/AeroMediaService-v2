@@ -26,11 +26,13 @@ import {
 } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
+  applyBridgeConfig,
   connectCustomApi,
   connectDropbox,
   disconnectCustomApi,
   disconnectDropbox,
   finishDropboxOauth,
+  getBridgeStatus,
   getSecret,
   getSetting,
   getSmsBalance,
@@ -204,7 +206,12 @@ export function SettingsDialog({
     scan_interval: "10",
     folder_stability_enabled: true,
     folder_stability_seconds: "15",
+    bridge_enabled: false,
+    bridge_bind: "0.0.0.0:8787",
+    bridge_token: "",
   });
+  const [bridgeStatusLabel, setBridgeStatusLabel] = useState("—");
+  const [bridgeBusy, setBridgeBusy] = useState(false);
 
   const [cloudService, setCloudService] = useState<"dropbox" | "custom_api">("dropbox");
   const [dropbox, setDropbox] = useState({
@@ -363,6 +370,8 @@ export function SettingsDialog({
         scan_interval,
         stability_enabled,
         folder_stability_seconds,
+        bridge_enabled,
+        bridge_bind,
         selected_cloud_service,
         custom_api_upload_endpoint,
         custom_api_share_endpoint,
@@ -391,6 +400,8 @@ export function SettingsDialog({
         getSetting("scan_interval", "10"),
         getSetting("folder_stability_enabled", "true"),
         getSetting("folder_stability_seconds", "15"),
+        getSetting("bridge_enabled", "false"),
+        getSetting("bridge_bind", "0.0.0.0:8787"),
         getSetting("selected_cloud_service", "dropbox"),
         getSetting("custom_api_upload_endpoint", "/upload"),
         getSetting("custom_api_share_endpoint", "/share"),
@@ -421,7 +432,22 @@ export function SettingsDialog({
         scan_interval,
         folder_stability_enabled: boolFromSetting(stability_enabled, true),
         folder_stability_seconds,
+        bridge_enabled: boolFromSetting(bridge_enabled),
+        bridge_bind: bridge_bind || "0.0.0.0:8787",
+        bridge_token: "",
       });
+      try {
+        const status = await getBridgeStatus();
+        setBridgeStatusLabel(
+          status.running
+            ? `Aktiv auf ${status.bind_addr}`
+            : status.last_error
+              ? `Inaktiv (${status.last_error})`
+              : "Inaktiv",
+        );
+      } catch {
+        setBridgeStatusLabel("—");
+      }
       setCloudService(selected_cloud_service === "custom_api" ? "custom_api" : "dropbox");
       setEmail((prev) => ({
         ...prev,
@@ -478,6 +504,7 @@ export function SettingsDialog({
           skylink_api_key,
           twilio_account_sid,
           twilio_auth_token,
+          bridge_token,
         ] = await Promise.all([
           getSecret("db_app_key"),
           getSecret("db_app_secret"),
@@ -499,12 +526,17 @@ export function SettingsDialog({
           getSecret("skylink_api_key"),
           getSecret("twilio_account_sid"),
           getSecret("twilio_auth_token"),
+          getSecret("bridge_token"),
         ]);
 
         setDropbox({
           db_app_key: db_app_key ?? "",
           db_app_secret: db_app_secret ?? "",
         });
+        setGeneral((prev) => ({
+          ...prev,
+          bridge_token: bridge_token ?? "",
+        }));
         setCustomApi((prev) => ({
           ...prev,
           custom_api_url: custom_api_url ?? "",
@@ -597,6 +629,14 @@ export function SettingsDialog({
         general.folder_stability_enabled ? "true" : "false",
       );
       await saveSetting("folder_stability_seconds", stability);
+      await saveSetting(
+        "bridge_enabled",
+        general.bridge_enabled ? "true" : "false",
+      );
+      await saveSetting(
+        "bridge_bind",
+        general.bridge_bind.trim() || "0.0.0.0:8787",
+      );
       await saveSetting("ui_theme", themeMode);
       await saveSetting("selected_cloud_service", cloudService);
       await saveSetting(
@@ -657,6 +697,18 @@ export function SettingsDialog({
       await persistSecret("shortener_api_key", shortener.shortener_api_key);
       await persistSecret("twilio_account_sid", whatsapp.twilio_account_sid);
       await persistSecret("twilio_auth_token", whatsapp.twilio_auth_token);
+      await persistSecret("bridge_token", general.bridge_token);
+
+      try {
+        const status = await applyBridgeConfig();
+        setBridgeStatusLabel(
+          status.running
+            ? `Aktiv auf ${status.bind_addr}`
+            : "Inaktiv",
+        );
+      } catch (bridgeErr) {
+        setBridgeStatusLabel(`Fehler: ${bridgeErr}`);
+      }
 
       setGeneral((prev) => ({
         ...prev,
@@ -940,6 +992,100 @@ export function SettingsDialog({
                         }
                       />
                     </Field>
+                  </div>
+                </SettingsSection>
+
+                <SettingsSection
+                  title="LAN-Bridge (ATS)"
+                  description="Optionaler Control-Plane-Server im LAN (inkl. mDNS-Advertise _ams-bridge._tcp). Datei-Handoff funktioniert auch ohne Bridge."
+                >
+                  <div className="space-y-3">
+                    <label className="flex items-center gap-2 text-sm">
+                      <Checkbox
+                        checked={general.bridge_enabled}
+                        onCheckedChange={(v) =>
+                          setGeneral((p) => ({
+                            ...p,
+                            bridge_enabled: v === true,
+                          }))
+                        }
+                      />
+                      Bridge-Server aktivieren
+                    </label>
+                    <Field label="Bind-Adresse (LAN, z. B. 0.0.0.0:8787)">
+                      <Input
+                        value={general.bridge_bind}
+                        disabled={!general.bridge_enabled}
+                        onChange={(e) =>
+                          setGeneral((p) => ({
+                            ...p,
+                            bridge_bind: e.target.value,
+                          }))
+                        }
+                        placeholder="0.0.0.0:8787"
+                      />
+                    </Field>
+                    <Field label="Bridge-Token (Pflicht bei aktivierter Bridge)">
+                      <PasswordInput
+                        value={general.bridge_token}
+                        disabled={!general.bridge_enabled}
+                        onChange={(e) =>
+                          setGeneral((p) => ({
+                            ...p,
+                            bridge_token: e.target.value,
+                          }))
+                        }
+                        autoComplete="off"
+                      />
+                    </Field>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        size="sm"
+                        disabled={bridgeBusy}
+                        onClick={() => {
+                          void (async () => {
+                            setBridgeBusy(true);
+                            try {
+                              await saveSetting(
+                                "bridge_enabled",
+                                general.bridge_enabled ? "true" : "false",
+                              );
+                              await saveSetting(
+                                "bridge_bind",
+                                general.bridge_bind.trim() || "0.0.0.0:8787",
+                              );
+                              await persistSecret(
+                                "bridge_token",
+                                general.bridge_token,
+                              );
+                              const status = await applyBridgeConfig();
+                              setBridgeStatusLabel(
+                                status.running
+                                  ? `Aktiv auf ${status.bind_addr}`
+                                  : "Inaktiv",
+                              );
+                              setStatus(
+                                status.running
+                                  ? `Bridge gestartet: ${status.bind_addr}`
+                                  : "Bridge gestoppt.",
+                              );
+                            } catch (err) {
+                              setBridgeStatusLabel(`Fehler: ${err}`);
+                              setError(`Bridge: ${err}`);
+                            } finally {
+                              setBridgeBusy(false);
+                            }
+                          })();
+                        }}
+                      >
+                        {bridgeBusy ? "…" : "Bridge anwenden"}
+                      </Button>
+                      <span className="text-xs text-muted-foreground">
+                        Status: {bridgeStatusLabel}
+                      </span>
+                    </div>
                   </div>
                 </SettingsSection>
 

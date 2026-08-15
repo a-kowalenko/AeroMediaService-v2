@@ -1,6 +1,6 @@
 # Aero Media Service v2 — Architektur
 
-> Kurzübersicht. Details: [IMPLEMENTATION_PLAN.md](./IMPLEMENTATION_PLAN.md)
+> Kurzübersicht. Details: [IMPLEMENTATION_PLAN.md](./IMPLEMENTATION_PLAN.md) · Handoff ATS↔AMS: [HANDOFF.md](./HANDOFF.md)
 
 ## Stack
 
@@ -29,17 +29,19 @@ AeroMediaService-v2/
 ├── src-tauri/
 │   ├── src/
 │   │   ├── monitor/            # Ordnerüberwachung, Stability
+│   │   ├── bridge/             # Optional LAN Bridge (health, lookup, jobs, ready, mDNS)
 │   │   ├── upload/             # Queue, Control, Checkpoint
 │   │   ├── cloud/              # Dropbox, Custom API
 │   │   ├── notify/             # E-Mail, SMS, WhatsApp
 │   │   ├── storage/            # Config, Secrets, History, Customers, Logging
-│   │   ├── model/              # Kunde, Marker, Status
+│   │   ├── model/              # Kunde, Marker, Status, Handoff
 │   │   ├── util/               # Archive, Shortener, Validation
 │   │   └── commands/           # Tauri IPC
 │   └── icons/
 ├── docs/
 │   ├── IMPLEMENTATION_PLAN.md  # ← Hauptdokument
 │   ├── ARCHITECTURE.md         # ← Dieses Dokument
+│   ├── HANDOFF.md              # ATS↔AMS Share-Handoff (Phase 13)
 │   └── MIGRATION.md
 └── AGENTS.md
 ```
@@ -47,11 +49,14 @@ AeroMediaService-v2/
 ## Datenfluss
 
 ```
-Kunden-UI (Aufnahme / Warteschlange)
-    │ schreibt Pure-Contact-_fertig.txt
+ATS (anderer PC) ──SMB──► Share „aktuell“ / <Job>/
+    │ schreibt Medien → Manifest → _fertig.txt
+    │
+Kunden-UI AMS (Aufnahme / Warteschlange)
+    │ schreibt Pure-Contact-_fertig.txt (ohne Manifest = Legacy)
     ▼
-Monitor-Ordner
-    │ Ordner stabil?
+Monitor-Ordner (monitor_path = aktueller Share)
+    │ Manifest-Gate? (Phase 13) sonst Ordner stabil?
     ▼
 Marker lesen (_fertig.txt / API-Marker)
     │ Kunde aus Marker ODER Custom-API-Lookup
@@ -66,10 +71,12 @@ E-Mail / SMS / WhatsApp
     │
     ▼
 History aktualisieren → Archiv (erfolg / fehler / abgebrochen)
-    │ Events
+    │ Events (+ optional Outbox .ams-handoff / Bridge)
     ▼
 React UI (Log, History, Kunden, Status, Progress)
 ```
+
+Handoff-Details (Manifest, Outbox, optionale LAN-Bridge): [HANDOFF.md](./HANDOFF.md).
 
 ## Legacy-Referenz
 

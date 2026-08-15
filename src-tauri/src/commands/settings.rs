@@ -25,6 +25,13 @@ impl ConfigState {
         })
     }
 
+    #[cfg(test)]
+    pub fn from_store(store: ConfigStore) -> Self {
+        Self {
+            store: Arc::new(Mutex::new(store)),
+        }
+    }
+
     pub fn get(&self, key: &str, default: Option<&str>) -> Result<String, String> {
         let store = self.store.lock().map_err(|e| e.to_string())?;
         Ok(store.get(key, default))

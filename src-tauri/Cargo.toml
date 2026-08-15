@@ -40,6 +40,9 @@ imap = "2.4"
 native-tls = "0.2"
 base64 = "0.22"
 tauri-plugin-dialog = "2"
+axum = { version = "0.8", default-features = false, features = ["macros", "json", "tokio", "http1"] }
+mdns-sd = "0.15"
+hostname = "0.4"
 
 [target."cfg(any(target_os = \"macos\", windows, target_os = \"linux\"))".dependencies]
 tauri-plugin-updater = "2"

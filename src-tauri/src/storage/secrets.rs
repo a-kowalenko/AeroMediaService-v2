@@ -37,6 +37,7 @@ pub fn is_secret_key(key: &str) -> bool {
             | "custom_api_bearer_token"
             | "aero_customer_base_url"
             | "aero_customer_api_token"
+            | "bridge_token"
             | "smtp_user"
             | "smtp_pass"
             | "imap_user"
@@ -168,7 +169,8 @@ mod tests {
         assert!(is_secret_key("db_refresh_token"));
         assert!(is_secret_key("smtp_pass"));
         assert!(is_secret_key("seven_api_key"));
-        assert!(is_secret_key("twilio_auth_token"));
+        assert!(is_secret_key("aero_customer_api_token"));
+        assert!(is_secret_key("bridge_token"));
         assert!(!is_secret_key("monitor_path"));
         assert!(!is_secret_key("scan_interval"));
         assert!(!is_secret_key("log_file_path"));

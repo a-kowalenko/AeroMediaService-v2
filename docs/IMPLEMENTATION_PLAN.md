@@ -33,6 +33,7 @@
 - Share-Links (+ optional Shortener)
 - E-Mail (SMTP), SMS (seven.io), WhatsApp (Twilio)
 - History, Retry, Resend, manuelle Status-Aktionen
+- ATS↔AMS Handoff auf SMB-Share `aktuell` (Phase 13, Spec: [`HANDOFF.md`](./HANDOFF.md))
 - Windows + macOS + Linux
 
 ### Projektpfade
@@ -64,8 +65,10 @@
 | Settings vollständig + App-Shell | ✅ Phase 9 |
 | Updater / CI / Plattformen | ✅ Phase 10 |
 | Polish (Wizard, Titlebar, History-Virtualisierung, Legacy-Migration) | ✅ Phase 11 |
+| Kundenaufnahme & Marker-Zuweisung | ✅ Phase 12 |
+| ATS↔AMS Handoff (Docs P0) | 🔄 Phase 13 — Spec: [`HANDOFF.md`](./HANDOFF.md) · P0 ✅ · P1 ✅ · P1b ✅ · P2 ✅ · P3 ✅ · P4 ✅ · P5+ offen |
 
-**Nächste Phase:** — (alle geplanten Phasen erledigt; optional weitere Polish-Feinschliffe)
+**Nächste Phase:** 13 — ATS↔AMS Handoff Teilphase **P5+** (optional: SHA-256, strict extras, …)
 
 ---
 
@@ -591,6 +594,58 @@ Nur Phase 12. Danach cargo test && npm run tauri dev.
 
 ---
 
+### Phase 13 — ATS ↔ AMS Handoff
+
+**Ziel:** Zuverlässiger Datei-Handoff vom ATS-Export auf den SMB-Share `aktuell` (AMS-`monitor_path`), ohne die Upload-Pipeline umzubauen. Optional Feedback (Outbox) und LAN-Bridge (Customer-Lookup, Status, Wake).
+
+**Kanonische Spec:** [`docs/HANDOFF.md`](./HANDOFF.md)
+
+**Betriebsmodell:** ATS schreibt auf Share `aktuell` → AMS monitored denselben Share → Claim/Upload/Notify/Archiv wie bisher. Apps oft auf verschiedenen PCs im LAN.
+
+**Nicht-Ziele:** Upload-Worker/Cloud/Notify umbauen; Medien per HTTP; Marker-Protokoll abschaffen; localhost-only.
+
+#### Teilphasen
+
+- [x] **P0** — Docs: `HANDOFF.md`, Phase-13-Eintrag, `AGENTS.md`, `ARCHITECTURE.md`
+- [x] **P1** — ATS: `_ams_manifest.v1.json` schreiben; AMS: Manifest-Parse + Gate vor Claim; Ignore `.ams-handoff`; Legacy ohne Manifest; Unit-Tests
+- [x] **P1b** — AMS: Status-Outbox `aktuell/.ams-handoff/<correlation_id>.json`; ATS: `correlation_id` / `producer_ref` + Status lesen/anzeigen
+- [x] **P2** — Bridge LAN: `GET /v1/health`, `POST /v1/customer/lookup` (Token-Auth; Customer-API nur in AMS)
+- [x] **P3** — Bridge: `GET /v1/jobs/{correlation_id}`, `POST /v1/handoff/ready` (Monitor wake, kein Upload-Bypass)
+- [x] **P4** — Bridge mDNS Discovery only (`_ams-bridge._tcp.local.`; Token manuell; keine SHA/strict)
+- [ ] **P5+** — optional: SHA-256, strict extras, …
+
+#### AMS-Gate (P1) — Kurz
+
+Vor `claim_fertig_marker`: Manifest gültig → Claim (Stability verkürzen/überspringen); incomplete → liegen lassen + `rejected`; kein Manifest → Legacy inkl. Stability. `manifest_required` default `false`.
+
+#### Partner-Repo
+
+```
+C:\Users\Kowalenko\PycharmProjects\AeroTandemStudio-v2
+```
+
+P1/P1b/P2/P3 erfordern Änderungen in **beiden** Repos; pro Session nur **eine** Teilphase (P1, P1b, …).
+
+#### Erfolgskriterien (gesamt Phase 13)
+
+- [x] Manifest-Handoff auf SMB-Share verhindert Claim unvollständiger Jobs
+- [x] Legacy-Ordner ohne Manifest und AMS-Kunden-UI (Pure-Contact-Marker) weiter funktionsfähig
+- [x] Outbox-Status für ATS ohne gleichen PC lesbar
+- [x] Bridge optional; Datei-Pfad allein ausreichend
+- [x] `cargo test` grün (AMS; ATS analog in ATS-Repo)
+
+#### Agent-Prompt (nächste Session = P5+)
+
+```
+Implementiere Phase 13 Teilphase P5+ aus @docs/IMPLEMENTATION_PLAN.md
+Spec: @docs/HANDOFF.md
+Regeln: @AGENTS.md
+Scope vorher klären (SHA-256 / strict extras / …).
+Danach cargo test.
+```
+
+---
+
 ## 9. Config-Schema
 
 ### Nicht-sensibel (Auswahl)
@@ -603,6 +658,9 @@ Nur Phase 12. Danach cargo test && npm run tauri dev.
 | `scan_interval` | Sekunden | `10` |
 | `folder_stability_enabled` | Stability an | `"true"` |
 | `folder_stability_seconds` | Wartezeit | `15` |
+| `manifest_required` | Handoff: Manifest vor Claim erzwingen (Phase 13) | `"false"` |
+| `bridge_enabled` | LAN-Bridge-Server (Phase 13 / P2) | `"false"` |
+| `bridge_bind` | Bind-Adresse (LAN, z. B. `0.0.0.0:8787`) | `"0.0.0.0:8787"` |
 | `selected_cloud_service` | `dropbox` \| `custom_api` | `dropbox` |
 | `smtp_*` / Sandbox-Flags | E-Mail | — |
 
@@ -614,6 +672,7 @@ Nur Phase 12. Danach cargo test && npm run tauri dev.
 | `custom_db_app_key` / `custom_db_app_secret` / `custom_db_refresh_token` | Custom-API Dropbox |
 | SMTP-Passwort, `sms_api_key`, Sandbox-Key | Notify |
 | `twilio_account_sid` / `twilio_auth_token` | WhatsApp |
+| `bridge_token` | LAN-Bridge Bearer-Token (Phase 13 / P2) |
 
 Organisation Legacy: `AKSoftware` / `AeroMediaService`.  
 Keyring-Service v2: `AeroMediaService-v2` (Legacy `DropboxUploaderApp` wird einmalig importiert, Flag `legacy_migration_done`).  
@@ -624,6 +683,7 @@ Setup: `setup_completed`, Theme: `ui_theme` (`dark` \| `light`).
 ## 10. Teststrategie
 
 - Rust Unit-Tests für Marker, Status, Payload-Builder, Checkpoint-Logik
+- Ab Phase 13: Manifest-Validierung, Gate (Legacy vs. Handoff), Ignore `.ams-handoff`
 - Legacy `_test_*.py` als Spezifikation, nicht ausführen
 - Manuelle Abnahme: Monitor → Upload → Notify → Archiv
 - Ab Phase 10: CI auf Win/Mac/Linux
@@ -656,3 +716,4 @@ Updater-Endpoint und Signing: siehe [`docs/RELEASE.md`](./RELEASE.md) (analog Ae
 | 10 | Updater / CI / Plattformen | ✅ |
 | 11 | Polish | ✅ |
 | 12 | Kundenaufnahme & Marker-Zuweisung | ✅ |
+| 13 | ATS↔AMS Handoff | 🔄 P0 ✅ · P1 ✅ · P1b ✅ · P2 ✅ · P3 ✅ · P4 ✅ · P5+ offen |

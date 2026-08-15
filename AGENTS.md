@@ -4,9 +4,10 @@
 
 **Implementierungsplan:** `@docs/IMPLEMENTATION_PLAN.md`  
 **Architektur:** `@docs/ARCHITECTURE.md`  
-**Migration-Mapping:** `@docs/MIGRATION.md`
+**Migration-Mapping:** `@docs/MIGRATION.md`  
+**ATS↔AMS Handoff:** `@docs/HANDOFF.md` (Phase 13)
 
-In jedem neuen Kontextfenster `@docs/IMPLEMENTATION_PLAN.md` referenzieren und **nur eine Phase** implementieren.
+In jedem neuen Kontextfenster `@docs/IMPLEMENTATION_PLAN.md` referenzieren und **nur eine Phase** (bzw. eine Handoff-Teilphase P1/P1b/P2/P3) implementieren.
 
 ---
 
@@ -41,7 +42,7 @@ Kein Python, kein PySide6, kein MoviePy/FFmpeg (nicht benötigt).
 |---|------|
 | v2 (editieren) | `C:\Users\Kowalenko\PycharmProjects\AeroMediaService-v2` |
 | Legacy (NUR LESEN) | `C:\Users\Kowalenko\PycharmProjects\AeroMediaService` |
-| ATS-v2 (Vorbild Scaffold/CI) | `C:\Users\Kowalenko\PycharmProjects\AeroTandemStudio-v2` |
+| ATS-v2 (Handoff-Partner + Scaffold-Vorbild) | `C:\Users\Kowalenko\PycharmProjects\AeroTandemStudio-v2` |
 
 ---
 
@@ -84,8 +85,14 @@ Vollständiges Mapping: `@docs/MIGRATION.md`
 - ✅ Phase 10: Updater, Build, CI, Plattformen
 - ✅ Phase 11: Polish (Wizard, Titlebar/Theme, History-Virtualisierung, Legacy-Migration)
 - ✅ Phase 12: Kundenaufnahme & Marker-Zuweisung (Fertig-App-Features)
+- ✅ Phase 13 / P0: Handoff-Spec (`docs/HANDOFF.md`) + Plan-Einträge
+- ✅ Phase 13 / P1: Manifest (ATS schreiben) + Gate vor Claim (AMS); Ignore `.ams-handoff`; Legacy ohne Manifest
+- ✅ Phase 13 / P1b: Status-Outbox (`aktuell/.ams-handoff/<correlation_id>.json`); ATS persistiert `correlation_id` + liest Status
+- ✅ Phase 13 / P2: Bridge health + customer lookup (AMS Server LAN + Token; ATS Client)
+- ✅ Phase 13 / P3: Bridge job status + handoff/ready (Monitor wake; Datei-Handoff bleibt Fallback)
+- ✅ Phase 13 / P4: Bridge mDNS Discovery (`_ams-bridge._tcp.local.`; Token manuell)
 
-**Nächster Schritt:** — (Phasen 0–12 erledigt)
+**Nächster Schritt:** Phase 13 / **P5+** — optional (SHA-256, strict extras, …). Spec: `@docs/HANDOFF.md`
 
 ---
 
@@ -96,4 +103,13 @@ Implementiere Phase X aus @docs/IMPLEMENTATION_PLAN.md
 Regeln: @AGENTS.md
 Legacy: [Pfade aus Phase X im Plan]
 Nur Phase X. Danach cargo test && npm run tauri dev.
+```
+
+Handoff (Phase 13):
+
+```
+Implementiere Phase 13 Teilphase P5+ aus @docs/IMPLEMENTATION_PLAN.md
+Spec: @docs/HANDOFF.md
+Regeln: @AGENTS.md
+Scope vorher klären. Upload-Pipeline nicht ändern.
 ```

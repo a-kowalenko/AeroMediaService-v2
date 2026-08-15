@@ -6,6 +6,7 @@ mod model;
 mod monitor;
 mod storage;
 mod cloud;
+mod bridge;
 mod notify;
 mod upload;
 mod util;
@@ -14,19 +15,20 @@ mod updater;
 use std::sync::Arc;
 
 use commands::{
-    assign_customer_to_folder, auto_connect_cloud, cancel_upload, channels_delivered, clear_history,
-    connect_active_cloud, connect_custom_api, connect_dropbox, delete_customer, delete_history_items,
-    disconnect_active_cloud, disconnect_custom_api, disconnect_dropbox, finish_dropbox_oauth,
-    get_app_version, get_assignment_history, get_cloud_connection_status, get_history,
-    get_history_entry, get_manual_status_warnings, get_monitoring_status, get_recent_logs,
-    get_sandbox_warnings, get_secret, get_setting, get_sms_balance, get_upload_control_state,
-    get_upload_queue, list_customers, list_media_folders_cmd, lookup_share_link,
-    migrate_legacy_settings, pause_upload, resend_history_notifications, reset_setup,
-    resume_upload, retry_upload, save_customer, save_history_contact, save_secret, save_setting,
-    set_customer_processed, set_manual_status, start_dropbox_oauth, start_monitoring,
-    stop_monitoring, sync_sms_journal, test_link_shortener, update_customer, verify_dropbox_status,
-    ConfigState,
+    apply_bridge_config, assign_customer_to_folder, auto_connect_cloud, cancel_upload,
+    channels_delivered, clear_history, connect_active_cloud, connect_custom_api, connect_dropbox,
+    delete_customer, delete_history_items, disconnect_active_cloud, disconnect_custom_api,
+    disconnect_dropbox, finish_dropbox_oauth, get_app_version, get_assignment_history,
+    get_bridge_status, get_cloud_connection_status, get_history, get_history_entry,
+    get_manual_status_warnings, get_monitoring_status, get_recent_logs, get_sandbox_warnings,
+    get_secret, get_setting, get_sms_balance, get_upload_control_state, get_upload_queue,
+    list_customers, list_media_folders_cmd, lookup_share_link, migrate_legacy_settings,
+    pause_upload, resend_history_notifications, reset_setup, resume_upload, retry_upload,
+    save_customer, save_history_contact, save_secret, save_setting, set_customer_processed,
+    set_manual_status, start_dropbox_oauth, start_monitoring, stop_monitoring, sync_sms_journal,
+    test_link_shortener, update_customer, verify_dropbox_status, ConfigState,
 };
+use bridge::BridgeState;
 use cloud::CloudState;
 use monitor::MonitorState;
 use storage::customers::CustomerState;
@@ -55,6 +57,7 @@ pub fn run() {
         Arc::clone(&upload_state.registry),
         upload_state.jobs.clone(),
     );
+    let bridge_state = BridgeState::new(monitor_state.wake_fn());
     let history_state = HistoryState::new().unwrap_or_else(|e| {
         panic!("failed to initialize history store: {e}");
     });
@@ -67,6 +70,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .manage(config_state.clone())
         .manage(cloud_state.clone())
+        .manage(bridge_state.clone())
         .manage(monitor_state)
         .manage(upload_state)
         .manage(history_state)
@@ -83,6 +87,8 @@ pub fn run() {
             get_monitoring_status,
             start_monitoring,
             stop_monitoring,
+            get_bridge_status,
+            apply_bridge_config,
             pause_upload,
             resume_upload,
             cancel_upload,
@@ -182,6 +188,19 @@ pub fn run() {
             upload.spawn_worker(&cloud, move |key| {
                 config_for_upload.get(key, None).unwrap_or_default()
             });
+            {
+                let bridge = app.state::<BridgeState>().inner().clone();
+                let config_for_bridge = config_state.clone();
+                tauri::async_runtime::spawn(async move {
+                    match bridge.apply_from_config(&config_for_bridge).await {
+                        Ok(status) if status.running => {
+                            log_info(&format!("AMS-Bridge aktiv: {}", status.bind_addr));
+                        }
+                        Ok(_) => {}
+                        Err(e) => log_warn(&format!("AMS-Bridge nicht gestartet: {e}")),
+                    }
+                });
+            }
             let handle = app.handle().clone();
             app.listen(events::STOP_MONITORING, move |_| {
                 let handle = handle.clone();

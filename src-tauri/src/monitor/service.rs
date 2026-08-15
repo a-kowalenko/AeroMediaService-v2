@@ -11,6 +11,11 @@ use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::Notify;
 
 use crate::cloud::custom_api::fetch_customer_as_kunde;
+use crate::model::handoff::{
+    evaluate_manifest_gate, is_handoff_scan_dir, manifest_path, peek_correlation_id,
+    write_job_outbox, GateDecision, OutboxError, OutboxState, CODE_CUSTOMER_LOOKUP_FAILED,
+    CODE_MANIFEST_MISSING_LEGACY, CODE_MARKER_INVALID,
+};
 use crate::model::kunde::Kunde;
 use crate::model::marker::{
     claim_fertig_marker, discard_stale_fertig_marker, load_marker_data, marker_paths,
@@ -34,6 +39,8 @@ pub enum ClaimResult {
     NoMedia,
     AlreadyClaimed,
     CustomerLookupFailed,
+    /// Manifest gate rejected the folder; leave it for the next scan (no claim).
+    ManifestRejected { code: String, message: String },
     MarkerError(String),
     IoError(String),
     Queued,
@@ -47,6 +54,8 @@ pub struct EnqueueContext<'a> {
     pub selected_cloud: &'a str,
     pub archive_path: &'a str,
     pub customer_lookup: Option<CustomerLookup>,
+    /// When true, jobs without `_ams_manifest.v1.json` are rejected (default false = legacy).
+    pub manifest_required: bool,
 }
 
 pub struct MonitorState {
@@ -74,6 +83,14 @@ impl MonitorState {
 
     pub fn wake(&self) {
         self.wake.notify_waiters();
+    }
+
+    /// Shared wake callback for Bridge `POST /v1/handoff/ready` (monitor interrupt only).
+    pub fn wake_fn(&self) -> Arc<dyn Fn() + Send + Sync> {
+        let wake = Arc::clone(&self.wake);
+        Arc::new(move || {
+            wake.notify_waiters();
+        })
     }
 
     pub fn start<F>(&self, get_setting: F) -> Result<bool, String>
@@ -151,6 +168,7 @@ async fn run_loop<F>(
         let scan_interval = parse_scan_interval(&get_setting("scan_interval"));
         let stability_enabled = parse_stability_enabled(&get_setting("folder_stability_enabled"));
         let stability_seconds = parse_stability_seconds(&get_setting("folder_stability_seconds"));
+        let manifest_required = parse_manifest_required(&get_setting("manifest_required"));
         let selected_cloud = get_setting("selected_cloud_service");
         let archive_path = get_setting("archive_path");
 
@@ -182,6 +200,7 @@ async fn run_loop<F>(
             selected_cloud: selected_cloud.trim(),
             archive_path: archive_path.trim(),
             customer_lookup: None,
+            manifest_required,
         };
 
         if !recovered {
@@ -243,6 +262,9 @@ pub async fn scan_once(
         }
 
         let dir_name = entry.file_name().to_string_lossy().into_owned();
+        if is_handoff_scan_dir(&dir_name) {
+            continue;
+        }
         let (fertig_path, processing_path) = marker_paths(&full_dir_path);
         if !fertig_path.is_file() && !processing_path.is_file() {
             continue;
@@ -251,9 +273,16 @@ pub async fn scan_once(
         if processing_path.is_file() {
             tracker.discard(&full_dir_path);
         } else if fertig_path.is_file() && stability_enabled {
-            match tracker.observe(&full_dir_path) {
-                ObserveResult::Stable => {}
-                ObserveResult::Waiting | ObserveResult::Removed => continue,
+            // Valid handoff manifest replaces the stability wait (P1).
+            // Incomplete/invalid manifests also skip the wait so the gate can reject promptly.
+            let has_manifest = manifest_path(&full_dir_path).is_file();
+            if !has_manifest {
+                match tracker.observe(&full_dir_path) {
+                    ObserveResult::Stable => {}
+                    ObserveResult::Waiting | ObserveResult::Removed => continue,
+                }
+            } else {
+                tracker.discard(&full_dir_path);
             }
         }
 
@@ -268,7 +297,8 @@ pub async fn scan_once(
             | ClaimResult::NoMedia
             | ClaimResult::AlreadyClaimed
             | ClaimResult::NotAFolder
-            | ClaimResult::CustomerLookupFailed => {}
+            | ClaimResult::CustomerLookupFailed
+            | ClaimResult::ManifestRejected { .. } => {}
             ClaimResult::MarkerError(msg) | ClaimResult::IoError(msg) => {
                 logging::log_error(&format!("Fehler bei Verarbeitung von '{dir_name}': {msg}"));
             }
@@ -299,6 +329,53 @@ pub async fn try_claim_and_enqueue(folder: &Path, ctx: &EnqueueContext<'_>) -> C
         return ClaimResult::NoMedia;
     }
 
+    let handoff_cid: Option<String> = match evaluate_manifest_gate(folder, ctx.manifest_required) {
+        GateDecision::Legacy => {
+            logging::log_debug(&format!(
+                "'{dir_name}': kein Manifest ({CODE_MANIFEST_MISSING_LEGACY}) — Legacy-Claim."
+            ));
+            None
+        }
+        GateDecision::Ready { correlation_id } => {
+            logging::log_info(&format!(
+                "'{dir_name}': Manifest OK (correlation_id={correlation_id}) — Claim ohne Stability-Wait."
+            ));
+            write_job_outbox(
+                folder,
+                Some(&correlation_id),
+                OutboxState::Accepted,
+                None,
+                None,
+            );
+            Some(correlation_id)
+        }
+        GateDecision::Rejected {
+            code,
+            message,
+            correlation_id,
+        } => {
+            logging::log_warn(&format!(
+                "'{dir_name}': Manifest-Gate abgelehnt ({code}): {message}"
+            ));
+            if let Some(ref cid) = correlation_id {
+                write_job_outbox(
+                    folder,
+                    Some(cid),
+                    OutboxState::Rejected,
+                    Some(OutboxError {
+                        code: code.to_string(),
+                        message: message.clone(),
+                    }),
+                    None,
+                );
+            }
+            return ClaimResult::ManifestRejected {
+                code: code.to_string(),
+                message,
+            };
+        }
+    };
+
     if !ctx.registry.register(folder) {
         logging::log_debug(&format!(
             "'{dir_name}' bereits in Upload-Warteschlange vorgemerkt."
@@ -325,6 +402,16 @@ pub async fn try_claim_and_enqueue(folder: &Path, ctx: &EnqueueContext<'_>) -> C
                     logging::log_error(&format!(
                         "Customer-Lookup für '{dir_name}' fehlgeschlagen: {msg}"
                     ));
+                    write_job_outbox(
+                        folder,
+                        handoff_cid.as_deref(),
+                        OutboxState::Failed,
+                        Some(OutboxError {
+                            code: CODE_CUSTOMER_LOOKUP_FAILED.into(),
+                            message: msg.clone(),
+                        }),
+                        Some(archive::ARCHIVE_ERROR),
+                    );
                     handle_customer_lookup_failure(
                         ctx.archive_path,
                         folder,
@@ -341,6 +428,16 @@ pub async fn try_claim_and_enqueue(folder: &Path, ctx: &EnqueueContext<'_>) -> C
                 logging::log_error(&format!(
                     "Ungültiger Marker für '{dir_name}', verschiebe nach Archiv/fehler: {e}"
                 ));
+                write_job_outbox(
+                    folder,
+                    handoff_cid.as_deref(),
+                    OutboxState::Failed,
+                    Some(OutboxError {
+                        code: CODE_MARKER_INVALID.into(),
+                        message: e.to_string(),
+                    }),
+                    Some(archive::ARCHIVE_ERROR),
+                );
                 archive::handle_marker_failure(ctx.archive_path, folder, &e.to_string(), Some(&marker_raw));
             }
             return ClaimResult::MarkerError(e.to_string());
@@ -374,9 +471,17 @@ pub async fn try_claim_and_enqueue(folder: &Path, ctx: &EnqueueContext<'_>) -> C
         dir_path: folder.to_path_buf(),
         kunde,
         use_dropbox_client: use_dropbox,
+        correlation_id: handoff_cid.clone(),
     };
     if ctx.registry.enqueue(ctx.jobs, job, true) {
         logging::log_info(&format!("'{dir_name}' zur Upload-Warteschlange hinzugefügt."));
+        write_job_outbox(
+            folder,
+            handoff_cid.as_deref(),
+            OutboxState::Queued,
+            None,
+            None,
+        );
         ClaimResult::Queued
     } else {
         ctx.registry.unregister(Some(folder));
@@ -400,6 +505,9 @@ async fn recover_stalled_folders(scan_path: &Path, ctx: &EnqueueContext<'_>) -> 
             continue;
         }
         let dir_name = entry.file_name().to_string_lossy().into_owned();
+        if is_handoff_scan_dir(&dir_name) {
+            continue;
+        }
         let (_, processing_path) = marker_paths(&full_dir_path);
         if !processing_path.is_file() {
             continue;
@@ -473,6 +581,7 @@ async fn recover_stalled_folders(scan_path: &Path, ctx: &EnqueueContext<'_>) -> 
             dir_path: full_dir_path.clone(),
             kunde,
             use_dropbox_client: use_dropbox,
+            correlation_id: peek_correlation_id(&full_dir_path),
         };
         if ctx.registry.enqueue(ctx.jobs, job, false) {
             recovered += 1;
@@ -549,6 +658,13 @@ fn parse_stability_seconds(raw: &str) -> f64 {
         .unwrap_or(DEFAULT_STABILITY_SECS)
 }
 
+fn parse_manifest_required(raw: &str) -> bool {
+    matches!(
+        raw.trim().to_ascii_lowercase().as_str(),
+        "true" | "1" | "yes" | "on"
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -582,6 +698,7 @@ mod tests {
             selected_cloud: cloud,
             archive_path: archive,
             customer_lookup: None,
+            manifest_required: false,
         }
     }
 
@@ -765,6 +882,154 @@ mod tests {
         assert!(job.join(MARKER_PROCESSING).is_file());
     }
 
+    fn write_valid_manifest(dir: &Path, size: u64) {
+        use crate::model::handoff::{
+            HandoffManifestV1, IntegrityBlock, ManifestFileEntry, MarkerHint, ProducerInfo,
+            ProducerRef, INTEGRITY_ALGO_SIZE, MANIFEST_FILENAME, PROTOCOL_NAME,
+        };
+        let m = HandoffManifestV1 {
+            schema: 1,
+            protocol: PROTOCOL_NAME.into(),
+            correlation_id: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee".into(),
+            producer: ProducerInfo {
+                app: "AeroTandemStudio".into(),
+                version: "0.0.0".into(),
+            },
+            producer_ref: ProducerRef::default(),
+            created_at: "2026-08-15T00:00:00+02:00".into(),
+            folder_name: "job".into(),
+            integrity: IntegrityBlock {
+                algo: INTEGRITY_ALGO_SIZE.into(),
+                files: vec![ManifestFileEntry {
+                    path: "photo.jpg".into(),
+                    size,
+                }],
+            },
+            marker_hint: MarkerHint::default(),
+            extensions: serde_json::json!({}),
+        };
+        fs::write(
+            dir.join(MANIFEST_FILENAME),
+            serde_json::to_string_pretty(&m).unwrap(),
+        )
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn claim_with_valid_manifest_skips_legacy_path() {
+        let dir = tempdir().unwrap();
+        write_media(dir.path());
+        write_fertig_marker(dir.path(), contact_marker()).unwrap();
+        write_valid_manifest(dir.path(), 10);
+        let registry = UploadQueueRegistry::new();
+        let (tx, mut rx) = unbounded_channel();
+        let context = ctx(&registry, &tx, "dropbox", "");
+        assert_eq!(
+            try_claim_and_enqueue(dir.path(), &context).await,
+            ClaimResult::Queued
+        );
+        assert!(rx.try_recv().is_ok());
+        assert!(dir.path().join(MARKER_PROCESSING).is_file());
+    }
+
+    #[tokio::test]
+    async fn claim_rejects_size_mismatch_without_claiming() {
+        let root = tempdir().unwrap();
+        let job = root.path().join("job-bad");
+        fs::create_dir(&job).unwrap();
+        write_media(&job);
+        write_fertig_marker(&job, contact_marker()).unwrap();
+        write_valid_manifest(&job, 999);
+        let registry = UploadQueueRegistry::new();
+        let (tx, mut rx) = unbounded_channel();
+        let context = ctx(&registry, &tx, "dropbox", "");
+        match try_claim_and_enqueue(&job, &context).await {
+            ClaimResult::ManifestRejected { code, .. } => {
+                assert_eq!(code, crate::model::handoff::CODE_SIZE_MISMATCH);
+            }
+            other => panic!("expected ManifestRejected, got {other:?}"),
+        }
+        assert!(job.join(MARKER_FERTIG).is_file());
+        assert!(!job.join(MARKER_PROCESSING).is_file());
+        assert!(rx.try_recv().is_err());
+        assert!(!registry.is_registered(&job));
+
+        let outbox = crate::model::handoff::read_status_outbox(
+            root.path(),
+            "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+        )
+        .unwrap();
+        assert_eq!(outbox.state, crate::model::handoff::OutboxState::Rejected);
+        assert_eq!(
+            outbox.error.as_ref().unwrap().code,
+            crate::model::handoff::CODE_SIZE_MISMATCH
+        );
+    }
+
+    #[tokio::test]
+    async fn claim_with_valid_manifest_writes_queued_outbox() {
+        let root = tempdir().unwrap();
+        let job = root.path().join("job-ok");
+        fs::create_dir(&job).unwrap();
+        write_media(&job);
+        write_fertig_marker(&job, contact_marker()).unwrap();
+        write_valid_manifest(&job, 10);
+        let registry = UploadQueueRegistry::new();
+        let (tx, mut rx) = unbounded_channel();
+        let context = ctx(&registry, &tx, "dropbox", "");
+        assert_eq!(
+            try_claim_and_enqueue(&job, &context).await,
+            ClaimResult::Queued
+        );
+        let queued = rx.try_recv().unwrap();
+        assert_eq!(
+            queued.correlation_id.as_deref(),
+            Some("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+        );
+        let outbox = crate::model::handoff::read_status_outbox(
+            root.path(),
+            "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+        )
+        .unwrap();
+        assert_eq!(outbox.state, crate::model::handoff::OutboxState::Queued);
+    }
+
+    #[tokio::test]
+    async fn scan_once_ignores_ams_handoff_dir() {
+        use crate::model::handoff::HANDOFF_DIRNAME;
+        let root = tempdir().unwrap();
+        let handoff = root.path().join(HANDOFF_DIRNAME);
+        fs::create_dir(&handoff).unwrap();
+        write_media(&handoff);
+        write_fertig_marker(&handoff, contact_marker()).unwrap();
+
+        let mut tracker = FolderStabilityTracker::new(0.0);
+        let registry = UploadQueueRegistry::new();
+        let (tx, _rx) = unbounded_channel();
+        let context = ctx(&registry, &tx, "dropbox", "");
+        let queued = scan_once(root.path(), &mut tracker, false, &context).await;
+        assert_eq!(queued, 0);
+        assert!(handoff.join(MARKER_FERTIG).is_file());
+    }
+
+    #[tokio::test]
+    async fn scan_once_with_valid_manifest_skips_stability_wait() {
+        let root = tempdir().unwrap();
+        let job = root.path().join("job-m");
+        fs::create_dir(&job).unwrap();
+        write_media(&job);
+        write_fertig_marker(&job, contact_marker()).unwrap();
+        write_valid_manifest(&job, 10);
+
+        let mut tracker = FolderStabilityTracker::new(30.0);
+        let registry = UploadQueueRegistry::new();
+        let (tx, _rx) = unbounded_channel();
+        let context = ctx(&registry, &tx, "dropbox", "");
+        let queued = scan_once(root.path(), &mut tracker, true, &context).await;
+        assert_eq!(queued, 1);
+        assert!(job.join(MARKER_PROCESSING).is_file());
+    }
+
     #[test]
     fn parse_helpers_match_legacy() {
         assert_eq!(parse_scan_interval("15"), 15);
@@ -776,5 +1041,9 @@ mod tests {
         assert!(!parse_stability_enabled("FALSE"));
         assert_eq!(parse_stability_seconds("20"), 20.0);
         assert_eq!(parse_stability_seconds("x"), 15.0);
+        assert!(!parse_manifest_required("false"));
+        assert!(!parse_manifest_required(""));
+        assert!(parse_manifest_required("true"));
+        assert!(parse_manifest_required("1"));
     }
 }

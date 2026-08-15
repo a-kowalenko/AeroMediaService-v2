@@ -8,6 +8,7 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use crate::cloud::custom_api::fetch_customer_as_kunde;
 use crate::events;
+use crate::model::handoff::peek_correlation_id;
 use crate::model::kunde::{normalize_phone, Kunde};
 use crate::model::marker::{
     load_marker_data, parse_api_marker_data, resolve_kunde_from_marker,
@@ -199,6 +200,7 @@ pub async fn retry_upload_from_history(
         dir_path: target_path.clone(),
         kunde: kunde.clone(),
         use_dropbox_client,
+        correlation_id: peek_correlation_id(&target_path),
     };
     if !registry.enqueue(jobs, job, false) {
         return Err(format!(
