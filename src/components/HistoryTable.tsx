@@ -25,6 +25,7 @@ import {
   formatManualStatusSummary,
   formatResendHistorySummary,
   historyDisplayName,
+  statusChannelFromLabel,
 } from "@/lib/utils";
 import type { HistoryEntry } from "@/lib/tauri";
 import {
@@ -541,7 +542,11 @@ export function HistoryTable() {
                         </p>
                       ) : null}
                     </div>
-                    <StatusChip status={item.overall_status} compact />
+                    <StatusChip
+                      status={item.overall_status}
+                      channel="overall"
+                      compact
+                    />
                   </div>
                 );
               }}
@@ -586,14 +591,24 @@ export function HistoryTable() {
                   Details
                 </h3>
                 <div className="flex flex-wrap gap-1.5">
-                  <StatusChip status={selected.status || "—"} title="Upload" />
+                  <StatusChip
+                    status={selected.status || "—"}
+                    channel="upload"
+                    title="Upload"
+                  />
                   <StatusChip
                     status={selected.email_status || "—"}
+                    channel="email"
                     title="E-Mail"
                   />
-                  <StatusChip status={selected.sms_status || "—"} title="SMS" />
+                  <StatusChip
+                    status={selected.sms_status || "—"}
+                    channel="sms"
+                    title="SMS"
+                  />
                   <StatusChip
                     status={selected.overall_status || "—"}
+                    channel="overall"
                     title="Gesamt"
                   />
                 </div>
@@ -610,7 +625,14 @@ export function HistoryTable() {
                   >
                     <span className="text-xs font-medium text-muted">{label}</span>
                     <span className="inline-flex items-start gap-2 break-all text-foreground">
-                      {isStatus ? <StatusChip status={value} /> : value}
+                      {isStatus ? (
+                        <StatusChip
+                          status={value}
+                          channel={statusChannelFromLabel(label)}
+                        />
+                      ) : (
+                        value
+                      )}
                     </span>
                   </div>
                 );
@@ -670,10 +692,21 @@ export function HistoryTable() {
       {selected ? (
         <div className="border-t border-border p-4 lg:hidden">
           <div className="mb-2 flex flex-wrap gap-1.5">
-            <StatusChip status={selected.overall_status || "—"} />
-            <StatusChip status={selected.status || "—"} title="Upload" />
-            <StatusChip status={selected.email_status || "—"} title="E-Mail" />
-            <StatusChip status={selected.sms_status || "—"} title="SMS" />
+            <StatusChip
+              status={selected.overall_status || "—"}
+              channel="overall"
+            />
+            <StatusChip status={selected.status || "—"} channel="upload" title="Upload" />
+            <StatusChip
+              status={selected.email_status || "—"}
+              channel="email"
+              title="E-Mail"
+            />
+            <StatusChip
+              status={selected.sms_status || "—"}
+              channel="sms"
+              title="SMS"
+            />
           </div>
           <div className="grid gap-2 text-sm">
             {DETAIL_ROWS.slice(0, 8).map(([label, valueOf]) => (

@@ -30,43 +30,106 @@ export function historyDisplayName(item: {
   return name || item.dir_name || "Unbekannt";
 }
 
+export type StatusChannel = "upload" | "email" | "sms" | "overall" | "generic";
+
 export type OverallStatusTone =
   | "error"
   | "warning"
   | "active"
   | "success"
+  | "skipped"
   | "muted";
 
-export function overallStatusTone(status: string): OverallStatusTone {
-  const lower = status.toLowerCase();
-  if (
+function normalizeStatus(status: string): string {
+  return (status || "").trim().toLowerCase();
+}
+
+function isErrorStatus(lower: string): boolean {
+  if (!lower || lower === "—" || lower === "-") return false;
+  return (
     lower.includes("problem") ||
     lower.includes("fehler") ||
     lower.includes("fehlgeschlagen") ||
-    lower.includes("abgebrochen")
-  ) {
-    return "error";
+    lower.includes("abgebrochen") ||
+    lower.includes("abgelehnt") ||
+    lower === "rejectd" ||
+    lower.includes("notdelivered")
+  );
+}
+
+function isActiveStatus(lower: string): boolean {
+  return (
+    lower.includes("in bearbeitung") ||
+    lower.includes("gestartet") ||
+    lower.includes("übertragen") ||
+    lower.includes("gepuffert") ||
+    lower.includes("akzeptiert") ||
+    lower.includes("wartet") ||
+    lower.includes("läuft")
+  );
+}
+
+/**
+ * Map history status labels to chip tones.
+ * Channel-aware: e.g. E-Mail „Gesendet“ = success, SMS „Gesendet“ = active (noch nicht zugestellt).
+ */
+export function overallStatusTone(
+  status: string,
+  channel: StatusChannel = "generic",
+): OverallStatusTone {
+  const raw = (status || "").trim();
+  if (!raw || raw === "—" || raw === "-") return "muted";
+  const lower = normalizeStatus(raw);
+
+  if (lower === "übersprungen" || lower === "uebersprungen") {
+    return "skipped";
   }
-  if (lower.includes("in bearbeitung") || lower.includes("gestartet")) {
-    return "active";
+  if (isErrorStatus(lower)) return "error";
+
+  // Exact / known labels first
+  switch (lower) {
+    case "komplett":
+    case "erfolgreich":
+    case "zugestellt":
+      return "success";
+    case "versendet":
+      // Overall: raus, SMS ggf. noch ohne DLR — positiv, nicht Warnung
+      return "success";
+    case "gesendet":
+      // E-Mail: beste Stufe. SMS: gesendet, aber noch nicht zugestellt.
+      if (channel === "sms") return "active";
+      return "success";
+    case "teilweise":
+      return "warning";
+    case "unbekannt":
+      return "muted";
+    default:
+      break;
   }
-  if (lower.includes("komplett")) {
+
+  if (isActiveStatus(lower)) return "active";
+
+  if (lower.includes("zugestellt") || lower.includes("erfolgreich")) {
     return "success";
   }
-  if (lower.includes("versendet")) {
+  if (lower.includes("komplett") || lower.includes("versendet")) {
     return "success";
   }
-  if (lower.includes("erfolgreich") || lower.includes("zugestellt")) {
+  // „Gesendet“ substring (e.g. longer messages) — same channel rule
+  if (lower.includes("gesendet")) {
+    if (channel === "sms") return "active";
     return "success";
   }
-  if (lower.includes("gesendet") || lower.includes("teilweise")) {
-    return "warning";
-  }
+  if (lower.includes("teilweise")) return "warning";
+
   return "muted";
 }
 
-export function overallStatusColor(status: string): string {
-  switch (overallStatusTone(status)) {
+export function overallStatusColor(
+  status: string,
+  channel: StatusChannel = "generic",
+): string {
+  switch (overallStatusTone(status, channel)) {
     case "error":
       return "var(--ams-destructive)";
     case "active":
@@ -75,9 +138,20 @@ export function overallStatusColor(status: string): string {
       return "var(--ams-success)";
     case "warning":
       return "var(--ams-warning)";
+    case "skipped":
     default:
       return "var(--ams-muted)";
   }
+}
+
+/** Infer channel from detail-row labels in HistoryTable. */
+export function statusChannelFromLabel(label: string): StatusChannel {
+  const lower = label.toLowerCase();
+  if (lower.includes("upload")) return "upload";
+  if (lower.includes("e-mail") || lower.includes("email")) return "email";
+  if (lower.includes("sms")) return "sms";
+  if (lower.includes("gesamt")) return "overall";
+  return "generic";
 }
 
 export const RETRYABLE_STATUSES = new Set(["Fehler", "Abgebrochen"]);
