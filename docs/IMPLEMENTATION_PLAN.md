@@ -66,7 +66,7 @@
 | Updater / CI / Plattformen | ✅ Phase 10 |
 | Polish (Wizard, Titlebar, History-Virtualisierung, Legacy-Migration) | ✅ Phase 11 |
 | Kundenaufnahme & Marker-Zuweisung | ✅ Phase 12 |
-| ATS↔AMS Handoff (Docs P0) | 🔄 Phase 13 — Spec: [`HANDOFF.md`](./HANDOFF.md) · P0 ✅ · P1 ✅ · P1b ✅ · P2 ✅ · P3 ✅ · P4 ✅ · P5+ offen |
+| ATS↔AMS Handoff (Docs P0) | 🔄 Phase 13 — Spec: [`HANDOFF.md`](./HANDOFF.md) · P0 ✅ · P1 ✅ · P1b ✅ · P2 ✅ · P3 ✅ · P4 ✅ · L4 UX ✅ · P5+ offen |
 
 **Nächste Phase:** 13 — ATS↔AMS Handoff Teilphase **P5+** (optional: SHA-256, strict extras, …)
 
@@ -612,6 +612,7 @@ Nur Phase 12. Danach cargo test && npm run tauri dev.
 - [x] **P2** — Bridge LAN: `GET /v1/health`, `POST /v1/customer/lookup` (Token-Auth; Customer-API nur in AMS)
 - [x] **P3** — Bridge: `GET /v1/jobs/{correlation_id}`, `POST /v1/handoff/ready` (Monitor wake, kein Upload-Bypass)
 - [x] **P4** — Bridge mDNS Discovery only (`_ams-bridge._tcp.local.`; Token manuell; keine SHA/strict)
+- [x] **L4 UX** — ATS Historie: AMS-Status-Chips + Phasen-Stepper, Last-Known in SQLite, Poll bei Terminal stoppen
 - [ ] **P5+** — optional: SHA-256, strict extras, …
 
 #### AMS-Gate (P1) — Kurz
@@ -716,4 +717,4 @@ Updater-Endpoint und Signing: siehe [`docs/RELEASE.md`](./RELEASE.md) (analog Ae
 | 10 | Updater / CI / Plattformen | ✅ |
 | 11 | Polish | ✅ |
 | 12 | Kundenaufnahme & Marker-Zuweisung | ✅ |
-| 13 | ATS↔AMS Handoff | 🔄 P0 ✅ · P1 ✅ · P1b ✅ · P2 ✅ · P3 ✅ · P4 ✅ · P5+ offen |
+| 13 | ATS↔AMS Handoff | 🔄 P0 ✅ · P1 ✅ · P1b ✅ · P2 ✅ · P3 ✅ · P4 ✅ · L4 UX ✅ · P5+ offen |

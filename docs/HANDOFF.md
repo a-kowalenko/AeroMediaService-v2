@@ -251,6 +251,7 @@ Windows-Config: UNC (`\\host\aktuell`), nicht nur `smb://`.
 | **P2** ✅ | Bridge: health + customer lookup | AMS Server, ATS Client |
 | **P3** ✅ | Bridge: job status + handoff/ready | beide |
 | **P4** ✅ | Bridge mDNS Discovery only (`_ams-bridge._tcp.local.`) | beide |
+| **L4 UX** ✅ | ATS Historie: Status-Chips/Stepper, Last-Known in SQLite, Poll stoppt bei Terminal | ATS |
 | **P5+** | optional: SHA-256, strict extras, … | nach Bedarf |
 
 **Eine Teilphase pro Agent-Session.** Upload-Worker nicht anfassen außer Status-Spiegel für Outbox, wo nötig.
