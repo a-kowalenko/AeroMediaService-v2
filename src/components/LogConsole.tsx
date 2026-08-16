@@ -82,16 +82,22 @@ export function LogConsole({ className }: Props) {
   }, [replaceEntries]);
 
   useEffect(() => {
-    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+    let unlisten: { current?: () => void } = {};
     listen<LogMessage>(LOG_MESSAGE, (event) => {
       appendEntry(event.payload);
     })
       .then((fn) => {
-        unlisten = fn;
+        if (cancelled) {
+          fn();
+          return;
+        }
+        unlisten.current = fn;
       })
       .catch(() => {});
     return () => {
-      unlisten?.();
+      cancelled = true;
+      unlisten.current?.();
     };
   }, [appendEntry]);
 

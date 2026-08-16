@@ -71,6 +71,23 @@ pub fn setting_default(key: &str) -> Option<&'static str> {
     }
 }
 
+/// Canonical Custom-API upload modes (legacy-compatible).
+pub const CUSTOM_API_UPLOAD_MODE_PROXIED: &str = "proxied_session";
+pub const CUSTOM_API_UPLOAD_MODE_DIRECT_DROPBOX: &str = "direct_dropbox_complete";
+
+/// Normalize stored/UI upload-mode values (alias `direct` → Manifest v1.1 path).
+pub fn normalize_custom_api_upload_mode(raw: &str) -> &'static str {
+    match raw.trim() {
+        "direct_dropbox_complete" | "direct" => CUSTOM_API_UPLOAD_MODE_DIRECT_DROPBOX,
+        _ => CUSTOM_API_UPLOAD_MODE_PROXIED,
+    }
+}
+
+/// Whether the mode uploads via Dropbox + Manifest v1.1.
+pub fn is_direct_dropbox_upload_mode(raw: &str) -> bool {
+    normalize_custom_api_upload_mode(raw) == CUSTOM_API_UPLOAD_MODE_DIRECT_DROPBOX
+}
+
 /// Non-secret keys imported from legacy QSettings (Phase 11).
 pub const LEGACY_SETTING_KEYS: &[&str] = &[
     "monitor_path",
@@ -158,6 +175,24 @@ mod tests {
         assert_eq!(setting_default("bridge_bind"), Some("0.0.0.0:8787"));
         assert_eq!(setting_default("selected_cloud_service"), Some("dropbox"));
         assert_eq!(setting_default("custom_api_upload_mode"), Some("proxied_session"));
+        assert_eq!(
+            normalize_custom_api_upload_mode("direct_dropbox_complete"),
+            CUSTOM_API_UPLOAD_MODE_DIRECT_DROPBOX
+        );
+        assert_eq!(
+            normalize_custom_api_upload_mode("direct"),
+            CUSTOM_API_UPLOAD_MODE_DIRECT_DROPBOX
+        );
+        assert_eq!(
+            normalize_custom_api_upload_mode("proxied_session"),
+            CUSTOM_API_UPLOAD_MODE_PROXIED
+        );
+        assert_eq!(
+            normalize_custom_api_upload_mode("unknown"),
+            CUSTOM_API_UPLOAD_MODE_PROXIED
+        );
+        assert!(is_direct_dropbox_upload_mode("direct"));
+        assert!(!is_direct_dropbox_upload_mode("proxied_session"));
         assert_eq!(setting_default("link_shortener_enabled"), Some("false"));
         assert_eq!(setting_default("shortener_expires_preset"), Some("permanent"));
         assert_eq!(setting_default("smtp_port"), Some("587"));

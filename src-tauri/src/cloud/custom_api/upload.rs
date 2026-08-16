@@ -12,7 +12,7 @@ use super::{
 };
 use crate::cloud::dropbox::{self, DropboxSessionResume};
 use crate::cloud::manifest::build_manifest_v11;
-use crate::cloud::traits::{should_skip_upload_file, CloudClient, CloudError};
+use crate::cloud::traits::{should_skip_upload_file, CloudError};
 use crate::events;
 use crate::model::kunde::Kunde;
 use crate::storage::config::runtime_setting;
@@ -49,8 +49,7 @@ impl CustomApiClient {
         ));
         self.set_last_kunde(Some(kunde.clone()));
         let upload_mode = runtime_setting("custom_api_upload_mode");
-        let upload_mode = upload_mode.trim();
-        if upload_mode == "direct_dropbox_complete" {
+        if crate::constants::is_direct_dropbox_upload_mode(&upload_mode) {
             logging::log_info("Custom API Upload-Modus: Dropbox + Manifest v1.1 (paths_only)");
             return self
                 .upload_direct_dropbox(local_dir_path, remote_base_path, control, kunde)
@@ -396,10 +395,11 @@ impl CustomApiClient {
             ));
         } else {
             control.wait_if_paused().await?;
+            // Server requires first chunk == CHUNK_BYTES when file_size > CHUNK_BYTES.
+            // tokio::fs::File::read may return a short read; fill the buffer fully.
             let first_len = (CHUNK_BYTES as u64).min(file_size) as usize;
-            let mut first = vec![0u8; first_len];
-            let n = fh.read(&mut first).await?;
-            first.truncate(n);
+            let first = read_exact_chunk(&mut fh, first_len, &file.name, "start").await?;
+            let n = first.len();
             let extra = vec![("expected_size", file_size.to_string())];
             let response = self
                 .post_session_multipart(
@@ -407,7 +407,7 @@ impl CustomApiClient {
                     session_id,
                     &file.name,
                     &extra,
-                    first.clone(),
+                    first,
                     control,
                 )
                 .await?;
@@ -421,13 +421,7 @@ impl CustomApiClient {
         let mut buf = vec![0u8; CHUNK_BYTES];
         while file_size.saturating_sub(off) > CHUNK_BYTES as u64 {
             control.wait_if_paused().await?;
-            let n = fh.read(&mut buf).await?;
-            if n != CHUNK_BYTES {
-                return Err(CloudError::Message(format!(
-                    "{}: append erwartete {CHUNK_BYTES} Bytes, erhalten {n}",
-                    file.name
-                )));
-            }
+            let n = read_exact_into(&mut fh, &mut buf, &file.name, "append").await?;
             if off + n as u64 >= file_size {
                 return Err(CloudError::Message(format!(
                     "{}: append wuerde letzten Block senden — stattdessen finish",
@@ -676,8 +670,15 @@ impl CustomApiClient {
             );
         }
 
-        if self.dropbox.connect().await.is_err() {
-            logging::log_error("Direct-Dropbox: Verbindung fehlgeschlagen.");
+        // Use connect_session(false): CloudClient::connect emits global status and would
+        // overwrite Custom-API "Verbunden" when Dropbox credentials are checked mid-upload.
+        if let Err(e) = self.dropbox.connect_session(false).await {
+            logging::log_error(&format!(
+                "Direct-Dropbox: Verbindung fehlgeschlagen ({e}). Bitte Custom-API-Dropbox-Konto (App Key/Secret + OAuth) in den Einstellungen verbinden."
+            ));
+            events::emit_status(format!(
+                "Fehler: Dropbox-Upload-Konto nicht verbunden ({e})"
+            ));
             return Ok(false);
         }
 
@@ -998,6 +999,41 @@ fn value_as_string(value: &Value) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
+/// Fill `buf` completely (loop past short `read`s). Errors if EOF comes early.
+async fn read_exact_into(
+    file: &mut tokio::fs::File,
+    buf: &mut [u8],
+    file_name: &str,
+    phase: &str,
+) -> Result<usize, CloudError> {
+    let need = buf.len();
+    if need == 0 {
+        return Ok(0);
+    }
+    let mut filled = 0usize;
+    while filled < need {
+        let n = file.read(&mut buf[filled..]).await?;
+        if n == 0 {
+            return Err(CloudError::Message(format!(
+                "{file_name}: {phase} erwartete {need} Bytes, erhalten {filled} (EOF)"
+            )));
+        }
+        filled += n;
+    }
+    Ok(filled)
+}
+
+async fn read_exact_chunk(
+    file: &mut tokio::fs::File,
+    len: usize,
+    file_name: &str,
+    phase: &str,
+) -> Result<Vec<u8>, CloudError> {
+    let mut buf = vec![0u8; len];
+    read_exact_into(file, &mut buf, file_name, phase).await?;
+    Ok(buf)
+}
+
 fn percent(current: u64, total: u64) -> i32 {
     if total == 0 {
         0
@@ -1025,6 +1061,7 @@ pub fn direct_init_payload(files: &[(String, u64, String)], folder_name: &str, k
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::io::AsyncWriteExt;
 
     #[test]
     fn direct_init_payload_includes_kunde_type_and_files() {
@@ -1045,5 +1082,39 @@ mod tests {
         assert_eq!(payload["metadata"]["type"], "Outside");
         assert_eq!(payload["metadata"]["first_name"], "Anna");
         assert_eq!(payload["metadata"]["base_folder_name"], "Job-1");
+    }
+
+    #[tokio::test]
+    async fn read_exact_chunk_fills_full_buffer_despite_partial_reads() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("chunk.bin");
+        let payload = vec![0xABu8; CHUNK_BYTES];
+        {
+            let mut f = tokio::fs::File::create(&path).await.unwrap();
+            f.write_all(&payload).await.unwrap();
+            f.flush().await.unwrap();
+        }
+        let mut f = tokio::fs::File::open(&path).await.unwrap();
+        let got = read_exact_chunk(&mut f, CHUNK_BYTES, "chunk.bin", "start")
+            .await
+            .unwrap();
+        assert_eq!(got.len(), CHUNK_BYTES);
+        assert_eq!(got, payload);
+    }
+
+    #[tokio::test]
+    async fn read_exact_into_errors_on_short_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("short.bin");
+        {
+            let mut f = tokio::fs::File::create(&path).await.unwrap();
+            f.write_all(&[1, 2, 3]).await.unwrap();
+        }
+        let mut f = tokio::fs::File::open(&path).await.unwrap();
+        let mut buf = [0u8; 8];
+        let err = read_exact_into(&mut f, &mut buf, "short.bin", "start")
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("erwartete 8 Bytes"));
     }
 }

@@ -88,6 +88,18 @@ const SHORTENER_PRESETS = [
   { value: "1y", label: "1 Jahr" },
 ] as const;
 
+/** Canonical Custom-API upload modes (legacy-compatible). */
+const CUSTOM_API_UPLOAD_MODE_PROXIED = "proxied_session";
+const CUSTOM_API_UPLOAD_MODE_DIRECT_DROPBOX = "direct_dropbox_complete";
+
+function normalizeCustomApiUploadMode(raw: string | null | undefined): string {
+  const v = (raw ?? "").trim();
+  if (v === CUSTOM_API_UPLOAD_MODE_DIRECT_DROPBOX || v === "direct") {
+    return CUSTOM_API_UPLOAD_MODE_DIRECT_DROPBOX;
+  }
+  return CUSTOM_API_UPLOAD_MODE_PROXIED;
+}
+
 function Field({ label, children }: { label: string; children: ReactNode }) {
   return (
     <div className="space-y-1.5">
@@ -479,7 +491,7 @@ export function SettingsDialog({
         custom_api_upload_endpoint: custom_api_upload_endpoint || "/upload",
         custom_api_share_endpoint: custom_api_share_endpoint || "/share",
         custom_api_health_endpoint: custom_api_health_endpoint || "/health",
-        custom_api_upload_mode: custom_api_upload_mode || "proxied_session",
+        custom_api_upload_mode: normalizeCustomApiUploadMode(custom_api_upload_mode),
       }));
 
       try {
@@ -651,7 +663,10 @@ export function SettingsDialog({
         "custom_api_health_endpoint",
         customApi.custom_api_health_endpoint.trim() || "/health",
       );
-      await saveSetting("custom_api_upload_mode", customApi.custom_api_upload_mode);
+      await saveSetting(
+        "custom_api_upload_mode",
+        normalizeCustomApiUploadMode(customApi.custom_api_upload_mode),
+      );
       await saveSetting("smtp_host", email.smtp_host.trim());
       await saveSetting("smtp_port", email.smtp_port.trim() || "587");
       await saveSetting("smtp_sender_addr", email.smtp_sender_addr.trim());
@@ -808,7 +823,10 @@ export function SettingsDialog({
         "custom_api_health_endpoint",
         customApi.custom_api_health_endpoint.trim() || "/health",
       );
-      await saveSetting("custom_api_upload_mode", customApi.custom_api_upload_mode);
+      await saveSetting(
+        "custom_api_upload_mode",
+        normalizeCustomApiUploadMode(customApi.custom_api_upload_mode),
+      );
 
       if (customApiStatus === "Verbunden") {
         const result = await disconnectCustomApi();
@@ -1269,11 +1287,13 @@ export function SettingsDialog({
                         </Field>
                         <Field label="Upload-Modus">
                           <Select
-                            value={customApi.custom_api_upload_mode}
+                            value={normalizeCustomApiUploadMode(
+                              customApi.custom_api_upload_mode,
+                            )}
                             onValueChange={(v) =>
                               setCustomApi((p) => ({
                                 ...p,
-                                custom_api_upload_mode: v,
+                                custom_api_upload_mode: normalizeCustomApiUploadMode(v),
                               }))
                             }
                           >
@@ -1281,13 +1301,22 @@ export function SettingsDialog({
                               <SelectValue />
                             </SelectTrigger>
                             <SelectContent>
-                              <SelectItem value="proxied_session">
-                                proxied_session
+                              <SelectItem value={CUSTOM_API_UPLOAD_MODE_PROXIED}>
+                                Proxy Session Upload
                               </SelectItem>
-                              <SelectItem value="direct">direct</SelectItem>
+                              <SelectItem value={CUSTOM_API_UPLOAD_MODE_DIRECT_DROPBOX}>
+                                Dropbox Upload + Manifest v1.1
+                              </SelectItem>
                             </SelectContent>
                           </Select>
                         </Field>
+                        {normalizeCustomApiUploadMode(customApi.custom_api_upload_mode) ===
+                          CUSTOM_API_UPLOAD_MODE_DIRECT_DROPBOX && (
+                          <p className="text-xs text-muted">
+                            Benötigt das Custom-API-Dropbox-Konto (App Key/Secret + OAuth)
+                            unten. Ohne Verbindung schlägt der Upload fehl.
+                          </p>
+                        )}
                         <p className="text-xs text-muted">
                           Status: {customApiStatus}
                         </p>

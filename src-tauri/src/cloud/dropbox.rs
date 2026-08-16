@@ -112,10 +112,6 @@ impl DropboxClient {
         }
     }
 
-    fn should_emit_status(&self) -> bool {
-        self.keys.app_key == "db_app_key"
-    }
-
     fn token(&self) -> Option<String> {
         self.access_token
             .lock()
@@ -129,6 +125,11 @@ impl DropboxClient {
         }
     }
 
+    /// Refresh access token from keyring credentials.
+    ///
+    /// Does **not** emit global connection-status events: callers such as
+    /// `connection_status_verified` (Settings checks both native and custom)
+    /// and mid-upload `ensure_token` must not overwrite the active cloud status.
     async fn refresh_access_token(&self) -> Result<String, CloudError> {
         let app_key = secrets::get_secret(self.keys.app_key)
             .map_err(|e| CloudError::Message(e.to_string()))?
@@ -142,17 +143,11 @@ impl DropboxClient {
 
         let (Some(app_key), Some(app_secret)) = (app_key, app_secret) else {
             logging::log_warn("App Key oder App Secret für Dropbox fehlen.");
-            if self.should_emit_status() {
-                events::emit_connection_status("Fehler: App Key/Secret fehlt");
-            }
             return Err(CloudError::NotConnected(
                 "App Key oder App Secret für Dropbox fehlen.".into(),
             ));
         };
         let Some(refresh_token) = refresh_token else {
-            if self.should_emit_status() {
-                events::emit_connection_status("Nicht verbunden");
-            }
             return Err(CloudError::NotConnected(
                 "Kein Dropbox-Refresh-Token im Keyring.".into(),
             ));
@@ -180,9 +175,6 @@ impl DropboxClient {
                 let _ = secrets::delete_secret(self.keys.refresh_token);
                 self.set_token(None);
                 self.connection_verified.store(false, Ordering::SeqCst);
-                if self.should_emit_status() {
-                    events::emit_connection_status("Nicht verbunden");
-                }
             }
             return Err(CloudError::Http(format!(
                 "Token-Refresh fehlgeschlagen: {status} {body}"
@@ -276,6 +268,13 @@ impl DropboxClient {
                     Err(e)
                 }
             },
+            Err(CloudError::NotConnected(msg)) if msg.contains("App Key") => {
+                self.connection_verified.store(false, Ordering::SeqCst);
+                if emit_status {
+                    events::emit_connection_status("Fehler: App Key/Secret fehlt");
+                }
+                Err(CloudError::NotConnected(msg))
+            }
             Err(CloudError::NotConnected(msg)) if msg.contains("Refresh-Token") => {
                 self.connection_verified.store(false, Ordering::SeqCst);
                 if emit_status {
@@ -313,7 +312,23 @@ impl DropboxClient {
     }
 
     /// Live status check (`verify=true` in legacy).
+    /// Does not emit connection-status events and avoids noisy keyring warnings
+    /// when credentials are simply absent (e.g. Settings verifying the inactive cloud).
     pub async fn connection_status_verified(&self) -> String {
+        let has_app_creds = secrets::get_secret(self.keys.app_key)
+            .ok()
+            .flatten()
+            .filter(|s| !s.is_empty())
+            .is_some()
+            && secrets::get_secret(self.keys.app_secret)
+                .ok()
+                .flatten()
+                .filter(|s| !s.is_empty())
+                .is_some();
+        if !has_app_creds {
+            return "Nicht verbunden".into();
+        }
+
         if self.token().is_none() {
             if let Ok(token) = self.refresh_access_token().await {
                 self.set_token(Some(token.clone()));
