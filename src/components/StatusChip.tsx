@@ -19,10 +19,20 @@ type Props = {
   status: string;
   /** Channel changes meaning of labels like „Gesendet“ (E-Mail OK vs. SMS unterwegs). */
   channel?: StatusChannel;
+  /** Show short channel prefix (Upload / E-Mail / SMS / Gesamt). */
+  showChannel?: boolean;
   className?: string;
   title?: string;
   compact?: boolean;
   onClick?: (e: MouseEvent<HTMLButtonElement | HTMLSpanElement>) => void;
+};
+
+const CHANNEL_LABEL: Record<StatusChannel, string | null> = {
+  upload: "Upload",
+  email: "E-Mail",
+  sms: "SMS",
+  overall: "Gesamt",
+  generic: null,
 };
 
 function StatusIcon({
@@ -90,10 +100,23 @@ function toneHint(tone: OverallStatusTone, channel: StatusChannel, label: string
   return label;
 }
 
+function describeChip(
+  channel: StatusChannel,
+  label: string,
+  tone: OverallStatusTone,
+  title?: string,
+): string {
+  if (title) return title;
+  const hint = toneHint(tone, channel, label);
+  const channelName = CHANNEL_LABEL[channel];
+  return channelName ? `${channelName}: ${hint}` : hint;
+}
+
 /** Compact history / pipeline status chip (ATS handoff-chip style). */
 export function StatusChip({
   status,
   channel = "generic",
+  showChannel = false,
   className,
   title,
   compact = false,
@@ -101,6 +124,7 @@ export function StatusChip({
 }: Props) {
   const label = (status || "—").trim() || "—";
   const tone = overallStatusTone(label, channel);
+  const channelName = CHANNEL_LABEL[channel];
   const prev = useRef({ label, tone });
   const [successFlash, setSuccessFlash] = useState(false);
 
@@ -116,7 +140,7 @@ export function StatusChip({
     setSuccessFlash(false);
   }, [label, tone]);
 
-  const tip = title ?? toneHint(tone, channel, label);
+  const tip = describeChip(channel, label, tone, title);
 
   const classes = cn(
     "inline-flex max-w-full items-center gap-1 truncate rounded border px-1.5 py-0.5 text-[10px] font-medium leading-none transition-colors duration-300",
@@ -130,21 +154,53 @@ export function StatusChip({
   const body = (
     <>
       <StatusIcon tone={tone} channel={channel} />
+      {showChannel && channelName ? (
+        <span className="shrink-0 opacity-70">{channelName}</span>
+      ) : null}
       <span className={cn("truncate", compact && "max-w-[7rem]")}>{label}</span>
     </>
   );
 
   if (onClick) {
     return (
-      <button type="button" className={classes} title={tip} onClick={onClick}>
+      <button
+        type="button"
+        className={classes}
+        title={tip}
+        aria-label={tip}
+        onClick={onClick}
+      >
         {body}
       </button>
     );
   }
 
   return (
-    <span className={classes} title={tip}>
+    <span className={classes} title={tip} aria-label={tip} role="status">
       {body}
     </span>
+  );
+}
+
+/** Upload / E-Mail / SMS / Gesamt chip row for history detail panes. */
+export function HistoryStatusChips({
+  entry,
+  className,
+}: {
+  entry: {
+    status?: string;
+    email_status?: string;
+    sms_status?: string;
+    overall_status?: string;
+  };
+  className?: string;
+}) {
+  return (
+    <div className={cn("flex flex-wrap gap-1.5", className)} role="group" aria-label="Status">
+      <StatusChip status={entry.status || "—"} channel="upload" showChannel />
+      <StatusChip status={entry.email_status || "—"} channel="email" showChannel />
+      <StatusChip status={entry.sms_status || "—"} channel="sms" showChannel />
+      <StatusChip status={entry.overall_status || "—"} channel="overall" showChannel />
+    </div>
   );
 }

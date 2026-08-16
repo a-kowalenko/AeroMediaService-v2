@@ -52,7 +52,7 @@ function isErrorStatus(lower: string): boolean {
     lower.includes("fehlgeschlagen") ||
     lower.includes("abgebrochen") ||
     lower.includes("abgelehnt") ||
-    lower === "rejectd" ||
+    lower.includes("reject") ||
     lower.includes("notdelivered")
   );
 }
@@ -142,16 +142,6 @@ export function overallStatusColor(
     default:
       return "var(--ams-muted)";
   }
-}
-
-/** Infer channel from detail-row labels in HistoryTable. */
-export function statusChannelFromLabel(label: string): StatusChannel {
-  const lower = label.toLowerCase();
-  if (lower.includes("upload")) return "upload";
-  if (lower.includes("e-mail") || lower.includes("email")) return "email";
-  if (lower.includes("sms")) return "sms";
-  if (lower.includes("gesamt")) return "overall";
-  return "generic";
 }
 
 export const RETRYABLE_STATUSES = new Set(["Fehler", "Abgebrochen"]);

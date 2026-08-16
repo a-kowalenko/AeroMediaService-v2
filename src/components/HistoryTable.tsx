@@ -9,7 +9,7 @@ import {
   Trash2,
 } from "lucide-react";
 import { ResendNotificationsDialog } from "./ResendNotificationsDialog";
-import { StatusChip } from "./StatusChip";
+import { HistoryStatusChips, StatusChip } from "./StatusChip";
 import { VirtualList } from "./VirtualList";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -25,7 +25,6 @@ import {
   formatManualStatusSummary,
   formatResendHistorySummary,
   historyDisplayName,
-  statusChannelFromLabel,
 } from "@/lib/utils";
 import type { HistoryEntry } from "@/lib/tauri";
 import {
@@ -48,12 +47,9 @@ const MANUAL_ACTIONS: Array<[string, string]> = [
   ["Problem auflösen", "Problem auflösen"],
 ];
 
+/** Detail fields — pipeline status lives in HistoryStatusChips only. */
 const DETAIL_ROWS: Array<[string, (item: HistoryEntry) => string]> = [
   ["Verzeichnis", (i) => i.dir_name || "—"],
-  ["Upload-Status", (i) => i.status || "—"],
-  ["E-Mail-Status", (i) => i.email_status || "—"],
-  ["SMS-Status", (i) => i.sms_status || "—"],
-  ["Gesamtstatus", (i) => i.overall_status || "—"],
   ["E-Mail", (i) => i.email || "—"],
   ["Telefon", (i) => i.phone || "—"],
   ["Download-Link", (i) => i.share_link || "—"],
@@ -100,6 +96,8 @@ export function HistoryTable() {
   const [resendOpen, setResendOpen] = useState(false);
   const [sandboxWarnings, setSandboxWarnings] = useState<string[]>([]);
   const listHostRef = useRef<HTMLDivElement>(null);
+  const statusMenuRef = useRef<HTMLDivElement>(null);
+  const moreMenuRef = useRef<HTMLDivElement>(null);
   const [listHeight, setListHeight] = useState(360);
 
   useEffect(() => {
@@ -136,6 +134,35 @@ export function HistoryTable() {
     };
   }, []);
 
+  useEffect(() => {
+    if (!statusMenuOpen && !moreOpen) return;
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") {
+        setStatusMenuOpen(false);
+        setMoreOpen(false);
+      }
+    }
+    function onPointerDown(e: MouseEvent) {
+      const target = e.target as Node;
+      if (
+        statusMenuOpen &&
+        statusMenuRef.current &&
+        !statusMenuRef.current.contains(target)
+      ) {
+        setStatusMenuOpen(false);
+      }
+      if (moreOpen && moreMenuRef.current && !moreMenuRef.current.contains(target)) {
+        setMoreOpen(false);
+      }
+    }
+    document.addEventListener("keydown", onKey);
+    document.addEventListener("mousedown", onPointerDown);
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      document.removeEventListener("mousedown", onPointerDown);
+    };
+  }, [statusMenuOpen, moreOpen]);
+
   const selected = useMemo(
     () => items.find((item) => item.id === selectedId) ?? null,
     [items, selectedId],
@@ -153,6 +180,41 @@ export function HistoryTable() {
   const pageCount = Math.max(1, Math.ceil(total / pageSize) || 1);
   const canRetry = Boolean(selected && canRetryUpload(selected.status));
   const canResend = Boolean(selected && canResendNotifications(selected.status));
+
+  const retryTitle = (() => {
+    if (actionBusy) return "Bitte warten…";
+    if (!selected) return "Eintrag auswählen, um erneut hochzuladen";
+    if (!canRetryUpload(selected.status)) {
+      return `Nicht verfügbar bei Status „${selected.status || "—"}“ (nur Fehler/Abgebrochen)`;
+    }
+    if (!connected) return "Keine Cloud-Verbindung — bitte zuerst verbinden";
+    return "Archivierten Auftrag erneut in die Upload-Warteschlange legen";
+  })();
+
+  const resendTitle = (() => {
+    if (actionBusy) return "Bitte warten…";
+    if (!selected) return "Eintrag auswählen, um erneut zu senden";
+    if (!canResendNotifications(selected.status)) {
+      return `Nicht verfügbar bei Status „${selected.status || "—"}“ (nur erfolgreiche Uploads)`;
+    }
+    return "E-Mail/SMS für einen erfolgreichen Upload erneut senden";
+  })();
+
+  const statusMenuTitle = (() => {
+    if (actionBusy) return "Bitte warten…";
+    if (!selected) return "Eintrag auswählen, um den Status zu setzen";
+    return "Gesamtstatus manuell setzen";
+  })();
+
+  const deleteTitle = selectedId
+    ? "Ausgewählten Eintrag löschen"
+    : "Eintrag auswählen, um zu löschen";
+
+  const emptyMessage = loading
+    ? "Historie wird geladen…"
+    : search.trim()
+      ? "Keine Treffer für die Suche."
+      : "Keine Historieneinträge.";
 
   async function onDeleteSelected() {
     if (!selectedId) return;
@@ -356,10 +418,25 @@ export function HistoryTable() {
     }
   }
 
+  function renderDetailRows(rows: typeof DETAIL_ROWS) {
+    return rows.map(([label, valueOf]) => {
+      const value = valueOf(selected!);
+      return (
+        <div
+          key={label}
+          className="grid grid-cols-[7.5rem_1fr] gap-2 border-b border-border/40 py-1.5 last:border-b-0 lg:grid-cols-[9.5rem_1fr]"
+        >
+          <span className="text-xs font-medium text-muted">{label}</span>
+          <span className="break-all text-foreground">{value}</span>
+        </div>
+      );
+    });
+  }
+
   return (
     <section className="flex h-full min-h-0 flex-col">
       <div className="flex flex-wrap items-center gap-2 border-b border-border/70 bg-card-elevated/40 px-4 py-3">
-        <div className="min-w-0 flex-1">
+        <div className="min-w-0 flex-1 basis-full sm:basis-auto">
           <h2 className="text-sm font-semibold tracking-tight text-foreground">
             Upload-Historie
           </h2>
@@ -376,105 +453,122 @@ export function HistoryTable() {
             placeholder="Suchen…"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
+            aria-label="Historie durchsuchen"
           />
         </div>
 
-        <Button
-          type="button"
-          variant="secondary"
-          size="sm"
-          disabled={!canRetry || actionBusy}
-          title="Archivierten Auftrag erneut in die Upload-Warteschlange legen"
-          onClick={() => void onRetry()}
-        >
-          <RefreshCw className="h-3.5 w-3.5" />
-          Erneut
-        </Button>
-        <Button
-          type="button"
-          variant="secondary"
-          size="sm"
-          disabled={!canResend || actionBusy}
-          title="E-Mail/SMS für einen erfolgreichen Upload erneut senden"
-          onClick={() => void onOpenResend()}
-        >
-          Erneut senden…
-        </Button>
-        <div className="relative">
+        <div className="flex flex-wrap items-center gap-2">
           <Button
             type="button"
             variant="secondary"
             size="sm"
-            disabled={!selected || actionBusy}
-            title="Gesamtstatus manuell setzen"
-            onClick={() => {
-              setMoreOpen(false);
-              setStatusMenuOpen((open) => !open);
-            }}
+            disabled={!canRetry || actionBusy}
+            title={retryTitle}
+            onClick={() => void onRetry()}
           >
-            Status
-            <MoreHorizontal className="h-3.5 w-3.5" />
+            <RefreshCw className="h-3.5 w-3.5" />
+            Erneut
           </Button>
-          {statusMenuOpen && selected ? (
-            <div className="absolute right-0 z-20 mt-1 min-w-[14rem] overflow-hidden rounded-lg border border-border bg-card py-1 shadow-lg">
-              {MANUAL_ACTIONS.map(([action, label]) => (
-                <button
-                  key={action}
-                  type="button"
-                  className="block w-full px-3 py-2 text-left text-sm text-foreground hover:bg-primary-soft"
-                  onClick={() => void onManualStatus(action)}
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
-          ) : null}
-        </div>
-        <div className="relative">
           <Button
             type="button"
-            variant="ghost"
+            variant="secondary"
             size="sm"
-            disabled={actionBusy}
-            title="Weitere Aktionen"
-            onClick={() => {
-              setStatusMenuOpen(false);
-              setMoreOpen((open) => !open);
-            }}
+            disabled={!canResend || actionBusy}
+            title={resendTitle}
+            onClick={() => void onOpenResend()}
           >
-            <MoreHorizontal className="h-3.5 w-3.5" />
+            Erneut senden…
           </Button>
-          {moreOpen ? (
-            <div className="absolute right-0 z-20 mt-1 min-w-[12rem] overflow-hidden rounded-lg border border-border bg-card py-1 shadow-lg">
-              <button
-                type="button"
-                className="block w-full px-3 py-2 text-left text-sm text-foreground hover:bg-primary-soft"
-                onClick={() => void onSyncSms()}
+          <div className="relative" ref={statusMenuRef}>
+            <Button
+              type="button"
+              variant="secondary"
+              size="sm"
+              disabled={!selected || actionBusy}
+              title={statusMenuTitle}
+              aria-expanded={statusMenuOpen}
+              aria-haspopup="menu"
+              onClick={() => {
+                setMoreOpen(false);
+                setStatusMenuOpen((open) => !open);
+              }}
+            >
+              Status
+              <MoreHorizontal className="h-3.5 w-3.5" />
+            </Button>
+            {statusMenuOpen && selected ? (
+              <div
+                role="menu"
+                className="absolute right-0 z-20 mt-1 min-w-[14rem] overflow-hidden rounded-lg border border-border bg-card py-1 shadow-lg"
               >
-                SMS-Journal abgleichen
-              </button>
-              <button
-                type="button"
-                className="block w-full px-3 py-2 text-left text-sm text-destructive hover:bg-destructive/10"
-                disabled={total === 0}
-                onClick={() => void onDeleteAll()}
+                {MANUAL_ACTIONS.map(([action, label]) => (
+                  <button
+                    key={action}
+                    type="button"
+                    role="menuitem"
+                    className="block w-full px-3 py-2 text-left text-sm text-foreground hover:bg-primary-soft"
+                    onClick={() => void onManualStatus(action)}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            ) : null}
+          </div>
+          <div className="relative" ref={moreMenuRef}>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              disabled={actionBusy}
+              title="Weitere Aktionen"
+              aria-expanded={moreOpen}
+              aria-haspopup="menu"
+              onClick={() => {
+                setStatusMenuOpen(false);
+                setMoreOpen((open) => !open);
+              }}
+            >
+              <MoreHorizontal className="h-3.5 w-3.5" />
+            </Button>
+            {moreOpen ? (
+              <div
+                role="menu"
+                className="absolute right-0 z-20 mt-1 min-w-[12rem] overflow-hidden rounded-lg border border-border bg-card py-1 shadow-lg"
               >
-                Alle löschen
-              </button>
-            </div>
-          ) : null}
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="block w-full px-3 py-2 text-left text-sm text-foreground hover:bg-primary-soft"
+                  onClick={() => void onSyncSms()}
+                >
+                  SMS-Journal abgleichen
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="block w-full px-3 py-2 text-left text-sm text-destructive hover:bg-destructive/10 disabled:opacity-50"
+                  disabled={total === 0}
+                  onClick={() => void onDeleteAll()}
+                >
+                  Alle löschen
+                </button>
+              </div>
+            ) : null}
+          </div>
+          <Button
+            type="button"
+            variant="secondary"
+            size="sm"
+            className="border-destructive/30 bg-destructive/10 text-destructive hover:bg-destructive/15 hover:text-destructive"
+            disabled={!selectedId}
+            onClick={() => void onDeleteSelected()}
+            title={deleteTitle}
+            aria-label={deleteTitle}
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+          </Button>
         </div>
-        <Button
-          type="button"
-          variant="secondary"
-          size="sm"
-          className="border-destructive/30 bg-destructive/10 text-destructive hover:bg-destructive/15 hover:text-destructive"
-          disabled={!selectedId}
-          onClick={() => void onDeleteSelected()}
-          title="Ausgewählten Eintrag löschen"
-        >
-          <Trash2 className="h-3.5 w-3.5" />
-        </Button>
       </div>
 
       {error ? (
@@ -495,62 +589,64 @@ export function HistoryTable() {
               <span>Status</span>
             </div>
             <div ref={listHostRef} className="min-h-0 flex-1">
-            <VirtualList
-              items={items}
-              rowHeight={48}
-              height={listHeight}
-              getKey={(item) => item.id}
-              className="bg-card/40"
-              empty={
-                <div className="px-3 py-10 text-center text-sm text-muted">
-                  Keine Historieneinträge.
-                </div>
-              }
-              renderRow={(item) => {
-                const active = item.id === selectedId;
-                return (
-                  <div
-                    role="button"
-                    tabIndex={0}
-                    className={cn(
-                      "grid h-full cursor-pointer grid-cols-[7.5rem_1fr_auto] items-center gap-2 px-3 text-sm transition-colors",
-                      active
-                        ? "bg-[var(--ams-row-active)]"
-                        : "hover:bg-[var(--ams-row-hover)]",
-                    )}
-                    onClick={() => select(item.id)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter" || e.key === " ") {
-                        e.preventDefault();
-                        select(item.id);
-                      }
-                    }}
-                  >
-                    <span className="whitespace-nowrap text-xs text-muted">
-                      {formatHistoryDate(item.last_updated)}
-                    </span>
-                    <div className="min-w-0">
-                      <p className="truncate font-medium text-foreground">
-                        {item.display_name || historyDisplayName(item)}
-                      </p>
-                      {item.combined_error ? (
-                        <p
-                          className="truncate text-[11px] text-destructive"
-                          title={item.combined_error}
-                        >
-                          {item.combined_error}
-                        </p>
-                      ) : null}
-                    </div>
-                    <StatusChip
-                      status={item.overall_status}
-                      channel="overall"
-                      compact
-                    />
+              <VirtualList
+                items={items}
+                rowHeight={48}
+                height={listHeight}
+                getKey={(item) => item.id}
+                className="bg-card/40"
+                empty={
+                  <div className="px-3 py-10 text-center text-sm text-muted">
+                    {emptyMessage}
                   </div>
-                );
-              }}
-            />
+                }
+                renderRow={(item) => {
+                  const active = item.id === selectedId;
+                  return (
+                    <div
+                      role="button"
+                      tabIndex={0}
+                      aria-selected={active}
+                      aria-label={`${item.display_name || historyDisplayName(item)}, Status ${item.overall_status || "—"}`}
+                      className={cn(
+                        "grid h-full cursor-pointer grid-cols-[7.5rem_1fr_auto] items-center gap-2 px-3 text-sm transition-colors",
+                        active
+                          ? "bg-[var(--ams-row-active)]"
+                          : "hover:bg-[var(--ams-row-hover)]",
+                      )}
+                      onClick={() => select(item.id)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault();
+                          select(item.id);
+                        }
+                      }}
+                    >
+                      <span className="whitespace-nowrap text-xs text-muted">
+                        {formatHistoryDate(item.last_updated)}
+                      </span>
+                      <div className="min-w-0">
+                        <p className="truncate font-medium text-foreground">
+                          {item.display_name || historyDisplayName(item)}
+                        </p>
+                        {item.combined_error ? (
+                          <p
+                            className="truncate text-[11px] text-destructive"
+                            title={item.combined_error}
+                          >
+                            {item.combined_error}
+                          </p>
+                        ) : null}
+                      </div>
+                      <StatusChip
+                        status={item.overall_status}
+                        channel="overall"
+                        compact
+                      />
+                    </div>
+                  );
+                }}
+              />
             </div>
           </div>
 
@@ -590,53 +686,9 @@ export function HistoryTable() {
                 <h3 className="m-0 text-sm font-semibold tracking-tight text-foreground">
                   Details
                 </h3>
-                <div className="flex flex-wrap gap-1.5">
-                  <StatusChip
-                    status={selected.status || "—"}
-                    channel="upload"
-                    title="Upload"
-                  />
-                  <StatusChip
-                    status={selected.email_status || "—"}
-                    channel="email"
-                    title="E-Mail"
-                  />
-                  <StatusChip
-                    status={selected.sms_status || "—"}
-                    channel="sms"
-                    title="SMS"
-                  />
-                  <StatusChip
-                    status={selected.overall_status || "—"}
-                    channel="overall"
-                    title="Gesamt"
-                  />
-                </div>
+                <HistoryStatusChips entry={selected} />
               </div>
-              {DETAIL_ROWS.map(([label, valueOf]) => {
-                const value = valueOf(selected);
-                const isStatus =
-                  label.toLowerCase().includes("status") &&
-                  label !== "Manueller Status";
-                return (
-                  <div
-                    key={label}
-                    className="grid grid-cols-[9.5rem_1fr] gap-2 border-b border-border/40 py-1.5 last:border-b-0"
-                  >
-                    <span className="text-xs font-medium text-muted">{label}</span>
-                    <span className="inline-flex items-start gap-2 break-all text-foreground">
-                      {isStatus ? (
-                        <StatusChip
-                          status={value}
-                          channel={statusChannelFromLabel(label)}
-                        />
-                      ) : (
-                        value
-                      )}
-                    </span>
-                  </div>
-                );
-              })}
+              {renderDetailRows(DETAIL_ROWS)}
 
               <div className="mt-2 grid gap-3 border-t border-border pt-3">
                 <h4 className="m-0 text-[11px] font-semibold tracking-[0.08em] text-muted uppercase">
@@ -688,36 +740,14 @@ export function HistoryTable() {
         </aside>
       </div>
 
-      {/* Narrow screens: detail below list */}
       {selected ? (
         <div className="border-t border-border p-4 lg:hidden">
-          <div className="mb-2 flex flex-wrap gap-1.5">
-            <StatusChip
-              status={selected.overall_status || "—"}
-              channel="overall"
-            />
-            <StatusChip status={selected.status || "—"} channel="upload" title="Upload" />
-            <StatusChip
-              status={selected.email_status || "—"}
-              channel="email"
-              title="E-Mail"
-            />
-            <StatusChip
-              status={selected.sms_status || "—"}
-              channel="sms"
-              title="SMS"
-            />
-          </div>
+          <h3 className="mb-2 text-sm font-semibold tracking-tight text-foreground">
+            Details
+          </h3>
+          <HistoryStatusChips entry={selected} className="mb-3" />
           <div className="grid gap-2 text-sm">
-            {DETAIL_ROWS.slice(0, 8).map(([label, valueOf]) => (
-              <div
-                key={label}
-                className="grid grid-cols-[7.5rem_1fr] gap-2 border-b border-border/40 py-1"
-              >
-                <span className="text-xs text-muted">{label}</span>
-                <span className="break-all">{valueOf(selected)}</span>
-              </div>
-            ))}
+            {renderDetailRows(DETAIL_ROWS)}
           </div>
         </div>
       ) : null}
