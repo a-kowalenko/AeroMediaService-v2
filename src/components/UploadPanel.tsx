@@ -22,6 +22,8 @@ import {
   type QueueSnapshotItem,
 } from "@/lib/tauri";
 import { cn } from "@/lib/utils";
+import { showAppToast } from "@/lib/toast";
+import { useUiStore } from "@/store/uiStore";
 
 const EMPTY_PROGRESS: ByteProgress = { percent: 0, current: 0, total: 0 };
 
@@ -49,6 +51,7 @@ export function UploadPanel({ className, compact = false }: Props) {
   const [total, setTotal] = useState<ByteProgress>(EMPTY_PROGRESS);
   const [queue, setQueue] = useState<QueueSnapshotItem[]>([]);
   const [busy, setBusy] = useState(false);
+  const confirm = useUiStore((s) => s.confirm);
 
   useEffect(() => {
     getUploadQueue().then(setQueue).catch(() => {});
@@ -66,8 +69,14 @@ export function UploadPanel({ className, compact = false }: Props) {
     add<ByteProgress>(UPLOAD_PROGRESS_FILE, setFile);
     add<ByteProgress>(UPLOAD_PROGRESS_TOTAL, setTotal);
     add<QueueSnapshotItem[]>(UPLOAD_QUEUE_CHANGED, setQueue);
-    add<string>(UPLOAD_FINISHED, (msg) => setStatus(`Erfolgreich: ${msg}`));
-    add<string>(UPLOAD_FAILED, (msg) => setStatus(`Fehler: ${msg}`));
+    add<string>(UPLOAD_FINISHED, (msg) => {
+      setStatus(`Erfolgreich: ${msg}`);
+      showAppToast(msg, { tone: "success", title: "Upload fertig" });
+    });
+    add<string>(UPLOAD_FAILED, (msg) => {
+      setStatus(`Fehler: ${msg}`);
+      showAppToast(msg, { tone: "error", title: "Upload fehlgeschlagen" });
+    });
     return () => {
       unlisteners.forEach((fn) => fn());
     };
@@ -82,12 +91,27 @@ export function UploadPanel({ className, compact = false }: Props) {
     }
   }
 
+  async function onCancel() {
+    const ok = await confirm("Laufenden Upload wirklich abbrechen?", {
+      title: "Upload abbrechen",
+      primaryLabel: "Abbrechen",
+      destructive: true,
+    });
+    if (!ok) return;
+    await run(cancelUpload);
+  }
+
+  const queueLabel =
+    queue.length === 0
+      ? "Keine Aufträge"
+      : `${queue.length} in Warteschlange`;
+
   return (
     <Panel
       className={className}
       compact={compact}
       title="Upload"
-      description={active ? "Job aktiv" : "Bereit"}
+      description={active ? status : queueLabel}
       actions={
         <span
           className={cn(
@@ -100,72 +124,83 @@ export function UploadPanel({ className, compact = false }: Props) {
           <span
             className={cn(
               "h-1.5 w-1.5 rounded-full",
-              active ? "bg-primary" : "bg-muted",
+              active ? "bg-primary ams-chip-active" : "bg-muted",
             )}
           />
           {active ? "Aktiv" : "Idle"}
         </span>
       }
     >
-      <div className="mb-3 flex items-start gap-2 text-sm text-muted">
-        <CloudUpload className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
-        <span className="min-w-0 leading-snug">{status}</span>
-      </div>
+      {!active ? (
+        <div className="mb-1 flex items-start gap-2 text-sm text-muted">
+          <CloudUpload className="mt-0.5 h-4 w-4 shrink-0 text-primary/70" />
+          <span className="min-w-0 leading-snug">
+            {queue.length === 0
+              ? "Bereit — wartet auf den nächsten Auftrag."
+              : `${queue.length} Auftrag${queue.length === 1 ? "" : "e"} in der Warteschlange.`}
+          </span>
+        </div>
+      ) : (
+        <>
+          <div className="mb-3 flex items-start gap-2 text-sm text-muted">
+            <CloudUpload className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
+            <span className="min-w-0 leading-snug">{status}</span>
+          </div>
 
-      <div className="space-y-3">
-        <ProgressBar
-          percent={file.percent}
-          label={`Datei · ${formatBytes(file.current)} / ${formatBytes(file.total)}`}
-          detail={`${Math.round(file.percent)}%`}
-        />
-        <ProgressBar
-          percent={total.percent}
-          label={`Gesamt · ${formatBytes(total.current)} / ${formatBytes(total.total)}`}
-          detail={`${Math.round(total.percent)}%`}
-        />
-      </div>
+          <div className="space-y-3">
+            <ProgressBar
+              percent={file.percent}
+              label={`Datei · ${formatBytes(file.current)} / ${formatBytes(file.total)}`}
+              detail={`${Math.round(file.percent)}%`}
+            />
+            <ProgressBar
+              percent={total.percent}
+              label={`Gesamt · ${formatBytes(total.current)} / ${formatBytes(total.total)}`}
+              detail={`${Math.round(total.percent)}%`}
+            />
+          </div>
 
-      <div className="mt-3.5 flex flex-wrap gap-1.5">
-        <Button
-          type="button"
-          variant="secondary"
-          size="sm"
-          disabled={busy || !active}
-          onClick={() => run(pauseUpload)}
-        >
-          <Pause className="h-3.5 w-3.5" />
-          Pause
-        </Button>
-        <Button
-          type="button"
-          variant="secondary"
-          size="sm"
-          disabled={busy || !active}
-          onClick={() => run(resumeUpload)}
-        >
-          <Play className="h-3.5 w-3.5" />
-          Fortsetzen
-        </Button>
-        <Button
-          type="button"
-          variant="secondary"
-          size="sm"
-          className="border-destructive/30 bg-destructive/10 text-destructive hover:bg-destructive/15 hover:text-destructive"
-          disabled={busy || !active}
-          onClick={() => run(cancelUpload)}
-        >
-          <X className="h-3.5 w-3.5" />
-          Abbrechen
-        </Button>
-      </div>
+          <div className="mt-3.5 flex flex-wrap gap-1.5">
+            <Button
+              type="button"
+              variant="secondary"
+              size="sm"
+              disabled={busy}
+              onClick={() => run(pauseUpload)}
+            >
+              <Pause className="h-3.5 w-3.5" />
+              Pause
+            </Button>
+            <Button
+              type="button"
+              variant="secondary"
+              size="sm"
+              disabled={busy}
+              onClick={() => run(resumeUpload)}
+            >
+              <Play className="h-3.5 w-3.5" />
+              Fortsetzen
+            </Button>
+            <Button
+              type="button"
+              variant="secondary"
+              size="sm"
+              className="border-destructive/30 bg-destructive/10 text-destructive hover:bg-destructive/15 hover:text-destructive"
+              disabled={busy}
+              onClick={() => void onCancel()}
+            >
+              <X className="h-3.5 w-3.5" />
+              Abbrechen
+            </Button>
+          </div>
+        </>
+      )}
 
-      <div className="mt-4 border-t border-border/70 pt-3">
-        <p className="mb-2 text-[11px] font-semibold tracking-[0.08em] text-muted uppercase">
-          Warteschlange
-        </p>
-        {queue.length === 0 ? (
-          <p className="text-sm text-muted">Keine Aufträge.</p>
-        ) : (
+      {queue.length > 0 ? (
+        <div className={cn("border-t border-border/70 pt-3", active ? "mt-4" : "mt-3")}>
+          <p className="mb-2 text-[11px] font-semibold tracking-[0.08em] text-muted uppercase">
+            Warteschlange
+          </p>
           <ul className="space-y-1.5">
             {queue.map((item) => (
               <li
@@ -199,8 +234,8 @@ export function UploadPanel({ className, compact = false }: Props) {
               </li>
             ))}
           </ul>
-        )}
-      </div>
+        </div>
+      ) : null}
     </Panel>
   );
 }

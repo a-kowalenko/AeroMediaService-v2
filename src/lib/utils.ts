@@ -30,27 +30,54 @@ export function historyDisplayName(item: {
   return name || item.dir_name || "Unbekannt";
 }
 
-export function overallStatusColor(status: string): string {
+export type OverallStatusTone =
+  | "error"
+  | "warning"
+  | "active"
+  | "success"
+  | "muted";
+
+export function overallStatusTone(status: string): OverallStatusTone {
   const lower = status.toLowerCase();
-  if (lower.includes("problem") || lower.includes("fehler") || lower.includes("fehlgeschlagen")) {
-    return "var(--ams-destructive)";
+  if (
+    lower.includes("problem") ||
+    lower.includes("fehler") ||
+    lower.includes("fehlgeschlagen") ||
+    lower.includes("abgebrochen")
+  ) {
+    return "error";
   }
   if (lower.includes("in bearbeitung") || lower.includes("gestartet")) {
-    return "var(--ams-primary)";
+    return "active";
   }
   if (lower.includes("komplett")) {
-    return "var(--ams-success)";
+    return "success";
   }
   if (lower.includes("versendet")) {
-    return "color-mix(in srgb, var(--ams-success) 70%, white)";
+    return "success";
   }
   if (lower.includes("erfolgreich") || lower.includes("zugestellt")) {
-    return "var(--ams-success)";
+    return "success";
   }
   if (lower.includes("gesendet") || lower.includes("teilweise")) {
-    return "var(--ams-warning)";
+    return "warning";
   }
-  return "var(--ams-muted)";
+  return "muted";
+}
+
+export function overallStatusColor(status: string): string {
+  switch (overallStatusTone(status)) {
+    case "error":
+      return "var(--ams-destructive)";
+    case "active":
+      return "var(--ams-primary)";
+    case "success":
+      return "var(--ams-success)";
+    case "warning":
+      return "var(--ams-warning)";
+    default:
+      return "var(--ams-muted)";
+  }
 }
 
 export const RETRYABLE_STATUSES = new Set(["Fehler", "Abgebrochen"]);

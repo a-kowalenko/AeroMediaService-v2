@@ -47,7 +47,9 @@ import {
   type AvailableRelease,
 } from "@/lib/tauri";
 import { compareVersionParts } from "@/lib/versionCompare";
+import { showAppToast } from "@/lib/toast";
 import { useThemeStore, type ThemeMode } from "@/store/themeStore";
+import { useUiStore } from "@/store/uiStore";
 
 type TabId =
   | "general"
@@ -174,16 +176,27 @@ async function pickDirectory(current: string): Promise<string | null> {
 }
 
 async function promptAuthCode(authorizeUrl: string): Promise<string | null> {
-  window.alert(
+  const ui = useUiStore.getState();
+  const proceed = await ui.confirm(
     "Ein Browser-Fenster wird geöffnet, um die App zu autorisieren.\n\n" +
       "Bitte kopieren Sie den angezeigten Code und fügen Sie ihn im nächsten Dialog ein.",
+    {
+      title: "Dropbox autorisieren",
+      primaryLabel: "Browser öffnen",
+      secondaryLabel: "Abbrechen",
+    },
   );
+  if (!proceed) return null;
   try {
     await openUrl(authorizeUrl);
   } catch {
     window.open(authorizeUrl, "_blank", "noopener,noreferrer");
   }
-  const code = window.prompt("Eingabe-Code von Dropbox:");
+  const code = await ui.prompt("Eingabe-Code von Dropbox:", {
+    title: "Autorisierungscode",
+    placeholder: "Code einfügen…",
+    primaryLabel: "Weiter",
+  });
   return code?.trim() || null;
 }
 
@@ -199,6 +212,9 @@ export function SettingsDialog({
 }: Props) {
   const themeMode = useThemeStore((s) => s.mode);
   const setThemeMode = useThemeStore((s) => s.setMode);
+  const showError = useUiStore((s) => s.showError);
+  const showSuccess = useUiStore((s) => s.showSuccess);
+  const confirm = useUiStore((s) => s.confirm);
   const [tab, setTab] = useState<TabId>("general");
   const [busy, setBusy] = useState(false);
   const [statusLoading, setStatusLoading] = useState(false);
@@ -733,7 +749,7 @@ export function SettingsDialog({
       setStatus("Gespeichert.");
     } catch (err) {
       setError(`Speichern fehlgeschlagen: ${err}`);
-      window.alert(`Speichern fehlgeschlagen:\n${err}`);
+      showError(String(err), "Speichern");
     } finally {
       setBusy(false);
     }
@@ -762,11 +778,16 @@ export function SettingsDialog({
       }
       setDbStatus(result.status);
       if (!result.success) {
-        window.alert(result.message || "Dropbox-Verbindung fehlgeschlagen.");
+        showError(result.message || "Dropbox-Verbindung fehlgeschlagen.", "Dropbox");
+      } else {
+        showAppToast(result.message || "Verbunden.", {
+          tone: "success",
+          title: "Dropbox",
+        });
       }
     } catch (err) {
       setDbStatus("Verbindungsfehler");
-      window.alert(String(err));
+      showError(String(err), "Dropbox");
     } finally {
       setDbBusy(false);
     }
@@ -794,11 +815,19 @@ export function SettingsDialog({
       }
       setCustomDbStatus(result.status);
       if (!result.success) {
-        window.alert(result.message || "Custom-Dropbox-Verbindung fehlgeschlagen.");
+        showError(
+          result.message || "Custom-Dropbox-Verbindung fehlgeschlagen.",
+          "Custom Dropbox",
+        );
+      } else {
+        showAppToast(result.message || "Verbunden.", {
+          tone: "success",
+          title: "Custom Dropbox",
+        });
       }
     } catch (err) {
       setCustomDbStatus("Verbindungsfehler");
-      window.alert(String(err));
+      showError(String(err), "Custom Dropbox");
     } finally {
       setCustomBusy(false);
     }
@@ -837,13 +866,19 @@ export function SettingsDialog({
       const result = await connectCustomApi();
       setCustomApiStatus(result.status);
       if (result.success) {
-        window.alert("Die Verbindung zur Custom API wurde erfolgreich getestet!");
+        showSuccess(
+          "Die Verbindung zur Custom API wurde erfolgreich getestet!",
+          "Custom API",
+        );
       } else {
-        window.alert(result.message || "Custom-API-Verbindung fehlgeschlagen.");
+        showError(
+          result.message || "Custom-API-Verbindung fehlgeschlagen.",
+          "Custom API",
+        );
       }
     } catch (err) {
       setCustomApiStatus("Verbindungsfehler");
-      window.alert(String(err));
+      showError(String(err), "Custom API");
     } finally {
       setCustomBusy(false);
     }
@@ -875,9 +910,9 @@ export function SettingsDialog({
         shortener.shortener_api_key,
         shortener.shortener_expires_preset,
       );
-      window.alert(`Test erfolgreich.\n\nKurzlink:\n${short}`);
+      showSuccess(`Test erfolgreich.\n\nKurzlink:\n${short}`, "Link-Shortener");
     } catch (err) {
-      window.alert(String(err));
+      showError(String(err), "Link-Shortener");
     } finally {
       setShortenerBusy(false);
     }
@@ -1759,7 +1794,7 @@ export function SettingsDialog({
                             onOpenSetupWizard?.();
                             onClose();
                           } catch (err) {
-                            window.alert(String(err));
+                            showError(String(err), "Einrichtung");
                           }
                         })();
                       }}
@@ -1770,20 +1805,22 @@ export function SettingsDialog({
                       type="button"
                       variant="secondary"
                       onClick={() => {
-                        if (
-                          !window.confirm(
-                            "Pfade (Monitor/Archiv/Log) leeren und Assistent erneut starten?",
-                          )
-                        ) {
-                          return;
-                        }
                         void (async () => {
+                          const ok = await confirm(
+                            "Pfade (Monitor/Archiv/Log) leeren und Assistent erneut starten?",
+                            {
+                              title: "Einrichtung zurücksetzen",
+                              primaryLabel: "Zurücksetzen",
+                              destructive: true,
+                            },
+                          );
+                          if (!ok) return;
                           try {
                             await resetSetup(true);
                             onOpenSetupWizard?.();
                             onClose();
                           } catch (err) {
-                            window.alert(String(err));
+                            showError(String(err), "Einrichtung");
                           }
                         })();
                       }}
@@ -1804,9 +1841,9 @@ export function SettingsDialog({
                       void (async () => {
                         try {
                           const report = await migrateLegacySettings(true);
-                          window.alert(report.message);
+                          showSuccess(report.message, "Legacy-Migration");
                         } catch (err) {
-                          window.alert(String(err));
+                          showError(String(err), "Legacy-Migration");
                         }
                       })();
                     }}

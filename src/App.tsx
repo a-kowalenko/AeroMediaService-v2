@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { Play, Square } from "lucide-react";
 import { AppChrome } from "@/components/chrome";
+import { AppFeedbackHost } from "@/components/AppFeedbackHost";
 import { ConnectionStatusIndicator } from "@/components/ConnectionStatusIndicator";
 import { CustomersPanel } from "@/components/CustomersPanel";
 import { HistoryTable } from "@/components/HistoryTable";
@@ -10,7 +11,6 @@ import { LogConsole } from "@/components/LogConsole";
 import { SettingsCluster } from "@/components/SettingsCluster";
 import { SettingsDialog } from "@/components/SettingsDialog";
 import { SetupWizard } from "@/components/SetupWizard";
-import { StatusLight } from "@/components/StatusLight";
 import { UpdateDialog } from "@/components/UpdateDialog";
 import { UploadPanel } from "@/components/UploadPanel";
 import { Button } from "@/components/ui/button";
@@ -21,6 +21,7 @@ import {
   UPDATE_INSTALL_PROGRESS,
   UPLOAD_JOB_ACTIVE,
 } from "@/lib/events";
+import { showAppToast } from "@/lib/toast";
 import {
   autoConnectCloud,
   cancelUpdateInstall,
@@ -43,6 +44,7 @@ import { compareVersionParts } from "@/lib/versionCompare";
 import { isCloudConnected, useAppStore } from "@/store/appStore";
 import { useLogStore } from "@/store/logStore";
 import { initTheme, useThemeStore } from "@/store/themeStore";
+import { useUiStore } from "@/store/uiStore";
 import "./App.css";
 
 initTheme();
@@ -50,7 +52,6 @@ initTheme();
 function App() {
   const [version, setVersion] = useState<string>("…");
   const [monitorBusy, setMonitorBusy] = useState(false);
-  const [monitorError, setMonitorError] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [setupWizardOpen, setSetupWizardOpen] = useState(false);
   const [startupOverlay, setStartupOverlay] = useState(false);
@@ -82,6 +83,9 @@ function App() {
   const setUploadJobActive = useAppStore((s) => s.setUploadJobActive);
   const setThemeMode = useThemeStore((s) => s.setMode);
   const toggleLogOpen = useLogStore((s) => s.toggleOpen);
+  const showError = useUiStore((s) => s.showError);
+  const showSuccess = useUiStore((s) => s.showSuccess);
+  const showWarning = useUiStore((s) => s.showWarning);
   const connected = isCloudConnected(connectionStatus);
 
   const installBlockedReason = (() => {
@@ -135,14 +139,14 @@ function App() {
       }
     } catch (e) {
       if (forceDialog) {
-        window.alert(`Update-Prüfung fehlgeschlagen:\n${e}`);
+        showError(String(e), "Update");
       }
     }
   }
 
   function openVersionSwitchDialog(release: AvailableRelease) {
     if (installBlockedReason) {
-      window.alert(installBlockedReason);
+      showError(installBlockedReason, "Update");
       return;
     }
     const from = version === "…" ? "—" : version;
@@ -175,17 +179,20 @@ function App() {
       const msg = versionInstall.updaterJsonUrl
         ? await installSpecificVersion(versionInstall.updaterJsonUrl)
         : await installUpdate();
-      window.alert(msg);
+      showSuccess(msg, "Update");
       try {
         const { relaunch } = await import("@tauri-apps/plugin-process");
         await relaunch();
       } catch {
-        window.alert("Version installiert — bitte App manuell neu starten.");
+        showWarning(
+          "Version installiert — bitte App manuell neu starten.",
+          "Update",
+        );
       }
     } catch (e) {
       const msg = String(e);
       if (!/abgebrochen/i.test(msg)) {
-        window.alert(`Update fehlgeschlagen:\n${msg}`);
+        showError(msg, "Update");
       }
     } finally {
       setUpdateInstalling(false);
@@ -308,20 +315,24 @@ function App() {
               try {
                 await startMonitoring();
               } catch (err) {
-                setMonitorError(String(err));
+                showError(String(err), "Monitoring");
               }
               setStatusLabel(result.message || "Bereit.");
+              showAppToast(result.message || "Verbunden.", {
+                tone: "success",
+                title: "Cloud",
+              });
             } else {
               setStatusLabel(result.message || "Bereit.");
               if (result.status && result.status !== "Nicht verbunden") {
-                window.alert(`Auto-Connect: ${result.message}`);
+                showError(result.message, "Auto-Connect");
               }
             }
           }
         } catch (err) {
           if (!cancelled) {
             setStatusLabel("Bereit.");
-            window.alert(`Auto-Connect fehlgeschlagen:\n${err}`);
+            showError(String(err), "Auto-Connect");
           }
         } finally {
           if (!cancelled) {
@@ -335,17 +346,16 @@ function App() {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [setConnectionStatus, setupWizardOpen]);
+  }, [setConnectionStatus, setupWizardOpen, showError]);
 
   async function onStart() {
     setMonitorBusy(true);
-    setMonitorError("");
     try {
       await startMonitoring();
       setStatusLabel("Monitoring aktiv.");
+      showAppToast("Monitoring gestartet.", { tone: "success" });
     } catch (err) {
-      setMonitorError(String(err));
-      window.alert(`Monitoring starten fehlgeschlagen:\n${err}`);
+      showError(String(err), "Monitoring");
     } finally {
       setMonitorBusy(false);
     }
@@ -353,12 +363,12 @@ function App() {
 
   async function onStop() {
     setMonitorBusy(true);
-    setMonitorError("");
     try {
       await stopMonitoring();
       setStatusLabel("Monitoring gestoppt.");
+      showAppToast("Monitoring gestoppt.", { tone: "info" });
     } catch (err) {
-      setMonitorError(String(err));
+      showError(String(err), "Monitoring");
     } finally {
       setMonitorBusy(false);
     }
@@ -440,34 +450,13 @@ function App() {
         <div className="flex min-h-0 flex-1">
           <aside className="ams-sidebar-bg flex w-full max-w-md flex-col border-r border-border backdrop-blur-md sm:w-[380px]">
             <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-3.5 [scrollbar-gutter:stable]">
-              <section className="ams-surface rounded-xl p-3.5 shadow-sm backdrop-blur-sm">
-                <div className="mb-2.5 flex items-start justify-between gap-2">
-                  <div className="min-w-0">
-                    <p className="text-[11px] font-semibold tracking-[0.08em] text-muted uppercase">
-                      Monitoring
-                    </p>
-                    <p className="mt-0.5 text-sm text-foreground">
-                      {monitoring ? "Aktiv" : "Inaktiv"}
-                      {connectionStatus ? ` · ${connectionStatus}` : ""}
-                    </p>
-                  </div>
-                  <StatusLight connected={connected} monitoring={monitoring} />
-                </div>
-                {monitorError ? (
-                  <p className="text-xs text-destructive">{monitorError}</p>
-                ) : (
-                  <p className="text-xs leading-relaxed text-muted">
-                    Ordnerüberwachung und Upload-Pipeline steuern.
-                  </p>
-                )}
-              </section>
-
               <UploadPanel compact />
             </div>
 
             <div className="border-t border-border bg-gradient-to-t from-card/90 to-card/40 px-3.5 py-2.5 backdrop-blur-sm">
               <p className="truncate text-xs text-muted" title={statusLabel}>
                 {statusLabel}
+                {connectionStatus ? ` · ${connectionStatus}` : ""}
               </p>
             </div>
           </aside>
@@ -554,6 +543,8 @@ function App() {
           setUpdateDialogOpen(false);
         }}
       />
+
+      <AppFeedbackHost />
     </div>
   );
 }

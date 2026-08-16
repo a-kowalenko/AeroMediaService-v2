@@ -21,10 +21,9 @@ import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { cn, formatHistoryDate } from "@/lib/utils";
 import type { Customer } from "@/lib/tauri";
-import {
-  useCustomerStore,
-  type CustomerFilter,
-} from "@/store/customerStore";
+import { useCustomerStore, type CustomerFilter } from "@/store/customerStore";
+import { useUiStore } from "@/store/uiStore";
+import { showAppToast } from "@/lib/toast";
 
 type FormState = {
   vorname: string;
@@ -114,6 +113,7 @@ export function CustomersPanel() {
   const remove = useCustomerStore((s) => s.remove);
   const setProcessed = useCustomerStore((s) => s.setProcessed);
   const assign = useCustomerStore((s) => s.assign);
+  const confirm = useUiStore((s) => s.confirm);
 
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
   const [formError, setFormError] = useState("");
@@ -257,11 +257,17 @@ export function CustomersPanel() {
 
   async function deleteEdit() {
     if (!editing) return;
-    if (!window.confirm("Diesen Kunden wirklich löschen?")) return;
+    const ok = await confirm("Diesen Kunden wirklich löschen?", {
+      title: "Kunde löschen",
+      primaryLabel: "Löschen",
+      destructive: true,
+    });
+    if (!ok) return;
     setEditBusy(true);
     try {
       await remove(editing.id);
       setEditing(null);
+      showAppToast("Kunde gelöscht.", { tone: "success" });
     } catch {
       /* store */
     } finally {
