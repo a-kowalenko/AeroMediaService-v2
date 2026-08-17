@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { openPath, openUrl } from "@tauri-apps/plugin-opener";
 import {
@@ -150,6 +150,9 @@ export function HistoryTable() {
   const statusMenuRef = useRef<HTMLDivElement>(null);
   const moreMenuRef = useRef<HTMLDivElement>(null);
   const [listHeight, setListHeight] = useState(360);
+  const focusIfVisible = useCallback((el: HTMLInputElement | null) => {
+    if (el && el.offsetParent !== null) el.focus();
+  }, []);
 
   useEffect(() => {
     void load();
@@ -224,7 +227,7 @@ export function HistoryTable() {
     setEditValue("");
     setStatusMenuOpen(false);
     setMoreOpen(false);
-  }, [selected?.id, selected?.email, selected?.phone]);
+  }, [selected?.id]);
 
   const maxPage = Math.max(0, Math.ceil(total / pageSize) - 1 || 0);
   const pageCount = Math.max(1, Math.ceil(total / pageSize) || 1);
@@ -549,7 +552,7 @@ export function HistoryTable() {
       return (
         <span className="flex min-w-0 items-center gap-1">
           <Input
-            autoFocus
+            ref={focusIfVisible}
             type={field === "email" ? "email" : "tel"}
             className="h-7 text-xs"
             value={editValue}
