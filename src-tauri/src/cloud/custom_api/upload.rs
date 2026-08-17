@@ -592,11 +592,16 @@ impl CustomApiClient {
             logging::log_error("Keine Dateien zum Hochladen gefunden.");
             return Ok(false);
         }
-        let folder_name = local_dir_path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("")
-            .to_string();
+        let folder_name = dropbox::remote_dir_name(remote_base_path);
+        let folder_name = if folder_name.is_empty() {
+            local_dir_path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("")
+                .to_string()
+        } else {
+            folder_name
+        };
         let total_size: u64 = files.iter().map(|f| f.size).sum();
         let manifest_items: Vec<Value> = files
             .iter()
@@ -871,6 +876,7 @@ impl CustomApiClient {
             uploaded_files,
             root_share_link,
             version,
+            self.append_order_id().as_deref(),
         );
         let uploaded_files = uploaded_files.to_vec();
         let root = root_share_link.map(str::to_string);

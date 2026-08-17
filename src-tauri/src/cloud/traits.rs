@@ -63,6 +63,12 @@ pub trait CloudClient: Send + Sync {
     ) -> Result<bool, CloudError>;
 
     async fn get_shareable_link(&self, remote_path: &str) -> Result<Option<String>, CloudError>;
+
+    /// Cloud order id after a Custom-API upload, if any.
+    fn last_order_id(&self) -> Option<String> {
+        let _ = self;
+        None
+    }
 }
 
 #[cfg(test)]

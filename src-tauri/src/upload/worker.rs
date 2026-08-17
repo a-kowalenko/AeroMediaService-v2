@@ -140,6 +140,7 @@ pub async fn process_job(
                     &notify.email_status,
                     &notify.sms_status,
                     notify.sms_id.as_deref(),
+                    client.last_order_id().as_deref(),
                 ),
             );
             // Final outbox status before archive move (P1b); outbox file stays on share.
@@ -377,6 +378,7 @@ fn success_history(
     email_status: &str,
     sms_status: &str,
     sms_id: Option<&str>,
+    order_id: Option<&str>,
 ) -> serde_json::Value {
     let mut history = serde_json::json!({
         "dir_name": dir_name,
@@ -390,6 +392,9 @@ fn success_history(
     }
     if let Some(sms_id) = sms_id.filter(|s| !s.is_empty()) {
         history["sms_id"] = serde_json::Value::String(sms_id.to_string());
+    }
+    if let Some(order_id) = order_id.map(str::trim).filter(|s| !s.is_empty()) {
+        history["order_id"] = serde_json::Value::String(order_id.to_string());
     }
     history
 }
@@ -639,11 +644,13 @@ mod tests {
             "Gesendet",
             "Gesendet",
             None,
+            None,
         );
         assert_eq!(without_id["email_status"], "Gesendet");
         assert_eq!(without_id["sms_status"], "Gesendet");
         assert_eq!(without_id["share_link"], "https://dropbox.com/s/x");
         assert!(without_id.get("sms_id").is_none());
+        assert!(without_id.get("order_id").is_none());
 
         let with_id = success_history(
             "job-ok",
@@ -652,8 +659,10 @@ mod tests {
             "Fehler: Versand fehlgeschlagen",
             "Gesendet",
             Some("12345"),
+            Some("order_abc"),
         );
         assert_eq!(with_id["sms_id"], "12345");
         assert_eq!(with_id["email_status"], "Fehler: Versand fehlgeschlagen");
+        assert_eq!(with_id["order_id"], "order_abc");
     }
 }

@@ -18,7 +18,7 @@ use bridge::BridgeState;
 use cloud::CloudState;
 use commands::{
     apply_bridge_config, assign_customer_to_folder, assign_customers_batch, auto_connect_cloud,
-    cancel_upload, channels_delivered, clear_history, connect_active_cloud, connect_custom_api,
+    append_history_media, cancel_upload, channels_delivered, clear_history, connect_active_cloud, connect_custom_api,
     connect_dropbox, delete_customer, delete_history_items, disconnect_active_cloud,
     disconnect_custom_api, disconnect_dropbox, finish_dropbox_oauth, get_app_version,
     get_assignment_history, get_bridge_status, get_cloud_connection_status, get_history,
@@ -101,6 +101,7 @@ pub fn run() {
             delete_history_items,
             clear_history,
             retry_upload,
+            append_history_media,
             get_sandbox_warnings,
             lookup_share_link,
             resend_history_notifications,

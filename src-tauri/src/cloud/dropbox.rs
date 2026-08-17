@@ -1038,6 +1038,13 @@ pub fn join_dropbox_path(remote_base: &str, relative: &str) -> String {
     }
 }
 
+pub fn remote_dir_name(remote_base: &str) -> String {
+    remote_base
+        .replace('\\', "/")
+        .trim_matches('/')
+        .to_string()
+}
+
 pub fn files_upload_arg(path: &str) -> Value {
     json!({
         "path": path,
@@ -1141,6 +1148,8 @@ mod tests {
         assert_eq!(join_dropbox_path("/Job", "a\\b.jpg"), "/Job/a/b.jpg");
         assert_eq!(join_dropbox_path("/Job/", "clip.mp4"), "/Job/clip.mp4");
         assert_eq!(join_dropbox_path("Job", "x"), "Job/x");
+        assert_eq!(remote_dir_name("/Job-1/"), "Job-1");
+        assert_eq!(remote_dir_name("\\Job-1\\sub\\"), "Job-1/sub");
     }
 
     #[test]

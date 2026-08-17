@@ -3,6 +3,7 @@
 use serde::Serialize;
 use tauri::State;
 
+use crate::cloud::CloudState;
 use crate::commands::ConfigState;
 use crate::events;
 use crate::model::manual_status::{build_manual_status_update, collect_manual_status_warnings};
@@ -15,6 +16,7 @@ use crate::notify::resend::{
 };
 use crate::notify::sms_sync;
 use crate::storage::history::{HistoryEntry, HistoryState};
+use crate::upload::append::append_media_from_history;
 use crate::upload::retry::retry_upload_from_history;
 use crate::upload::UploadState;
 
@@ -49,6 +51,40 @@ pub async fn retry_upload(
         &upload.registry,
     )
     .await
+}
+
+#[tauri::command]
+pub async fn append_history_media(
+    config: State<'_, ConfigState>,
+    upload: State<'_, UploadState>,
+    history: State<'_, HistoryState>,
+    cloud: State<'_, CloudState>,
+    id: String,
+    local_dir: String,
+) -> Result<String, String> {
+    let (_entry, json) = load_entry_json(&history, &id)?;
+    let selected_cloud = config.get("selected_cloud_service", Some("dropbox"))?;
+    let updates = append_media_from_history(
+        &json,
+        std::path::Path::new(&local_dir),
+        &selected_cloud,
+        &cloud,
+        &upload.control,
+        &upload.registry,
+    )
+    .await?;
+    history.add_or_update_from_value(&updates)?;
+    let count = updates
+        .get("append_count")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(1);
+    let remote = updates
+        .get("remote_path")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    Ok(format!(
+        "{count}× nachgeladen nach {remote}. Der bestehende Download-Link bleibt gültig."
+    ))
 }
 
 #[derive(Debug, Clone, Serialize)]

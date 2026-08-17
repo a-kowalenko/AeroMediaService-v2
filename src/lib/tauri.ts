@@ -188,6 +188,10 @@ export function retryUpload(id: string): Promise<string> {
   return invoke<string>("retry_upload", { id });
 }
 
+export function appendHistoryMedia(id: string, localDir: string): Promise<string> {
+  return invoke<string>("append_history_media", { id, localDir });
+}
+
 export function getSandboxWarnings(): Promise<string[]> {
   return invoke<string[]>("get_sandbox_warnings");
 }

@@ -57,6 +57,7 @@ pub fn build_manifest_v11(
     uploaded_files: &[Value],
     root_share_link: Option<&str>,
     uploader_version: &str,
+    existing_order_id: Option<&str>,
 ) -> Value {
     let mut categories_map: BTreeMap<String, Vec<Value>> = BTreeMap::new();
 
@@ -177,13 +178,18 @@ pub fn build_manifest_v11(
         .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
         .replace("+00:00", "Z");
 
-    json!({
-        "meta": {
-            "version": "1.1",
-            "link_mode": "paths_only",
-            "created_at": created_at,
-            "uploader_version": uploader_version,
-        },
+    let mut meta = json!({
+        "version": "1.1",
+        "link_mode": "paths_only",
+        "created_at": created_at,
+        "uploader_version": uploader_version,
+    });
+    if let Some(order_id) = existing_order_id.map(str::trim).filter(|s| !s.is_empty()) {
+        meta["existing_order_id"] = json!(order_id);
+    }
+
+    let mut body = json!({
+        "meta": meta,
         "customer": customer,
         "base_dir": base_dir,
         "root_folder": root_folder,
@@ -193,7 +199,11 @@ pub fn build_manifest_v11(
             "bytes_total": bytes_total,
         },
         "client_hints": client_hints(&category_names),
-    })
+    });
+    if let Some(order_id) = existing_order_id.map(str::trim).filter(|s| !s.is_empty()) {
+        body["existing_order_id"] = json!(order_id);
+    }
+    body
 }
 
 #[cfg(test)]
@@ -266,6 +276,7 @@ mod tests {
             &files,
             Some("https://dropbox.com/s/x"),
             "0.1.0",
+            Some("order_abc"),
         );
 
         assert_eq!(manifest["meta"]["version"], "1.1");
@@ -293,5 +304,7 @@ mod tests {
         assert_eq!(manifest["client_hints"]["has_photos"], true);
         assert_eq!(manifest["client_hints"]["has_videos"], true);
         assert_eq!(manifest["client_hints"]["has_previews"], false);
+        assert_eq!(manifest["existing_order_id"], "order_abc");
+        assert_eq!(manifest["meta"]["existing_order_id"], "order_abc");
     }
 }

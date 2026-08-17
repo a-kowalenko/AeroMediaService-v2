@@ -35,6 +35,7 @@ pub struct CustomApiClient {
     last_session_id: Mutex<Option<String>>,
     last_order_id: Mutex<Option<String>>,
     last_kunde: Mutex<Option<Kunde>>,
+    append_order_id: Mutex<Option<String>>,
     dropbox: Arc<DropboxClient>,
 }
 
@@ -63,6 +64,7 @@ impl CustomApiClient {
             last_session_id: Mutex::new(None),
             last_order_id: Mutex::new(None),
             last_kunde: Mutex::new(None),
+            append_order_id: Mutex::new(None),
             dropbox,
         }
     }
@@ -112,6 +114,16 @@ impl CustomApiClient {
 
     fn last_order_id(&self) -> Option<String> {
         self.last_order_id.lock().ok().and_then(|g| g.clone())
+    }
+
+    pub fn set_append_order_id(&self, id: Option<String>) {
+        if let Ok(mut guard) = self.append_order_id.lock() {
+            *guard = id.filter(|s| !s.trim().is_empty());
+        }
+    }
+
+    pub fn append_order_id(&self) -> Option<String> {
+        self.append_order_id.lock().ok().and_then(|g| g.clone())
     }
 
     fn set_last_kunde(&self, kunde: Option<Kunde>) {
@@ -202,6 +214,10 @@ impl CloudClient for CustomApiClient {
 
     async fn get_shareable_link(&self, _remote_path: &str) -> Result<Option<String>, CloudError> {
         self.shareable_link().await
+    }
+
+    fn last_order_id(&self) -> Option<String> {
+        CustomApiClient::last_order_id(self)
     }
 }
 

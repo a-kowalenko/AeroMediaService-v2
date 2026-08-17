@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { listen } from "@tauri-apps/api/event";
+import { open as openDirectoryDialog } from "@tauri-apps/plugin-dialog";
 import { openPath, openUrl } from "@tauri-apps/plugin-opener";
 import {
   Check,
@@ -12,6 +13,7 @@ import {
   RefreshCw,
   Search,
   Trash2,
+  Upload,
   X,
 } from "lucide-react";
 import { ResendNotificationsDialog } from "./ResendNotificationsDialog";
@@ -22,10 +24,12 @@ import { Input } from "@/components/ui/input";
 import { UPLOAD_HISTORY_UPDATE } from "@/lib/events";
 import { showAppToast } from "@/lib/toast";
 import {
+  canAppendMedia,
   canResendNotifications,
   canRetryUpload,
   cn,
   extraNumber,
+  extraString,
   formatHistoryDate,
   formatManualStatusSummary,
   formatResendHistorySummary,
@@ -34,6 +38,7 @@ import {
 } from "@/lib/utils";
 import type { HistoryEntry } from "@/lib/tauri";
 import {
+  appendHistoryMedia,
   channelsDelivered,
   getManualStatusWarnings,
   getSandboxWarnings,
@@ -67,6 +72,15 @@ const DETAIL_ROWS: Array<[string, (item: HistoryEntry) => string]> = [
     (i) => {
       const n = extraNumber(i, "retry_count");
       return n ? `${n}×` : "—";
+    },
+  ],
+  [
+    "Nachgeladen",
+    (i) => {
+      const n = extraNumber(i, "append_count");
+      if (!n) return "—";
+      const at = extraString(i, "last_append_at").replace("T", " ").slice(0, 16);
+      return at ? `${n}× (${at})` : `${n}×`;
     },
   ],
 ];
@@ -233,6 +247,7 @@ export function HistoryTable() {
   const pageCount = Math.max(1, Math.ceil(total / pageSize) || 1);
   const canRetry = Boolean(selected && canRetryUpload(selected.status));
   const canResend = Boolean(selected && canResendNotifications(selected.status));
+  const canAppend = Boolean(selected && canAppendMedia(selected.status));
 
   const retryTitle = (() => {
     if (actionBusy) return "Bitte warten…";
@@ -251,6 +266,17 @@ export function HistoryTable() {
       return `Nicht verfügbar bei Status „${selected.status || "—"}“ (nur erfolgreiche Uploads)`;
     }
     return "E-Mail/SMS für einen erfolgreichen Upload erneut senden";
+  })();
+
+  const appendTitle = (() => {
+    if (actionBusy) return "Bitte warten…";
+    if (!selected) return "Eintrag auswählen, um Dateien nachzuladen";
+    if (!canAppendMedia(selected.status)) {
+      return `Nicht verfügbar bei Status „${selected.status || "—"}“ (nur erfolgreiche Uploads)`;
+    }
+    if (!connected) return "Keine Cloud-Verbindung — bitte zuerst verbinden";
+    const remote = selected.remote_path.trim() || `/${selected.dir_name}`;
+    return `Vergessene Dateien in ${remote} nachladen (bestehender Link bleibt)`;
   })();
 
   const statusMenuTitle = (() => {
@@ -326,6 +352,45 @@ export function HistoryTable() {
       await load({ maintainPage: true });
     } catch (err) {
       showError(String(err), "Upload erneut");
+    } finally {
+      setActionBusy(false);
+    }
+  }
+
+  async function onAppend() {
+    if (!selected) return;
+    if (!canAppendMedia(selected.status)) {
+      showError(
+        `Status „${selected.status}“ unterstützt kein Nachladen.`,
+        "Dateien nachladen",
+      );
+      return;
+    }
+    if (!connected) {
+      showError("Keine Cloud-Verbindung. Bitte zuerst verbinden.", "Dateien nachladen");
+      return;
+    }
+    const remote = selected.remote_path.trim() || `/${selected.dir_name}`;
+    const ok = await confirm(
+      `Vergessene Dateien in denselben Cloud-Ordner laden?\n\nZiel: ${remote}\nDer bestehende Download-Link bleibt. Es wird keine neue Kunden-Nachricht gesendet.\n\nBitte einen Ordner mit denselben Kategorie-Unterordnern wählen (z. B. Outside_Foto).`,
+      {
+        title: "Dateien nachladen",
+        primaryLabel: "Ordner wählen…",
+      },
+    );
+    if (!ok) return;
+    const localDir = await openDirectoryDialog({
+      directory: true,
+      title: "Medienordner zum Nachladen",
+    });
+    if (!localDir || Array.isArray(localDir)) return;
+    setActionBusy(true);
+    try {
+      const message = await appendHistoryMedia(selected.id, localDir);
+      showAppToast(message, { tone: "success", title: "Nachgeladen" });
+      await load({ maintainPage: true });
+    } catch (err) {
+      showError(String(err), "Dateien nachladen");
     } finally {
       setActionBusy(false);
     }
@@ -679,6 +744,17 @@ export function HistoryTable() {
             onClick={() => void onOpenResend()}
           >
             Erneut senden…
+          </Button>
+          <Button
+            type="button"
+            variant="secondary"
+            size="sm"
+            disabled={!canAppend || !connected || actionBusy}
+            title={appendTitle}
+            onClick={() => void onAppend()}
+          >
+            <Upload className="h-3.5 w-3.5" />
+            Nachladen…
           </Button>
           <div className="relative" ref={statusMenuRef}>
             <Button

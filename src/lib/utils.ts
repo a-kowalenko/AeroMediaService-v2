@@ -154,6 +154,10 @@ export function canResendNotifications(status: string): boolean {
   return (status || "").trim() === "Erfolgreich";
 }
 
+export function canAppendMedia(status: string): boolean {
+  return canResendNotifications(status);
+}
+
 export function extraString(entry: { extra?: Record<string, unknown> }, key: string): string {
   const value = entry.extra?.[key];
   if (typeof value === "string") return value;

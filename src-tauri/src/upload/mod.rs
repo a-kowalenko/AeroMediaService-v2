@@ -2,6 +2,7 @@ pub mod checkpoint;
 pub mod control;
 pub mod registry;
 pub mod retry;
+pub mod append;
 pub mod worker;
 
 use std::sync::{Arc, Mutex};
