@@ -1,19 +1,24 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { listen } from "@tauri-apps/api/event";
+import { openPath, openUrl } from "@tauri-apps/plugin-opener";
 import {
+  Check,
   ChevronLeft,
   ChevronRight,
+  ExternalLink,
+  FolderOpen,
   MoreHorizontal,
+  Pencil,
   RefreshCw,
   Search,
   Trash2,
+  X,
 } from "lucide-react";
 import { ResendNotificationsDialog } from "./ResendNotificationsDialog";
 import { HistoryStatusChips, StatusChip } from "./StatusChip";
 import { VirtualList } from "./VirtualList";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { UPLOAD_HISTORY_UPDATE } from "@/lib/events";
 import { showAppToast } from "@/lib/toast";
 import {
@@ -72,6 +77,33 @@ type ErrorDetail = {
   tone: "current" | "resolved" | "none";
 };
 
+function DetailIconButton({
+  disabled,
+  title,
+  onClick,
+  children,
+}: {
+  disabled: boolean;
+  title: string;
+  onClick: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <Button
+      type="button"
+      variant="ghost"
+      size="icon"
+      className="h-7 w-7 shrink-0"
+      disabled={disabled}
+      title={title}
+      aria-label={title}
+      onClick={onClick}
+    >
+      {children}
+    </Button>
+  );
+}
+
 function historyErrorDetail(item: HistoryEntry): ErrorDetail {
   const current = item.combined_error.trim();
   if (current) {
@@ -105,9 +137,10 @@ export function HistoryTable() {
   const confirm = useUiStore((s) => s.confirm);
   const prompt = useUiStore((s) => s.prompt);
 
-  const [contactEmail, setContactEmail] = useState("");
-  const [contactPhone, setContactPhone] = useState("");
-  const [contactDirty, setContactDirty] = useState(false);
+  const [editingField, setEditingField] = useState<"email" | "phone" | null>(
+    null,
+  );
+  const [editValue, setEditValue] = useState("");
   const [actionBusy, setActionBusy] = useState(false);
   const [statusMenuOpen, setStatusMenuOpen] = useState(false);
   const [moreOpen, setMoreOpen] = useState(false);
@@ -187,9 +220,8 @@ export function HistoryTable() {
   );
 
   useEffect(() => {
-    setContactEmail(selected?.email ?? "");
-    setContactPhone(selected?.phone ?? "");
-    setContactDirty(false);
+    setEditingField(null);
+    setEditValue("");
     setStatusMenuOpen(false);
     setMoreOpen(false);
   }, [selected?.id, selected?.email, selected?.phone]);
@@ -345,8 +377,8 @@ export function HistoryTable() {
     try {
       const result = await resendHistoryNotifications(
         selected.id,
-        contactEmail,
-        contactPhone,
+        selected.email,
+        selected.phone,
         opts.shareLink,
         opts.sendEmail,
         opts.sendSms,
@@ -402,12 +434,24 @@ export function HistoryTable() {
     }
   }
 
-  async function onSaveContact() {
+  function startEditContact(field: "email" | "phone") {
     if (!selected) return;
+    setEditingField(field);
+    setEditValue(field === "email" ? selected.email : selected.phone);
+  }
+
+  async function onSaveContactField(field: "email" | "phone") {
+    if (!selected) return;
+    const email = field === "email" ? editValue : selected.email;
+    const phone = field === "phone" ? editValue : selected.phone;
+    if (email.trim() === selected.email.trim() && phone.trim() === selected.phone.trim()) {
+      setEditingField(null);
+      return;
+    }
     setActionBusy(true);
     try {
-      await saveHistoryContact(selected.id, contactEmail, contactPhone);
-      setContactDirty(false);
+      await saveHistoryContact(selected.id, email, phone);
+      setEditingField(null);
       showAppToast("Kontaktdaten gespeichert.", { tone: "success" });
       await load({ maintainPage: true });
     } catch (err) {
@@ -434,6 +478,118 @@ export function HistoryTable() {
     } finally {
       setActionBusy(false);
     }
+  }
+
+  async function onOpenShareLink() {
+    const href = selected?.share_link.trim() ?? "";
+    if (!href) return;
+    try {
+      await openUrl(href);
+    } catch {
+      try {
+        window.open(href, "_blank", "noopener,noreferrer");
+      } catch (err) {
+        showError(String(err), "Download-Link");
+      }
+    }
+  }
+
+  async function onOpenArchive() {
+    const path = selected?.archived_path.trim() ?? "";
+    if (!path) return;
+    try {
+      await openPath(path);
+    } catch (err) {
+      showError(String(err), "Archiv");
+    }
+  }
+
+  function detailOpenAction(label: string) {
+    if (!selected) return null;
+    if (label === "Download-Link") {
+      return (
+        <DetailIconButton
+          disabled={!selected.share_link.trim()}
+          title="Download-Link im Browser öffnen"
+          onClick={() => void onOpenShareLink()}
+        >
+          <ExternalLink className="h-3.5 w-3.5" />
+        </DetailIconButton>
+      );
+    }
+    if (label === "Archiv") {
+      return (
+        <DetailIconButton
+          disabled={!selected.archived_path.trim()}
+          title="Archivordner öffnen"
+          onClick={() => void onOpenArchive()}
+        >
+          <FolderOpen className="h-3.5 w-3.5" />
+        </DetailIconButton>
+      );
+    }
+    if (label === "E-Mail" || label === "Telefon") {
+      const field = label === "E-Mail" ? "email" : "phone";
+      return (
+        <DetailIconButton
+          disabled={actionBusy}
+          title={`${label} bearbeiten`}
+          onClick={() => startEditContact(field)}
+        >
+          <Pencil className="h-3.5 w-3.5" />
+        </DetailIconButton>
+      );
+    }
+    return null;
+  }
+
+  function detailValueContent(label: string, value: string) {
+    const field = label === "E-Mail" ? "email" : label === "Telefon" ? "phone" : null;
+    if (field && editingField === field) {
+      return (
+        <span className="flex min-w-0 items-center gap-1">
+          <Input
+            autoFocus
+            type={field === "email" ? "email" : "tel"}
+            className="h-7 text-xs"
+            value={editValue}
+            disabled={actionBusy}
+            aria-label={label}
+            onChange={(e) => setEditValue(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                void onSaveContactField(field);
+              }
+              if (e.key === "Escape") {
+                e.preventDefault();
+                setEditingField(null);
+              }
+            }}
+          />
+          <DetailIconButton
+            disabled={actionBusy}
+            title="Speichern"
+            onClick={() => void onSaveContactField(field)}
+          >
+            <Check className="h-3.5 w-3.5" />
+          </DetailIconButton>
+          <DetailIconButton
+            disabled={actionBusy}
+            title="Abbrechen"
+            onClick={() => setEditingField(null)}
+          >
+            <X className="h-3.5 w-3.5" />
+          </DetailIconButton>
+        </span>
+      );
+    }
+    return (
+      <span className="flex min-w-0 items-start gap-1">
+        <span className="min-w-0 flex-1 break-all text-foreground">{value}</span>
+        {detailOpenAction(label)}
+      </span>
+    );
   }
 
   function renderDetailRows(rows: typeof DETAIL_ROWS) {
@@ -465,7 +621,7 @@ export function HistoryTable() {
           className="grid grid-cols-[7.5rem_1fr] gap-2 border-b border-border/40 py-1.5 last:border-b-0 lg:grid-cols-[9.5rem_1fr]"
         >
           <span className="text-xs font-medium text-muted">{label}</span>
-          <span className="break-all text-foreground">{value}</span>
+          {detailValueContent(label, value)}
         </div>,
       );
       if (label === "Archiv") {
@@ -731,48 +887,6 @@ export function HistoryTable() {
                 <HistoryStatusChips entry={selected} />
               </div>
               {renderDetailRows(DETAIL_ROWS)}
-
-              <div className="mt-2 grid gap-3 border-t border-border pt-3">
-                <h4 className="m-0 text-[11px] font-semibold tracking-[0.08em] text-muted uppercase">
-                  Kontakt
-                </h4>
-                <div className="grid gap-3 sm:grid-cols-2">
-                  <div className="grid gap-1.5">
-                    <Label htmlFor="history-contact-email">E-Mail</Label>
-                    <Input
-                      id="history-contact-email"
-                      type="email"
-                      value={contactEmail}
-                      onChange={(e) => {
-                        setContactEmail(e.target.value);
-                        setContactDirty(true);
-                      }}
-                    />
-                  </div>
-                  <div className="grid gap-1.5">
-                    <Label htmlFor="history-contact-phone">Telefon</Label>
-                    <Input
-                      id="history-contact-phone"
-                      type="tel"
-                      value={contactPhone}
-                      onChange={(e) => {
-                        setContactPhone(e.target.value);
-                        setContactDirty(true);
-                      }}
-                    />
-                  </div>
-                </div>
-                <div>
-                  <Button
-                    type="button"
-                    size="sm"
-                    disabled={!contactDirty || actionBusy}
-                    onClick={() => void onSaveContact()}
-                  >
-                    Kontakt speichern
-                  </Button>
-                </div>
-              </div>
             </div>
           ) : (
             <div className="flex h-full min-h-[12rem] items-center justify-center rounded-xl border border-dashed border-border/80 bg-card/40 px-6 text-center text-sm text-muted">
@@ -797,8 +911,8 @@ export function HistoryTable() {
       {resendOpen && selected ? (
         <ResendNotificationsDialog
           entry={selected}
-          email={contactEmail}
-          phone={contactPhone}
+          email={selected.email}
+          phone={selected.phone}
           shareLink={selected.share_link}
           sandboxWarnings={sandboxWarnings}
           cloudConnected={connected}

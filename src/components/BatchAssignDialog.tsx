@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Folder, ListChecks, Sparkles } from "lucide-react";
+import { AlertTriangle, Folder, ListChecks, Sparkles } from "lucide-react";
 import { FolderSelectionModal } from "./FolderSelectionModal";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -157,7 +157,7 @@ export function BatchAssignDialog({ open, onClose }: Props) {
   return (
     <>
       <Dialog open={open} onOpenChange={(v) => !v && !busy && onClose()}>
-        <DialogContent className="flex max-h-[min(90vh,720px)] max-w-3xl flex-col gap-0 overflow-hidden p-0">
+        <DialogContent className="flex max-h-[min(90vh,720px)] max-w-4xl flex-col gap-0 overflow-hidden p-0">
           <DialogHeader className="border-b border-border px-5 py-4">
             <DialogTitle>Zuweisungen prüfen</DialogTitle>
             <DialogDescription>
@@ -204,9 +204,10 @@ export function BatchAssignDialog({ open, onClose }: Props) {
 
             {error ? <p className="text-sm text-destructive">{error}</p> : null}
             {duplicatePaths.size > 0 ? (
-              <p className="text-sm text-destructive">
-                Derselbe Ordner ist mehrfach gewählt. Bitte eine Zuordnung ändern.
-              </p>
+              <div className="flex items-center gap-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-1.5 text-sm text-destructive">
+                <AlertTriangle className="h-4 w-4 shrink-0" />
+                <p>Derselbe Ordner ist mehrfach gewählt.</p>
+              </div>
             ) : null}
 
             <div className="min-h-0 flex-1 overflow-y-auto rounded-lg border border-border">
@@ -227,11 +228,15 @@ export function BatchAssignDialog({ open, onClose }: Props) {
                         key={row.customer.id}
                         className={cn(
                           "flex flex-col gap-2 px-3 py-2.5 sm:flex-row sm:items-center",
-                          !row.included && "opacity-60",
                           duplicate && "bg-destructive/10",
                         )}
                       >
-                        <label className="flex min-w-0 flex-1 items-center gap-3">
+                        <label
+                          className={cn(
+                            "flex min-w-0 flex-1 items-center gap-3",
+                            !row.included && "opacity-60",
+                          )}
+                        >
                           <Checkbox
                             checked={row.included}
                             disabled={busy}
@@ -253,26 +258,36 @@ export function BatchAssignDialog({ open, onClose }: Props) {
                             </span>
                           </span>
                         </label>
-                        <div className="flex min-w-0 flex-1 items-center gap-2 sm:max-w-md">
-                          <Select
-                            value={row.folderPath || NONE}
-                            disabled={busy}
-                            onValueChange={(value) =>
-                              setFolder(row.customer.id, value === NONE ? "" : value)
-                            }
-                          >
-                            <SelectTrigger className="h-8 min-w-0 text-xs">
-                              <SelectValue placeholder="Ordner wählen" />
-                            </SelectTrigger>
-                            <SelectContent>
-                              <SelectItem value={NONE}>Kein Ordner</SelectItem>
-                              {readyFolders.map((folder) => (
-                                <SelectItem key={folder.path} value={folder.path}>
-                                  {folder.name}
-                                </SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
+                        <div className="flex min-w-0 flex-[1.4] items-center gap-2">
+                          <div className="min-w-0 flex-1">
+                            <Select
+                              value={row.folderPath || NONE}
+                              disabled={busy}
+                              onValueChange={(value) =>
+                                setFolder(row.customer.id, value === NONE ? "" : value)
+                              }
+                            >
+                              <SelectTrigger
+                                className="h-8 w-full text-left text-xs"
+                                title={row.folderPath || "Kein Ordner"}
+                              >
+                                <SelectValue placeholder="Ordner wählen" />
+                              </SelectTrigger>
+                              <SelectContent className="max-h-72 min-w-[min(36rem,calc(100vw-4rem))]">
+                                <SelectItem value={NONE}>Kein Ordner</SelectItem>
+                                {readyFolders.map((folder) => (
+                                  <SelectItem
+                                    key={folder.path}
+                                    value={folder.path}
+                                    title={folder.path}
+                                    className="whitespace-normal"
+                                  >
+                                    {folder.name}
+                                  </SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                          </div>
                           <Button
                             type="button"
                             size="sm"
@@ -283,16 +298,20 @@ export function BatchAssignDialog({ open, onClose }: Props) {
                           >
                             <Folder className="h-3.5 w-3.5" />
                           </Button>
-                          {recommended ? (
-                            <span className="hidden shrink-0 items-center gap-1 rounded-full border border-amber-400/40 bg-amber-400/15 px-1.5 py-px text-[10px] font-medium tracking-wide text-amber-800 uppercase sm:inline-flex dark:text-amber-200">
-                              <Sparkles className="h-3 w-3" />
-                              Treffer
-                            </span>
-                          ) : !row.folderPath ? (
-                            <span className="hidden text-[11px] text-muted sm:inline">
-                              kein Treffer
-                            </span>
-                          ) : null}
+                          <span className="hidden h-5 w-[5.5rem] shrink-0 items-center justify-center sm:inline-flex">
+                            {recommended ? (
+                              <span className="inline-flex items-center gap-1 rounded-full border border-amber-400/40 bg-amber-400/15 px-1.5 py-px text-[10px] font-medium tracking-wide text-amber-800 uppercase dark:text-amber-200">
+                                <Sparkles className="h-3 w-3" />
+                                Treffer
+                              </span>
+                            ) : duplicate ? (
+                              <span className="rounded-full border border-destructive/40 bg-destructive/10 px-1.5 py-px text-[10px] font-medium uppercase tracking-wide text-destructive">
+                                doppelt
+                              </span>
+                            ) : !row.folderPath ? (
+                              <span className="text-[11px] text-muted">kein Treffer</span>
+                            ) : null}
+                          </span>
                         </div>
                       </li>
                     );
