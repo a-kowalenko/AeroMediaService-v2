@@ -214,7 +214,6 @@ pub async fn retry_upload_from_history(
         json!({
             "dir_name": dir_name,
             "status": "Gestartet",
-            "error_msg": "",
             "retry_count": retry_count,
             "first_name": kunde.first_name.unwrap_or_default(),
             "last_name": kunde.last_name.unwrap_or_default(),

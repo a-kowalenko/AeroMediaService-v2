@@ -1,6 +1,7 @@
 //! Folder monitor: scan interval, marker claim, enqueue into the upload pipeline.
 //! Port of legacy `core/monitor.py`.
 
+use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -11,6 +12,7 @@ use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::Notify;
 
 use crate::cloud::custom_api::fetch_customer_as_kunde;
+use crate::events;
 use crate::model::handoff::{
     evaluate_manifest_gate, is_handoff_scan_dir, manifest_path, peek_correlation_id,
     write_job_outbox, GateDecision, OutboxError, OutboxState, CODE_CUSTOMER_LOOKUP_FAILED,
@@ -22,7 +24,9 @@ use crate::model::marker::{
     parse_api_marker_data, read_marker_file, read_marker_raw, resolve_kunde_from_marker,
     should_use_dropbox_client_for_marker, ApiMarkerQuery, LookupMode, MarkerError,
 };
-use crate::monitor::stability::{has_uploadable_files, FolderStabilityTracker, ObserveResult};
+use crate::monitor::stability::{
+    folder_key, has_uploadable_files, FolderStabilityTracker, ObserveResult, StabilityPendingItem,
+};
 use crate::storage::logging;
 use crate::upload::registry::{UploadJob, UploadQueueRegistry};
 use crate::util::archive::{self, handle_customer_lookup_failure, is_marker_format_failure};
@@ -64,6 +68,18 @@ pub struct MonitorState {
     task: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
     registry: Arc<UploadQueueRegistry>,
     jobs: UnboundedSender<UploadJob>,
+    stability_pending: Arc<Mutex<Vec<StabilityPendingItem>>>,
+}
+
+fn publish_stability_pending(
+    store: &Mutex<Vec<StabilityPendingItem>>,
+    items: Vec<StabilityPendingItem>,
+) {
+    {
+        let mut guard = store.lock().unwrap_or_else(|e| e.into_inner());
+        *guard = items.clone();
+    }
+    events::emit(events::STABILITY_PENDING_CHANGED, items);
 }
 
 impl MonitorState {
@@ -74,11 +90,19 @@ impl MonitorState {
             task: Mutex::new(None),
             registry,
             jobs,
+            stability_pending: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
     pub fn is_running(&self) -> bool {
         self.running.load(Ordering::SeqCst)
+    }
+
+    pub fn stability_snapshot(&self) -> Vec<StabilityPendingItem> {
+        self.stability_pending
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     pub fn wake(&self) {
@@ -118,10 +142,11 @@ impl MonitorState {
         let wake = Arc::clone(&self.wake);
         let registry = Arc::clone(&self.registry);
         let jobs = self.jobs.clone();
+        let stability_pending = Arc::clone(&self.stability_pending);
 
         logging::log_info("Starte Monitor...");
         let handle = tauri::async_runtime::spawn(async move {
-            run_loop(running, wake, registry, jobs, get_setting).await;
+            run_loop(running, wake, registry, jobs, stability_pending, get_setting).await;
         });
         *task_guard = Some(handle);
         Ok(true)
@@ -134,6 +159,7 @@ impl MonitorState {
         if let Some(handle) = handle {
             let _ = tokio::time::timeout(Duration::from_secs(5), handle).await;
         }
+        publish_stability_pending(&self.stability_pending, Vec::new());
         logging::log_info("Monitor-Thread gestoppt.");
     }
 }
@@ -155,6 +181,7 @@ async fn run_loop<F>(
     wake: Arc<Notify>,
     registry: Arc<UploadQueueRegistry>,
     jobs: UnboundedSender<UploadJob>,
+    stability_pending: Arc<Mutex<Vec<StabilityPendingItem>>>,
     get_setting: F,
 ) where
     F: Fn(&str) -> String + Send + Sync,
@@ -210,6 +237,7 @@ async fn run_loop<F>(
 
         logging::log_debug(&format!("Scanne Verzeichnis: {}", scan_path.display()));
         scan_once(scan_path, &mut tracker, stability_enabled, &ctx).await;
+        publish_stability_pending(&stability_pending, tracker.snapshot());
 
         if running.load(Ordering::SeqCst) {
             logging::log_debug(&format!("Scan beendet. Warte {scan_interval} Sekunden."));
@@ -218,6 +246,7 @@ async fn run_loop<F>(
     }
 
     tracker.clear();
+    publish_stability_pending(&stability_pending, Vec::new());
     logging::log_info("Monitor-Thread beendet.");
 }
 
@@ -255,6 +284,7 @@ pub async fn scan_once(
     };
 
     let mut found = 0usize;
+    let mut keep = HashSet::new();
     for entry in entries.flatten() {
         let full_dir_path = entry.path();
         if !full_dir_path.is_dir() {
@@ -279,7 +309,11 @@ pub async fn scan_once(
             if !has_manifest {
                 match tracker.observe(&full_dir_path) {
                     ObserveResult::Stable => {}
-                    ObserveResult::Waiting | ObserveResult::Removed => continue,
+                    ObserveResult::Waiting => {
+                        keep.insert(folder_key(&full_dir_path));
+                        continue;
+                    }
+                    ObserveResult::Removed => continue,
                 }
             } else {
                 tracker.discard(&full_dir_path);
@@ -304,6 +338,7 @@ pub async fn scan_once(
             }
         }
     }
+    tracker.retain_keys(&keep);
     found
 }
 
@@ -857,6 +892,10 @@ mod tests {
         let queued = scan_once(root.path(), &mut tracker, true, &context).await;
         assert_eq!(queued, 0);
         assert!(job.join(MARKER_FERTIG).is_file());
+        let pending = tracker.snapshot();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].dir_name, "job1");
+        assert!(!pending[0].waiting_for_media);
 
         tracker.set_required_seconds(0.0);
         tracker.clear();

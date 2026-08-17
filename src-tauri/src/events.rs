@@ -30,6 +30,8 @@ pub const UPLOAD_PROGRESS: &str = "upload-progress";
 pub const UPLOAD_FINISHED: &str = "upload-finished";
 pub const UPLOAD_FAILED: &str = "upload-failed";
 pub const MONITORING_STATUS_CHANGED: &str = "monitoring-status-changed";
+/// Folders waiting for unchanged content before claim (left-panel snapshot).
+pub const STABILITY_PENDING_CHANGED: &str = "stability-pending-changed";
 pub const CONNECTION_STATUS_CHANGED: &str = "connection-status-changed";
 pub const STOP_MONITORING: &str = "stop-monitoring";
 /// Updater download/install progress (Tauri updater plugin helpers).
@@ -133,6 +135,7 @@ mod tests {
         assert_eq!(UPLOAD_FINISHED, "upload-finished");
         assert_eq!(UPLOAD_FAILED, "upload-failed");
         assert_eq!(MONITORING_STATUS_CHANGED, "monitoring-status-changed");
+        assert_eq!(STABILITY_PENDING_CHANGED, "stability-pending-changed");
         assert_eq!(CONNECTION_STATUS_CHANGED, "connection-status-changed");
         assert_eq!(STOP_MONITORING, "stop-monitoring");
         assert_eq!(UPDATE_INSTALL_PROGRESS, "update-install-progress");

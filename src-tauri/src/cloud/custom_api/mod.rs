@@ -6,7 +6,7 @@ pub mod orders;
 pub mod upload;
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -35,7 +35,7 @@ pub struct CustomApiClient {
     last_session_id: Mutex<Option<String>>,
     last_order_id: Mutex<Option<String>>,
     last_kunde: Mutex<Option<Kunde>>,
-    dropbox: DropboxClient,
+    dropbox: Arc<DropboxClient>,
 }
 
 impl Default for CustomApiClient {
@@ -46,6 +46,10 @@ impl Default for CustomApiClient {
 
 impl CustomApiClient {
     pub fn new() -> Self {
+        Self::with_dropbox(Arc::new(DropboxClient::for_custom_api()))
+    }
+
+    pub fn with_dropbox(dropbox: Arc<DropboxClient>) -> Self {
         let http = reqwest::Client::builder()
             .timeout(Duration::from_secs(600))
             .build()
@@ -59,7 +63,7 @@ impl CustomApiClient {
             last_session_id: Mutex::new(None),
             last_order_id: Mutex::new(None),
             last_kunde: Mutex::new(None),
-            dropbox: DropboxClient::for_custom_api(),
+            dropbox,
         }
     }
 
@@ -127,7 +131,7 @@ impl CustomApiClient {
 
     #[allow(dead_code)]
     pub fn dropbox(&self) -> &DropboxClient {
-        &self.dropbox
+        self.dropbox.as_ref()
     }
 
     pub async fn connect_dropbox(&self) -> Result<bool, CloudError> {

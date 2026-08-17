@@ -51,6 +51,17 @@ export function getMonitoringStatus(): Promise<boolean> {
   return invoke<boolean>("get_monitoring_status");
 }
 
+export type StabilityPendingItem = {
+  dir_name: string;
+  remaining_seconds: number;
+  required_seconds: number;
+  waiting_for_media: boolean;
+};
+
+export function getStabilityPending(): Promise<StabilityPendingItem[]> {
+  return invoke<StabilityPendingItem[]>("get_stability_pending");
+}
+
 export function startMonitoring(): Promise<boolean> {
   return invoke<boolean>("start_monitoring");
 }

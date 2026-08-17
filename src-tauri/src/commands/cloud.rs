@@ -3,7 +3,7 @@
 use serde::Serialize;
 use tauri::State;
 
-use crate::cloud::{oauth::OauthStart, CloudClient, CloudState};
+use crate::cloud::{oauth::OauthStart, CloudClient, CloudState, DropboxSecretKeys};
 use crate::commands::ConfigState;
 use crate::notify::sms;
 use crate::storage::logging;
@@ -236,12 +236,81 @@ pub async fn connect_active_cloud(
 
 async fn connect_custom_api_inner(cloud: &CloudState) -> Result<ConnectResult, String> {
     match cloud.custom_api.connect().await {
-        Ok(true) => Ok(ConnectResult::ok("Verbunden", "Custom API verbunden.")),
+        Ok(true) => {
+            connect_dropbox_for_pure_contact_markers(cloud).await;
+            Ok(ConnectResult::ok("Verbunden", "Custom API verbunden."))
+        }
         Ok(false) => Ok(ConnectResult::fail(
             cloud.custom_api.connection_status(),
             "Custom-API-Verbindung fehlgeschlagen.",
         )),
         Err(e) => Ok(ConnectResult::fail("Verbindungsfehler", e.to_string())),
+    }
+}
+
+fn has_dropbox_refresh_token(keys: DropboxSecretKeys) -> bool {
+    secrets::get_secret(keys.refresh_token)
+        .ok()
+        .flatten()
+        .filter(|s| !s.trim().is_empty())
+        .is_some()
+}
+
+fn has_dropbox_app_credentials(keys: DropboxSecretKeys) -> bool {
+    let app_key = secrets::get_secret(keys.app_key)
+        .ok()
+        .flatten()
+        .filter(|s| !s.is_empty());
+    let app_secret = secrets::get_secret(keys.app_secret)
+        .ok()
+        .flatten()
+        .filter(|s| !s.is_empty());
+    app_key.is_some() && app_secret.is_some()
+}
+
+/// Legacy `StartupConnectWorker._connect_dropbox_for_contact_markers`: when Custom API
+/// is active, also connect Dropbox upload accounts used for pure-contact markers.
+async fn connect_dropbox_for_pure_contact_markers(cloud: &CloudState) {
+    let custom_keys = DropboxSecretKeys::custom_api();
+    if has_dropbox_app_credentials(custom_keys) && has_dropbox_refresh_token(custom_keys) {
+        match cloud.custom_api.connect_dropbox().await {
+            Ok(true) => {
+                logging::log_info(
+                    "Custom-Dropbox parallel verbunden (für reine Kontakt-Marker / Manifest-Upload).",
+                );
+            }
+            Ok(false) => {
+                logging::log_warn(
+                    "Custom-Dropbox Auto-Verbindung fehlgeschlagen — reine Kontakt-Marker können scheitern.",
+                );
+            }
+            Err(e) => {
+                logging::log_warn(&format!(
+                    "Custom-Dropbox Auto-Verbindung fehlgeschlagen: {e}"
+                ));
+            }
+        }
+    }
+
+    let native_keys = DropboxSecretKeys::native();
+    if !has_dropbox_refresh_token(native_keys) {
+        logging::log_info(
+            "Kein natives Dropbox Refresh-Token — optionaler Fallback für reine Kontakt-Marker entfällt.",
+        );
+        return;
+    }
+    if cloud.dropbox.connection_status() == "Verbunden" {
+        return;
+    }
+    match cloud.dropbox.connect_session(false).await {
+        Ok(true) => {
+            logging::log_info("Natives Dropbox parallel verbunden (Legacy-Fallback für reine Kontakt-Marker).");
+        }
+        Ok(false) | Err(_) => {
+            logging::log_warn(
+                "Native Dropbox Auto-Verbindung fehlgeschlagen — Fallback für reine Kontakt-Marker nicht verfügbar.",
+            );
+        }
     }
 }
 

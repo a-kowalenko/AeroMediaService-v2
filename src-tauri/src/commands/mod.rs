@@ -19,7 +19,7 @@ pub use customers::{
     list_media_folders_cmd, save_customer, set_customer_processed, update_customer,
 };
 pub use history::{clear_history, delete_history_items, get_history, get_history_entry};
-pub use monitor::{get_monitoring_status, start_monitoring, stop_monitoring};
+pub use monitor::{get_monitoring_status, get_stability_pending, start_monitoring, stop_monitoring};
 pub use operator::{
     channels_delivered, get_manual_status_warnings, get_sandbox_warnings, lookup_share_link,
     resend_history_notifications, retry_upload, save_history_contact, set_manual_status,

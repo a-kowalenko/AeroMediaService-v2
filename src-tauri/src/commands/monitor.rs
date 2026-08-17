@@ -4,12 +4,18 @@ use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::commands::ConfigState;
 use crate::events;
+use crate::monitor::stability::StabilityPendingItem;
 use crate::monitor::MonitorState;
 use crate::storage::logging;
 
 #[tauri::command]
 pub fn get_monitoring_status(monitor: State<'_, MonitorState>) -> bool {
     monitor.is_running()
+}
+
+#[tauri::command]
+pub fn get_stability_pending(monitor: State<'_, MonitorState>) -> Vec<StabilityPendingItem> {
+    monitor.stability_snapshot()
 }
 
 #[tauri::command]

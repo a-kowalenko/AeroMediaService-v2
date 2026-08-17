@@ -6,7 +6,7 @@ pub mod state;
 pub mod traits;
 
 pub use custom_api::CustomApiClient;
-pub use dropbox::DropboxClient;
+pub use dropbox::{DropboxClient, DropboxSecretKeys};
 pub use oauth::OauthStart;
 pub use state::CloudState;
 pub use traits::{CloudClient, CloudError};

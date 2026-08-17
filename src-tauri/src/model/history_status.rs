@@ -275,11 +275,13 @@ pub fn phones_match(phone_a: Option<&str>, phone_b: Option<&str>) -> bool {
     tail_len >= 8 && a[a.len() - tail_len..] == b[b.len() - tail_len..]
 }
 
-/// Sammelt Upload-/E-Mail-/SMS-Fehler in einem Text (Legacy `build_combined_error_text`).
+/// Sammelt aktuelle Upload-/E-Mail-/SMS-Fehler in einem Text (Legacy `build_combined_error_text`).
+/// Eine `error_msg` nach erfolgreichem Retry zählt nicht mehr als aktueller Upload-Fehler.
 pub fn build_combined_error_text(item: &Value) -> String {
     let mut errors = Vec::new();
+    let upload_status = json_str(item, "status").trim();
     let upload_error = json_str(item, "error_msg").trim();
-    if !upload_error.is_empty() {
+    if !upload_error.is_empty() && is_problem_status(Some(upload_status)) {
         errors.push(format!("Upload: {upload_error}"));
     }
     let email_status = json_str(item, "email_status").trim();
@@ -427,6 +429,7 @@ mod tests {
     #[test]
     fn test_combined_error_text() {
         let item = json!({
+            "status": "Fehler",
             "error_msg": "HTTP 500",
             "email_status": "Fehler: SMTP",
             "sms_status": "Fehlgeschlagen",
@@ -435,5 +438,24 @@ mod tests {
         assert!(text.contains("Upload: HTTP 500"));
         assert!(text.contains("E-Mail: Fehler: SMTP"));
         assert!(text.contains("SMS: Fehlgeschlagen"));
+    }
+
+    #[test]
+    fn test_combined_error_ignores_stale_upload_error_after_success() {
+        let item = json!({
+            "status": "Erfolgreich",
+            "error_msg": "timeout",
+            "email_status": "Gesendet",
+        });
+        assert_eq!(build_combined_error_text(&item), "");
+    }
+
+    #[test]
+    fn test_combined_error_ignores_stale_upload_error_while_retry_running() {
+        let item = json!({
+            "status": "Gestartet",
+            "error_msg": "timeout",
+        });
+        assert_eq!(build_combined_error_text(&item), "");
     }
 }

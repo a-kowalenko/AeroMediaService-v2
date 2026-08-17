@@ -39,10 +39,33 @@ pub fn uses_custom_api_client(job: &UploadJob, selected_cloud: &str) -> bool {
     selected_cloud.trim() == "custom_api" && !job.use_dropbox_client
 }
 
+/// Pure-contact markers with Custom API selected upload via the Custom-API Dropbox
+/// account (`custom_db_*` secrets), not the hidden native Dropbox tab credentials.
+pub fn uses_custom_dropbox_client(job: &UploadJob, selected_cloud: &str) -> bool {
+    selected_cloud.trim() == "custom_api" && job.use_dropbox_client
+}
+
+pub fn select_upload_client<'a>(
+    job: &UploadJob,
+    selected_cloud: &str,
+    dropbox: &'a dyn CloudClient,
+    custom_api: &'a dyn CloudClient,
+    custom_dropbox: &'a dyn CloudClient,
+) -> &'a dyn CloudClient {
+    if uses_custom_api_client(job, selected_cloud) {
+        custom_api
+    } else if uses_custom_dropbox_client(job, selected_cloud) {
+        custom_dropbox
+    } else {
+        dropbox
+    }
+}
+
 pub async fn run_loop<F>(
     mut rx: UnboundedReceiver<UploadJob>,
     dropbox: Arc<dyn CloudClient>,
     custom_api: Arc<dyn CloudClient>,
+    custom_dropbox: Arc<dyn CloudClient>,
     control: UploadControl,
     registry: Arc<UploadQueueRegistry>,
     get_setting: F,
@@ -53,11 +76,13 @@ pub async fn run_loop<F>(
     while let Some(job) = rx.recv().await {
         let archive_path = get_setting("archive_path");
         let selected_cloud = get_setting("selected_cloud_service");
-        let client: &dyn CloudClient = if uses_custom_api_client(&job, &selected_cloud) {
-            custom_api.as_ref()
-        } else {
-            dropbox.as_ref()
-        };
+        let client = select_upload_client(
+            &job,
+            &selected_cloud,
+            dropbox.as_ref(),
+            custom_api.as_ref(),
+            custom_dropbox.as_ref(),
+        );
         process_job(&job, client, &control, &registry, &archive_path).await;
     }
     logging::log_info("Uploader-Thread beendet.");
@@ -556,6 +581,34 @@ mod tests {
         assert!(!uses_custom_api_client(&job, "dropbox"));
         job.use_dropbox_client = true;
         assert!(!uses_custom_api_client(&job, "custom_api"));
+        assert!(uses_custom_dropbox_client(&job, "custom_api"));
+        assert!(!uses_custom_dropbox_client(&job, "dropbox"));
+    }
+
+    #[test]
+    fn select_upload_client_routes_pure_contact_to_custom_dropbox() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut job = make_job(dir.path());
+        job.use_dropbox_client = true;
+
+        let native = MockClient::ok();
+        let custom = MockClient::ok();
+        let custom_db = MockClient::ok();
+
+        assert!(std::ptr::eq(
+            select_upload_client(&job, "custom_api", &native, &custom, &custom_db),
+            &custom_db as &dyn CloudClient
+        ));
+        assert!(std::ptr::eq(
+            select_upload_client(&job, "dropbox", &native, &custom, &custom_db),
+            &native as &dyn CloudClient
+        ));
+
+        job.use_dropbox_client = false;
+        assert!(std::ptr::eq(
+            select_upload_client(&job, "custom_api", &native, &custom, &custom_db),
+            &custom as &dyn CloudClient
+        ));
     }
 
     #[test]

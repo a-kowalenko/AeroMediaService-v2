@@ -1,10 +1,12 @@
 //! Waits for unchanged folder content before a job is claimed.
 //! Port of legacy `core/folder_stability.py`.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::time::{Duration, Instant};
+
+use serde::Serialize;
 
 use crate::model::handoff::{is_ignored_handoff_name, HANDOFF_DIRNAME};
 use crate::model::marker::MARKER_FERTIG;
@@ -28,6 +30,17 @@ struct PendingState {
     stable_since: Instant,
     logged_waiting: bool,
     logged_no_media: bool,
+    dir_name: String,
+    waiting_for_media: bool,
+}
+
+/// UI snapshot of a folder waiting for unchanged content (or media files).
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct StabilityPendingItem {
+    pub dir_name: String,
+    pub remaining_seconds: f64,
+    pub required_seconds: f64,
+    pub waiting_for_media: bool,
 }
 
 /// Case-normalized absolute path key (legacy `os.path.normcase(os.path.abspath(...))`).
@@ -156,7 +169,11 @@ impl FolderStabilityTracker {
                 stable_since: now,
                 logged_waiting: false,
                 logged_no_media: false,
+                dir_name: dir_name.to_string(),
+                waiting_for_media: true,
             });
+            state.waiting_for_media = true;
+            state.fingerprint = fingerprint;
             if !state.logged_no_media {
                 logging::log_info(&format!(
                     "Ordner '{dir_name}': Marker gefunden, warte auf Medien-Dateien..."
@@ -184,6 +201,8 @@ impl FolderStabilityTracker {
                     stable_since: now,
                     logged_waiting: false,
                     logged_no_media: false,
+                    dir_name: dir_name.to_string(),
+                    waiting_for_media: false,
                 },
             );
         }
@@ -218,6 +237,39 @@ impl FolderStabilityTracker {
 
     pub fn clear(&mut self) {
         self.pending.clear();
+    }
+
+    /// Drop pending folders that were not observed as still waiting this scan.
+    pub fn retain_keys(&mut self, keys: &HashSet<String>) {
+        self.pending.retain(|key, _| keys.contains(key));
+    }
+
+    pub fn snapshot(&self) -> Vec<StabilityPendingItem> {
+        self.snapshot_at(Instant::now())
+    }
+
+    pub fn snapshot_at(&self, now: Instant) -> Vec<StabilityPendingItem> {
+        let required = self.required.as_secs_f64();
+        let mut items: Vec<StabilityPendingItem> = self
+            .pending
+            .values()
+            .map(|state| {
+                let elapsed = now.saturating_duration_since(state.stable_since).as_secs_f64();
+                let remaining = if state.waiting_for_media {
+                    0.0
+                } else {
+                    (required - elapsed).max(0.0)
+                };
+                StabilityPendingItem {
+                    dir_name: state.dir_name.clone(),
+                    remaining_seconds: remaining,
+                    required_seconds: required,
+                    waiting_for_media: state.waiting_for_media,
+                }
+            })
+            .collect();
+        items.sort_by(|a, b| a.dir_name.cmp(&b.dir_name));
+        items
     }
 
     #[cfg(test)]
@@ -383,5 +435,52 @@ mod tests {
         {
             assert_eq!(a, a.to_lowercase());
         }
+    }
+
+    #[test]
+    fn snapshot_reports_remaining_seconds() {
+        let dir = tempdir().unwrap();
+        write_bytes(&dir.path().join(MARKER_FERTIG), 2);
+        write_bytes(&dir.path().join("a.bin"), 4);
+        let mut tracker = FolderStabilityTracker::new(15.0);
+        let t0 = Instant::now();
+        assert_eq!(tracker.observe_at(dir.path(), t0), ObserveResult::Waiting);
+
+        let snap = tracker.snapshot_at(t0);
+        assert_eq!(snap.len(), 1);
+        assert_eq!(
+            snap[0].dir_name,
+            dir.path().file_name().unwrap().to_string_lossy()
+        );
+        assert!(!snap[0].waiting_for_media);
+        assert!((snap[0].required_seconds - 15.0).abs() < 0.01);
+        assert!((snap[0].remaining_seconds - 15.0).abs() < 0.01);
+
+        let later = tracker.snapshot_at(t0 + Duration::from_secs(5));
+        assert!((later[0].remaining_seconds - 10.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn snapshot_marks_waiting_for_media() {
+        let dir = tempdir().unwrap();
+        write_bytes(&dir.path().join(MARKER_FERTIG), 2);
+        let mut tracker = FolderStabilityTracker::new(15.0);
+        assert_eq!(tracker.observe(dir.path()), ObserveResult::Waiting);
+        let snap = tracker.snapshot();
+        assert_eq!(snap.len(), 1);
+        assert!(snap[0].waiting_for_media);
+        assert_eq!(snap[0].remaining_seconds, 0.0);
+    }
+
+    #[test]
+    fn retain_keys_drops_unseen_pending() {
+        let dir = tempdir().unwrap();
+        write_bytes(&dir.path().join(MARKER_FERTIG), 2);
+        write_bytes(&dir.path().join("a.bin"), 4);
+        let mut tracker = FolderStabilityTracker::new(30.0);
+        assert_eq!(tracker.observe(dir.path()), ObserveResult::Waiting);
+        tracker.retain_keys(&HashSet::new());
+        assert_eq!(tracker.pending_count(), 0);
+        assert!(tracker.snapshot().is_empty());
     }
 }

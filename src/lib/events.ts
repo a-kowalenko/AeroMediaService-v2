@@ -3,6 +3,7 @@
 export const LOG_MESSAGE = "log-message";
 export const SETTINGS_CHANGED = "settings-changed";
 export const MONITORING_STATUS_CHANGED = "monitoring-status-changed";
+export const STABILITY_PENDING_CHANGED = "stability-pending-changed";
 export const STOP_MONITORING = "stop-monitoring";
 export const UPLOAD_PROGRESS_FILE = "upload-progress-file";
 export const UPLOAD_PROGRESS_TOTAL = "upload-progress-total";

@@ -777,6 +777,31 @@ mod tests {
         assert_eq!(updated.email_status, "Gesendet");
         assert_eq!(updated.share_link, "https://example/share");
         assert_eq!(updated.overall_status, "Komplett");
+        assert!(updated.combined_error.is_empty());
+    }
+
+    #[test]
+    fn successful_retry_does_not_keep_upload_error_as_current() {
+        let (_dir, mut store) = open_tmp();
+        store
+            .add_or_update(&json!({
+                "dir_name": "Flug_002",
+                "status": "Fehler",
+                "error_msg": "Dropbox 429",
+            }))
+            .unwrap();
+        let updated = store
+            .add_or_update(&json!({
+                "dir_name": "Flug_002",
+                "status": "Erfolgreich",
+                "email_status": "Gesendet",
+            }))
+            .unwrap()
+            .unwrap();
+        assert_eq!(updated.status, "Erfolgreich");
+        assert_eq!(updated.error_msg, "Dropbox 429");
+        assert!(updated.combined_error.is_empty());
+        assert_eq!(updated.overall_status, "Komplett");
     }
 
     #[test]

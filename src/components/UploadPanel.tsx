@@ -1,10 +1,11 @@
 import { useEffect, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { CloudUpload, Pause, Play, X } from "lucide-react";
+import { CloudUpload, Pause, Play, Timer, X } from "lucide-react";
 import { Panel } from "./Panel";
 import { ProgressBar } from "./ProgressBar";
 import { Button } from "@/components/ui/button";
 import {
+  STABILITY_PENDING_CHANGED,
   UPLOAD_FAILED,
   UPLOAD_FINISHED,
   UPLOAD_JOB_ACTIVE,
@@ -15,17 +16,21 @@ import {
 } from "@/lib/events";
 import {
   cancelUpload,
+  getStabilityPending,
   getUploadQueue,
   pauseUpload,
   resumeUpload,
   type ByteProgress,
   type QueueSnapshotItem,
+  type StabilityPendingItem,
 } from "@/lib/tauri";
 import { cn } from "@/lib/utils";
 import { showAppToast } from "@/lib/toast";
 import { useUiStore } from "@/store/uiStore";
 
 const EMPTY_PROGRESS: ByteProgress = { percent: 0, current: 0, total: 0 };
+
+type PendingView = StabilityPendingItem & { receivedAt: number };
 
 function formatBytes(value: number): string {
   if (value <= 0) return "0 B";
@@ -39,6 +44,32 @@ function formatBytes(value: number): string {
   return `${n.toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
 }
 
+function stampPending(items: StabilityPendingItem[]): PendingView[] {
+  const receivedAt = Date.now();
+  return items.map((item) => ({ ...item, receivedAt }));
+}
+
+function remainingSeconds(item: PendingView, now: number): number {
+  if (item.waiting_for_media) return 0;
+  const elapsed = (now - item.receivedAt) / 1000;
+  return Math.max(0, item.remaining_seconds - elapsed);
+}
+
+function stabilityLabel(item: PendingView, now: number): string {
+  if (item.waiting_for_media) return "Wartet auf Medien-Dateien";
+  const left = remainingSeconds(item, now);
+  if (left <= 0) return "Inhalt stabil — Upload wird vorbereitet";
+  return `Warte auf Datei-Stabilität · noch ${Math.ceil(left)} s`;
+}
+
+function stabilityProgress(item: PendingView, now: number): number {
+  if (item.waiting_for_media) return 0;
+  const required = item.required_seconds;
+  if (required <= 0) return 100;
+  const left = remainingSeconds(item, now);
+  return Math.max(0, Math.min(100, ((required - left) / required) * 100));
+}
+
 type Props = {
   className?: string;
   compact?: boolean;
@@ -50,18 +81,34 @@ export function UploadPanel({ className, compact = false }: Props) {
   const [file, setFile] = useState<ByteProgress>(EMPTY_PROGRESS);
   const [total, setTotal] = useState<ByteProgress>(EMPTY_PROGRESS);
   const [queue, setQueue] = useState<QueueSnapshotItem[]>([]);
+  const [pending, setPending] = useState<PendingView[]>([]);
+  const [now, setNow] = useState(() => Date.now());
   const [busy, setBusy] = useState(false);
   const confirm = useUiStore((s) => s.confirm);
 
   useEffect(() => {
     getUploadQueue().then(setQueue).catch(() => {});
+    getStabilityPending().then((items) => setPending(stampPending(items))).catch(() => {});
   }, []);
 
   useEffect(() => {
+    if (pending.length === 0) return;
+    const id = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, [pending.length]);
+
+  useEffect(() => {
+    let cancelled = false;
     const unlisteners: Array<() => void> = [];
     const add = <T,>(name: string, handler: (payload: T) => void) => {
       listen<T>(name, (event) => handler(event.payload))
-        .then((fn) => unlisteners.push(fn))
+        .then((fn) => {
+          if (cancelled) {
+            fn();
+            return;
+          }
+          unlisteners.push(fn);
+        })
         .catch(() => {});
     };
     add<boolean>(UPLOAD_JOB_ACTIVE, setActive);
@@ -69,15 +116,28 @@ export function UploadPanel({ className, compact = false }: Props) {
     add<ByteProgress>(UPLOAD_PROGRESS_FILE, setFile);
     add<ByteProgress>(UPLOAD_PROGRESS_TOTAL, setTotal);
     add<QueueSnapshotItem[]>(UPLOAD_QUEUE_CHANGED, setQueue);
+    add<StabilityPendingItem[]>(STABILITY_PENDING_CHANGED, (items) => {
+      setPending(stampPending(items));
+      setNow(Date.now());
+    });
     add<string>(UPLOAD_FINISHED, (msg) => {
       setStatus(`Erfolgreich: ${msg}`);
-      showAppToast(msg, { tone: "success", title: "Upload fertig" });
+      showAppToast(msg, {
+        tone: "success",
+        title: "Upload fertig",
+        id: `upload-finished:${msg}`,
+      });
     });
     add<string>(UPLOAD_FAILED, (msg) => {
       setStatus(`Fehler: ${msg}`);
-      showAppToast(msg, { tone: "error", title: "Upload fehlgeschlagen" });
+      showAppToast(msg, {
+        tone: "error",
+        title: "Upload fehlgeschlagen",
+        id: `upload-failed:${msg}`,
+      });
     });
     return () => {
+      cancelled = true;
       unlisteners.forEach((fn) => fn());
     };
   }, []);
@@ -101,46 +161,112 @@ export function UploadPanel({ className, compact = false }: Props) {
     await run(cancelUpload);
   }
 
+  const hasPending = pending.length > 0;
+  const activeJob = queue.find((item) => item.state === "active");
   const queueLabel =
     queue.length === 0
       ? "Keine Aufträge"
       : `${queue.length} in Warteschlange`;
+  const chipLabel = active ? "Aktiv" : hasPending ? "Wartet" : "Idle";
+  const description = active
+    ? activeJob?.dir_name || "Upload läuft"
+    : hasPending
+      ? pending.length === 1
+        ? "Stabilität prüfen…"
+        : `${pending.length} Ordner warten`
+      : queue.length > 0
+        ? queueLabel
+        : undefined;
 
   return (
     <Panel
       className={className}
       compact={compact}
       title="Upload"
-      description={active ? status : queueLabel}
+      description={description}
       actions={
         <span
           className={cn(
             "inline-flex items-center gap-1.5 rounded-md border px-2 py-0.5 text-[11px] font-medium",
             active
               ? "border-primary/35 bg-primary/10 text-primary"
-              : "border-border bg-card-elevated/80 text-muted",
+              : hasPending
+                ? "border-warning/35 bg-warning/10 text-warning"
+                : "border-border bg-card-elevated/80 text-muted",
           )}
         >
           <span
             className={cn(
               "h-1.5 w-1.5 rounded-full",
-              active ? "bg-primary ams-chip-active" : "bg-muted",
+              active
+                ? "bg-primary ams-chip-active"
+                : hasPending
+                  ? "bg-warning ams-chip-active"
+                  : "bg-muted",
             )}
           />
-          {active ? "Aktiv" : "Idle"}
+          {chipLabel}
         </span>
       }
     >
-      {!active ? (
+      {!active && !hasPending && queue.length === 0 ? (
         <div className="mb-1 flex items-start gap-2 text-sm text-muted">
           <CloudUpload className="mt-0.5 h-4 w-4 shrink-0 text-primary/70" />
           <span className="min-w-0 leading-snug">
-            {queue.length === 0
-              ? "Bereit — wartet auf den nächsten Auftrag."
-              : `${queue.length} Auftrag${queue.length === 1 ? "" : "e"} in der Warteschlange.`}
+            Bereit — wartet auf den nächsten Auftrag.
           </span>
         </div>
-      ) : (
+      ) : null}
+
+      {hasPending ? (
+        <div className={cn(active ? "mb-4" : "mb-1")}>
+          <p className="mb-2 text-[11px] font-semibold tracking-[0.08em] text-muted uppercase">
+            Stabilität
+          </p>
+          <ul className="space-y-1.5">
+            {pending.map((item) => {
+              const left = remainingSeconds(item, now);
+              const detail = item.waiting_for_media
+                ? "Dateien"
+                : left <= 0
+                  ? "bereit"
+                  : `${Math.ceil(left)}s`;
+              return (
+                <li
+                  key={item.dir_name}
+                  className="rounded-lg border border-warning/25 bg-warning/5 px-2.5 py-2 text-sm"
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <strong className="truncate text-foreground">
+                      {item.dir_name}
+                    </strong>
+                    <span className="inline-flex shrink-0 items-center gap-1 rounded-md bg-warning/15 px-1.5 py-0.5 text-[10px] font-medium text-warning">
+                      <Timer className="h-3 w-3" />
+                      {detail}
+                    </span>
+                  </div>
+                  <p className="mt-0.5 truncate text-xs text-muted">
+                    {stabilityLabel(item, now)}
+                  </p>
+                  {!item.waiting_for_media ? (
+                    <div className="mt-2">
+                      <ProgressBar
+                        percent={stabilityProgress(item, now)}
+                        label="Datei-Stabilität"
+                        detail={
+                          left <= 0 ? "bereit" : `${Math.ceil(left)} / ${Math.round(item.required_seconds)} s`
+                        }
+                      />
+                    </div>
+                  ) : null}
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      ) : null}
+
+      {active ? (
         <>
           <div className="mb-3 flex items-start gap-2 text-sm text-muted">
             <CloudUpload className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
@@ -194,10 +320,10 @@ export function UploadPanel({ className, compact = false }: Props) {
             </Button>
           </div>
         </>
-      )}
+      ) : null}
 
       {queue.length > 0 ? (
-        <div className={cn("border-t border-border/70 pt-3", active ? "mt-4" : "mt-3")}>
+        <div className={cn("border-t border-border/70 pt-3", active || hasPending ? "mt-4" : "mt-3")}>
           <p className="mb-2 text-[11px] font-semibold tracking-[0.08em] text-muted uppercase">
             Warteschlange
           </p>

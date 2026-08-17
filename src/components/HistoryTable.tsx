@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { listen } from "@tauri-apps/api/event";
 import {
   ChevronLeft,
@@ -25,6 +25,7 @@ import {
   formatManualStatusSummary,
   formatResendHistorySummary,
   historyDisplayName,
+  overallStatusTone,
 } from "@/lib/utils";
 import type { HistoryEntry } from "@/lib/tauri";
 import {
@@ -54,7 +55,6 @@ const DETAIL_ROWS: Array<[string, (item: HistoryEntry) => string]> = [
   ["Telefon", (i) => i.phone || "—"],
   ["Download-Link", (i) => i.share_link || "—"],
   ["Archiv", (i) => i.archived_path || "—"],
-  ["Fehlertext", (i) => i.combined_error || "—"],
   ["Wiederversand", (i) => formatResendHistorySummary(i)],
   ["Manueller Status", (i) => formatManualStatusSummary(i)],
   [
@@ -65,6 +65,24 @@ const DETAIL_ROWS: Array<[string, (item: HistoryEntry) => string]> = [
     },
   ],
 ];
+
+type ErrorDetail = {
+  label: string;
+  text: string;
+  tone: "current" | "resolved" | "none";
+};
+
+function historyErrorDetail(item: HistoryEntry): ErrorDetail {
+  const current = item.combined_error.trim();
+  if (current) {
+    return { label: "Fehlertext", text: current, tone: "current" };
+  }
+  const last = item.error_msg.trim();
+  if (last && overallStatusTone(item.status, "upload") !== "error") {
+    return { label: "Letzter Fehler", text: last, tone: "resolved" };
+  }
+  return { label: "Fehlertext", text: "—", tone: "none" };
+}
 
 export function HistoryTable() {
   const items = useHistoryStore((s) => s.items);
@@ -419,18 +437,42 @@ export function HistoryTable() {
   }
 
   function renderDetailRows(rows: typeof DETAIL_ROWS) {
-    return rows.map(([label, valueOf]) => {
+    const error = historyErrorDetail(selected!);
+    const errorRow = (
+      <div
+        key="error-detail"
+        className="grid grid-cols-[7.5rem_1fr] gap-2 border-b border-border/40 py-1.5 last:border-b-0 lg:grid-cols-[9.5rem_1fr]"
+      >
+        <span className="text-xs font-medium text-muted">{error.label}</span>
+        <span
+          className={cn(
+            "break-all",
+            error.tone === "current" && "text-destructive",
+            error.tone === "resolved" && "text-muted",
+            error.tone === "none" && "text-foreground",
+          )}
+        >
+          {error.tone === "resolved" ? `Behoben — ${error.text}` : error.text}
+        </span>
+      </div>
+    );
+    const parts: ReactNode[] = [];
+    for (const [label, valueOf] of rows) {
       const value = valueOf(selected!);
-      return (
+      parts.push(
         <div
           key={label}
           className="grid grid-cols-[7.5rem_1fr] gap-2 border-b border-border/40 py-1.5 last:border-b-0 lg:grid-cols-[9.5rem_1fr]"
         >
           <span className="text-xs font-medium text-muted">{label}</span>
           <span className="break-all text-foreground">{value}</span>
-        </div>
+        </div>,
       );
-    });
+      if (label === "Archiv") {
+        parts.push(errorRow);
+      }
+    }
+    return parts;
   }
 
   return (
