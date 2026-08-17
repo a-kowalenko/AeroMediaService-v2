@@ -2,7 +2,6 @@ import { useCallback, useEffect, useRef, useState, type ClipboardEvent, type For
 import {
   Check,
   ClipboardPaste,
-  History,
   ListChecks,
   Pencil,
   RotateCcw,
@@ -24,6 +23,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { cn, formatHistoryDate } from "@/lib/utils";
 import type { Customer } from "@/lib/tauri";
 import { useCustomerStore, type CustomerFilter } from "@/store/customerStore";
@@ -145,6 +145,8 @@ export function CustomersPanel() {
   const [formError, setFormError] = useState("");
   const [formBusy, setFormBusy] = useState(false);
   const [assignAfterSave, setAssignAfterSave] = useState(false);
+  const [intakeSavedCount, setIntakeSavedCount] = useState(0);
+  const [intakeFocusKey, setIntakeFocusKey] = useState(0);
   const [clipboardCustomer, setClipboardCustomer] = useState<ClipboardCustomer | null>(
     null,
   );
@@ -211,7 +213,7 @@ export function CustomersPanel() {
     if (!intakeOpen) return;
     const id = window.setTimeout(() => vornameRef.current?.focus(), 40);
     return () => window.clearTimeout(id);
-  }, [intakeOpen]);
+  }, [intakeOpen, intakeFocusKey]);
 
   function applyClipboard(parsed: ClipboardCustomer) {
     setForm({
@@ -223,9 +225,20 @@ export function CustomersPanel() {
     setFormError("");
   }
 
+  function resetIntakeDialog() {
+    setIntakeOpen(false);
+    setForm(EMPTY_FORM);
+    setFormError("");
+    setAssignAfterSave(false);
+    setIntakeSavedCount(0);
+    lastAppliedClipboardRef.current = "";
+    void checkClipboard();
+  }
+
   function openIntake(prefill?: ClipboardCustomer) {
     setFormError("");
     setAssignAfterSave(false);
+    setIntakeSavedCount(0);
     if (prefill) {
       applyClipboard(prefill);
       lastAppliedClipboardRef.current = JSON.stringify(prefill);
@@ -238,12 +251,7 @@ export function CustomersPanel() {
 
   function closeIntake() {
     if (formBusy) return;
-    setIntakeOpen(false);
-    setForm(EMPTY_FORM);
-    setFormError("");
-    setAssignAfterSave(false);
-    lastAppliedClipboardRef.current = "";
-    void checkClipboard();
+    resetIntakeDialog();
   }
 
   async function submitIntake(parsed?: ClipboardCustomer) {
@@ -260,18 +268,12 @@ export function CustomersPanel() {
     setFormBusy(true);
     setFormError("");
     try {
-      const customer = await add(
+      return await add(
         payload.vorname,
         payload.nachname,
         payload.email,
         payload.telefon,
       );
-      lastAppliedClipboardRef.current = "";
-      setClipboardCustomer(null);
-      setForm(EMPTY_FORM);
-      setIntakeOpen(false);
-      setAssignAfterSave(false);
-      return customer;
     } catch {
       return null;
     } finally {
@@ -281,10 +283,20 @@ export function CustomersPanel() {
 
   async function onSubmit(e: FormEvent) {
     e.preventDefault();
-      const customer = await submitIntake();
-    if (customer && assignAfterSave) {
+    const shouldAssign = assignAfterSave;
+    const customer = await submitIntake();
+    if (!customer) return;
+
+    setForm(EMPTY_FORM);
+    if (shouldAssign) {
+      resetIntakeDialog();
       startAssign(customer);
+      return;
     }
+
+    setIntakeSavedCount((n) => n + 1);
+    setIntakeFocusKey((n) => n + 1);
+    void checkClipboard();
   }
 
   function onFormPaste(e: ClipboardEvent) {
@@ -405,70 +417,42 @@ export function CustomersPanel() {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-      <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-border/70 bg-card-elevated/40 px-4 py-3">
-        <div className="min-w-0 flex-1 basis-full sm:basis-auto">
-          <h2 className="text-sm font-semibold tracking-tight text-foreground">
-            {view === "history" ? "Zuweisungen" : "Kundenwarteschlange"}
-          </h2>
-          <p className="text-xs text-muted">
-            {view === "history"
-              ? history.length === 0
-                ? "Noch keine Marker geschrieben"
-                : `${history.length} Zuweisungen`
-              : openCount === 1
-                ? "1 Kunde offen · Ordner zuweisen schreibt _fertig.txt"
-                : `${openCount} Kunden offen · Ordner zuweisen schreibt _fertig.txt`}
-          </p>
-        </div>
-
-        <div className="flex flex-wrap items-center gap-2">
-          <div className="flex gap-1">
-            <Button
-              type="button"
-              size="sm"
-              variant={view === "queue" ? "default" : "secondary"}
-              onClick={() => setView("queue")}
-            >
+      <div className="flex shrink-0 flex-wrap items-center justify-between gap-x-3 gap-y-2 border-b border-border/70 bg-card-elevated/40 px-4 py-3">
+        <Tabs
+          value={view}
+          onValueChange={(value) => {
+            if (value === "queue" || value === "history") setView(value);
+          }}
+        >
+          <TabsList className="h-8" aria-label="Kundenansicht">
+            <TabsTrigger value="queue" className="h-6 gap-1.5 px-2.5 text-xs">
               Warteschlange
               {openCount > 0 ? (
-                <span
-                  className={cn(
-                    "rounded-full px-1.5 text-[10px] font-semibold leading-4",
-                    view === "queue"
-                      ? "bg-primary-foreground/20"
-                      : "bg-primary-soft text-primary",
-                  )}
-                >
+                <span className="rounded-full bg-primary-soft px-1.5 text-[10px] font-semibold leading-4 text-primary">
                   {openCount}
                 </span>
               ) : null}
-            </Button>
-            <Button
-              type="button"
-              size="sm"
-              variant={view === "history" ? "default" : "secondary"}
-              onClick={() => setView("history")}
-            >
-              <History className="h-3.5 w-3.5" />
-              Verlauf
-            </Button>
-          </div>
-          {view === "queue" ? (
-            <Button
-              type="button"
-              size="sm"
-              variant="secondary"
-              disabled={openCount === 0}
-              onClick={() => setBatchOpen(true)}
-              title="Offene Kunden passenden Ordnern zuordnen und bestätigen"
-            >
-              <ListChecks className="h-3.5 w-3.5" />
-              Alle zuweisen
-            </Button>
-          ) : null}
+            </TabsTrigger>
+            <TabsTrigger value="history" className="h-6 gap-1.5 px-2.5 text-xs">
+              Zuweisungen
+            </TabsTrigger>
+          </TabsList>
+        </Tabs>
+        <div className="flex items-center gap-2">
+          <Button
+            type="button"
+            size="sm"
+            variant="secondary"
+            disabled={openCount === 0}
+            onClick={() => setBatchOpen(true)}
+            title="Offene Kunden passenden Ordnern zuordnen"
+          >
+            <ListChecks className="h-3.5 w-3.5" />
+            Passende zuweisen…
+          </Button>
           <Button type="button" size="sm" onClick={() => openIntake()}>
             <UserPlus className="h-3.5 w-3.5" />
-            Kunde aufnehmen
+            Aufnehmen…
           </Button>
         </div>
       </div>
@@ -491,10 +475,11 @@ export function CustomersPanel() {
                 onClick={() => openIntake(clipboardCustomer)}
               >
                 <ClipboardPaste className="h-3.5 w-3.5" />
-                Übernehmen
+                Übernehmen…
               </Button>
               <Button
                 type="button"
+                variant="secondary"
                 size="sm"
                 disabled={formBusy}
                 onClick={() => void onQuickAddFromClipboard()}
@@ -519,30 +504,43 @@ export function CustomersPanel() {
                 aria-label="Kunden durchsuchen"
               />
             </div>
-            <div className="flex gap-1">
-              {filters.map(([key, label]) => (
-                <Button
-                  key={key}
-                  type="button"
-                  size="sm"
-                  variant={filter === key ? "default" : "secondary"}
-                  onClick={() => setFilter(key)}
-                >
-                  {label}
-                  {key === "unprocessed" && openCount > 0 ? (
-                    <span
-                      className={cn(
-                        "rounded-full px-1.5 text-[10px] font-semibold leading-4",
-                        filter === key
-                          ? "bg-primary-foreground/20"
-                          : "bg-primary-soft text-primary",
-                      )}
-                    >
-                      {openCount}
-                    </span>
-                  ) : null}
-                </Button>
-              ))}
+            <div
+              className="flex items-center gap-0.5 rounded-lg border border-border bg-card-elevated p-0.5"
+              role="group"
+              aria-label="Status filtern"
+            >
+              {filters.map(([key, label]) => {
+                const selected = filter === key;
+                return (
+                  <button
+                    key={key}
+                    type="button"
+                    aria-pressed={selected}
+                    className={cn(
+                      "inline-flex h-7 items-center gap-1 rounded-md px-2.5 text-xs font-medium transition-colors",
+                      "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                      selected
+                        ? "bg-card text-foreground shadow-sm ring-1 ring-border"
+                        : "text-muted hover:text-foreground",
+                    )}
+                    onClick={() => setFilter(key)}
+                  >
+                    {label}
+                    {key === "unprocessed" && openCount > 0 ? (
+                      <span
+                        className={cn(
+                          "rounded-full px-1.5 text-[10px] font-semibold leading-4",
+                          selected
+                            ? "bg-primary-soft text-primary"
+                            : "bg-background/80 text-muted",
+                        )}
+                      >
+                        {openCount}
+                      </span>
+                    ) : null}
+                  </button>
+                );
+              })}
             </div>
           </div>
 
@@ -553,7 +551,7 @@ export function CustomersPanel() {
                 {!loading && !search.trim() && filter !== "processed" ? (
                   <Button type="button" onClick={() => openIntake()}>
                     <UserPlus className="h-3.5 w-3.5" />
-                    Ersten Kunden aufnehmen
+                    Aufnehmen…
                   </Button>
                 ) : null}
               </div>
@@ -605,35 +603,43 @@ export function CustomersPanel() {
                           </p>
                         </div>
                       ) : null}
-                      <div className="flex shrink-0 flex-wrap gap-1.5">
+                      <div className="flex shrink-0 flex-wrap items-center gap-1">
                         <Button
                           type="button"
                           size="sm"
-                          variant={customer.processed ? "secondary" : "default"}
+                          variant="outline"
                           onClick={() => startAssign(customer)}
                           title={
                             customer.processed
-                              ? "Erneut _fertig.txt in einen Ordner schreiben"
-                              : "Ordner wählen und _fertig.txt schreiben"
+                              ? "Erneut einem Ordner zuweisen"
+                              : "Ordner wählen"
                           }
                         >
-                          {customer.processed ? "Erneut zuweisen" : "Zuweisen"}
+                          {customer.processed ? "Erneut zuweisen…" : "Ordner zuweisen…"}
                         </Button>
                         <Button
                           type="button"
-                          size="sm"
-                          variant="secondary"
+                          variant="ghost"
+                          size="icon"
+                          className="h-8 w-8"
                           onClick={() => openEdit(customer)}
                           title="Bearbeiten"
+                          aria-label="Bearbeiten"
                         >
                           <Pencil className="h-3.5 w-3.5" />
                         </Button>
                         <Button
                           type="button"
-                          size="sm"
-                          variant="secondary"
+                          variant="ghost"
+                          size="icon"
+                          className="h-8 w-8"
                           onClick={() => void toggleProcessed(customer)}
                           title={
+                            customer.processed
+                              ? "Als offen markieren"
+                              : "Als erledigt markieren"
+                          }
+                          aria-label={
                             customer.processed
                               ? "Als offen markieren"
                               : "Als erledigt markieren"
@@ -708,7 +714,7 @@ export function CustomersPanel() {
           <DialogHeader>
             <DialogTitle>Kunde aufnehmen</DialogTitle>
             <DialogDescription>
-              In die Warteschlange legen. Anschließend einem Medienordner zuweisen.
+              Formular bleibt offen für den nächsten Kunden.
             </DialogDescription>
           </DialogHeader>
           <form onSubmit={(e) => void onSubmit(e)} onPaste={onFormPaste} className="space-y-3">
@@ -773,7 +779,7 @@ export function CustomersPanel() {
 
             <DialogFooter className="gap-2 pt-1">
               <Button type="button" variant="secondary" disabled={formBusy} onClick={closeIntake}>
-                Abbrechen
+                {intakeSavedCount > 0 ? "Fertig" : "Abbrechen"}
               </Button>
               <Button type="submit" disabled={formBusy}>
                 <UserPlus className="h-3.5 w-3.5" />

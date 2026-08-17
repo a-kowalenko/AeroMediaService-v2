@@ -23,7 +23,7 @@ function ToastCard({
     <div
       className={cn(
         "pointer-events-auto flex max-w-sm items-start gap-2.5 rounded-xl border border-border bg-card/95 px-3.5 py-3 shadow-lg backdrop-blur-md transition-all",
-        visible ? "opacity-100 translate-y-0" : "opacity-0 -translate-y-1",
+        visible ? "opacity-100 translate-y-0" : "opacity-0 translate-y-1",
         tone === "success" && "border-l-4 border-l-success",
         tone === "error" && "border-l-4 border-l-destructive",
         tone === "info" && "border-l-4 border-l-primary",

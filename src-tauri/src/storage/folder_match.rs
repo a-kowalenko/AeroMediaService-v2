@@ -14,6 +14,9 @@ const NEAR_BEST: u32 = 40;
 const MIN_TOKEN_LEN: usize = 2;
 const MIN_NACHNAME_SUBSTRING: usize = 4;
 const MIN_FUZZY_LEN: usize = 4;
+/// `ey`/`ay` spelling variants only for longer names (`Viehmeyer` ↔ `Viehmeier`).
+/// Short names like `Meyer`/`Meier` stay distinct to avoid unique-last-name auto-assign.
+const MIN_DIGRAPH_LEN: usize = 6;
 
 /// Guest portion of an ATS (or legacy) folder name.
 pub fn guest_segment(folder_name: &str) -> &str {
@@ -80,14 +83,52 @@ fn nickname_stem(token: &str) -> &str {
     if bytes.len() >= 6 && token.ends_with("ie") {
         return &token[..token.len() - 2];
     }
-    if bytes.len() >= 5 && matches!(bytes.last(), Some(b'i' | b'y')) {
+    if bytes.len() >= 5 && (token.ends_with('i') || token.ends_with('y')) {
         return &token[..token.len() - 1];
     }
     token
 }
 
-/// Nickname / truncation match: `mausi` ↔ `maushake`, `alex` ↔ `alexander`.
-fn tokens_similar(a: &str, b: &str) -> bool {
+/// `henn` → `hen` so `Henni` can match `Henrik`.
+fn collapse_doubled_final(stem: &str) -> Option<&str> {
+    let bytes = stem.as_bytes();
+    if bytes.len() < 4 {
+        return None;
+    }
+    let last = bytes[bytes.len() - 1];
+    let prev = bytes[bytes.len() - 2];
+    if last.is_ascii_alphabetic() && last == prev {
+        Some(&stem[..stem.len() - 1])
+    } else {
+        None
+    }
+}
+
+fn diminutive_prefix_match(original: &str, stem: &str, other: &str, other_stem: &str) -> bool {
+    if stem.len() >= MIN_FUZZY_LEN && (other.starts_with(stem) || other_stem.starts_with(stem)) {
+        return true;
+    }
+    // Collapse doubled consonants only for stripped diminutives (`Henni` → `henn` → `hen`).
+    if stem.len() == original.len() {
+        return false;
+    }
+    let Some(collapsed) = collapse_doubled_final(stem) else {
+        return false;
+    };
+    if collapsed.len() < 3 {
+        return false;
+    }
+    [other, other_stem].into_iter().any(|candidate| {
+        candidate.len() >= collapsed.len() + 2 && candidate.starts_with(collapsed)
+    })
+}
+
+/// German spelling variants: `Viehmeyer` → `Viehmeier`, `Haymann` → `Haimann`.
+fn normalize_german_digraphs(token: &str) -> String {
+    token.replace("ey", "ei").replace("ay", "ai")
+}
+
+fn tokens_similar_raw(a: &str, b: &str) -> bool {
     if a == b {
         return true;
     }
@@ -97,15 +138,34 @@ fn tokens_similar(a: &str, b: &str) -> bool {
     }
     let stem_a = nickname_stem(a);
     let stem_b = nickname_stem(b);
-    if stem_a.len() >= MIN_FUZZY_LEN && (b.starts_with(stem_a) || stem_b.starts_with(stem_a)) {
-        return true;
-    }
-    if stem_b.len() >= MIN_FUZZY_LEN && (a.starts_with(stem_b) || stem_a.starts_with(stem_b)) {
+    if diminutive_prefix_match(a, stem_a, b, stem_b)
+        || diminutive_prefix_match(b, stem_b, a, stem_a)
+    {
         return true;
     }
     let lcp = common_prefix_len(a, b);
     let min_len = shorter.len();
     lcp >= MIN_FUZZY_LEN && min_len > 0 && lcp * 10 >= min_len * 7
+}
+
+/// Nickname / truncation match: `mausi` ↔ `maushake`, `alex` ↔ `alexander`.
+/// Longer names also accept `ei`/`ey` and `ai`/`ay` spelling variants.
+fn tokens_similar(a: &str, b: &str) -> bool {
+    if tokens_similar_raw(a, b) {
+        return true;
+    }
+    if a.len() < MIN_DIGRAPH_LEN || b.len() < MIN_DIGRAPH_LEN {
+        return false;
+    }
+    if !a.contains('y') && !b.contains('y') {
+        return false;
+    }
+    let na = normalize_german_digraphs(a);
+    let nb = normalize_german_digraphs(b);
+    if na == a && nb == b {
+        return false;
+    }
+    tokens_similar_raw(&na, &nb)
 }
 
 fn any_token_similar(needles: &[String], haystack: &[String]) -> bool {
@@ -125,7 +185,17 @@ fn nachname_hits(nach_tokens: &[String], guest_tokens: &[String], guest_joined: 
         return true;
     }
     let concat = nach_tokens.join("");
-    concat.len() >= MIN_NACHNAME_SUBSTRING && guest_joined.contains(&concat)
+    if concat.len() >= MIN_NACHNAME_SUBSTRING && guest_joined.contains(&concat) {
+        return true;
+    }
+    if concat.len() >= MIN_DIGRAPH_LEN {
+        let concat_norm = normalize_german_digraphs(&concat);
+        let guest_norm = normalize_german_digraphs(guest_joined);
+        if guest_norm.contains(&concat_norm) {
+            return true;
+        }
+    }
+    false
 }
 
 fn vorname_hits(vor_tokens: &[String], guest_tokens: &[String]) -> bool {
@@ -351,6 +421,20 @@ mod tests {
     }
 
     #[test]
+    fn doubled_consonant_does_not_match_unrelated_last_name() {
+        assert_eq!(
+            score_folder_name(
+                "20260817_Paul_Kampmann_TA_X",
+                "Paul",
+                "Kamm",
+                true,
+                "20260817",
+            ),
+            0
+        );
+    }
+
+    #[test]
     fn concatenated_last_name_still_hits() {
         let score = score_folder_name(
             "20260815_MaxMustermann_TA_X",
@@ -502,6 +586,100 @@ mod tests {
         let customers = [("Benno", "Maushake")];
         let folders = [
             "20260817_benno_mausi_TA_Alberto",
+            "20260817_Lisa_Mueller_TA_Y",
+        ];
+        let hits = propose_unique_assignments(&customers, &folders, "20260817");
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].folder_index, 0);
+    }
+
+    #[test]
+    fn nickname_henni_matches_henrik() {
+        assert_eq!(nickname_stem("henni"), "henn");
+        assert_eq!(collapse_doubled_final("henn"), Some("hen"));
+        assert!(tokens_similar("henni", "henrik"));
+        let score = score_folder_name(
+            "20260817_Henrik_Mustermann_TA_X",
+            "henni",
+            "Mustermann",
+            true,
+            "20260817",
+        );
+        assert!(
+            score >= SCORE_NACHNAME + SCORE_VORNAME,
+            "expected henni to match Henrik, got {score}"
+        );
+    }
+
+    #[test]
+    fn ey_ei_last_name_and_nickname_first_name_match() {
+        let score = score_folder_name(
+            "20260817_Henrik_Viehmeyer_TA_X",
+            "henni",
+            "viehmeier",
+            true,
+            "20260817",
+        );
+        assert!(
+            score >= SCORE_NACHNAME + SCORE_VORNAME,
+            "expected henni viehmeier to match Henrik Viehmeyer, got {score}"
+        );
+        assert!(is_recommended(score, true, score, 1));
+    }
+
+    #[test]
+    fn concatenated_ey_ei_last_name_still_hits() {
+        let score = score_folder_name(
+            "20260817_HenrikViehmeyer_TA_X",
+            "henni",
+            "viehmeier",
+            true,
+            "20260817",
+        );
+        assert!(score >= SCORE_NACHNAME);
+    }
+
+    #[test]
+    fn short_meyer_does_not_match_meier() {
+        assert_eq!(
+            score_folder_name(
+                "20260817_Paul_Meyer_TA_X",
+                "Anna",
+                "Meier",
+                true,
+                "20260817",
+            ),
+            0
+        );
+        assert_eq!(
+            score_folder_name(
+                "20260817_Paul_Mayer_TA_X",
+                "Anna",
+                "Maier",
+                true,
+                "20260817",
+            ),
+            0
+        );
+    }
+
+    #[test]
+    fn ay_ai_compound_last_name_matches() {
+        let score = score_folder_name(
+            "20260817_Anna_Haymann_TA_X",
+            "Anna",
+            "Haimann",
+            true,
+            "20260817",
+        );
+        assert!(score >= SCORE_NACHNAME + SCORE_VORNAME);
+    }
+
+    #[test]
+    fn unique_assignment_picks_ey_ei_nickname_folder() {
+        let customers = [("henni", "viehmeier")];
+        let folders = [
+            "20260817_Henrik_Viehmeyer_TA_X",
             "20260817_Lisa_Mueller_TA_Y",
         ];
         let hits = propose_unique_assignments(&customers, &folders, "20260817");
