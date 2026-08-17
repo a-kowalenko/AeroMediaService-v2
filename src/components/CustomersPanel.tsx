@@ -608,6 +608,9 @@ export function CustomersPanel() {
                           type="button"
                           size="sm"
                           variant="outline"
+                          className={
+                            customer.processed ? undefined : "border-2 border-primary/50"
+                          }
                           onClick={() => startAssign(customer)}
                           title={
                             customer.processed

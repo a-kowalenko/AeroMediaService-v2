@@ -391,32 +391,31 @@ function App() {
         actions={
           <>
             <ConnectionStatusIndicator />
-            <Button
-              type="button"
-              size="sm"
-              disabled={monitorBusy || monitoring}
-              onClick={() => void onStart()}
-              title="Monitoring starten"
-            >
-              <Play className="h-3.5 w-3.5" />
-              <span className="hidden sm:inline">Start</span>
-            </Button>
-            <Button
-              type="button"
-              variant="secondary"
-              size="sm"
-              className={
-                monitoring
-                  ? "border-destructive/30 bg-destructive/10 text-destructive hover:bg-destructive/15 hover:text-destructive"
-                  : undefined
-              }
-              disabled={monitorBusy || !monitoring}
-              onClick={() => void onStop()}
-              title="Monitoring stoppen"
-            >
-              <Square className="h-3.5 w-3.5" />
-              <span className="hidden sm:inline">Stop</span>
-            </Button>
+            {monitoring ? (
+              <Button
+                type="button"
+                variant="secondary"
+                size="sm"
+                className="border-destructive/30 bg-destructive/10 text-destructive hover:bg-destructive/15 hover:text-destructive"
+                disabled={monitorBusy}
+                onClick={() => void onStop()}
+                title="Monitoring stoppen"
+              >
+                <Square className="h-3.5 w-3.5" />
+                <span className="hidden sm:inline">Stop</span>
+              </Button>
+            ) : (
+              <Button
+                type="button"
+                size="sm"
+                disabled={monitorBusy}
+                onClick={() => void onStart()}
+                title="Monitoring starten"
+              >
+                <Play className="h-3.5 w-3.5" />
+                <span className="hidden sm:inline">Start</span>
+              </Button>
+            )}
             <SettingsCluster onOpenSettings={() => setSettingsOpen(true)} />
           </>
         }
