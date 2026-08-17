@@ -90,13 +90,9 @@ fn linux_qsettings_path() -> Option<PathBuf> {
 fn macos_plist_path() -> Option<PathBuf> {
     let home = directories::BaseDirs::new()?.home_dir().to_path_buf();
     // Qt NativeFormat on macOS: ~/Library/Preferences/com.<Org>.<App>.plist
-    Some(
-        home.join("Library")
-            .join("Preferences")
-            .join(format!(
-                "com.{LEGACY_QSETTINGS_ORG}.{LEGACY_QSETTINGS_APP}.plist"
-            )),
-    )
+    Some(home.join("Library").join("Preferences").join(format!(
+        "com.{LEGACY_QSETTINGS_ORG}.{LEGACY_QSETTINGS_APP}.plist"
+    )))
 }
 
 #[cfg(windows)]
@@ -292,7 +288,10 @@ scan_interval=12
 selected_cloud_service=dropbox
 "#;
         let map = parse_qsettings_ini(ini);
-        assert_eq!(map.get("monitor_path").map(String::as_str), Some("D:/Media/Inbox"));
+        assert_eq!(
+            map.get("monitor_path").map(String::as_str),
+            Some("D:/Media/Inbox")
+        );
         assert_eq!(map.get("scan_interval").map(String::as_str), Some("12"));
         assert_eq!(
             map.get("selected_cloud_service").map(String::as_str),

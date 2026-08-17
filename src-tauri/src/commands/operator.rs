@@ -18,7 +18,10 @@ use crate::storage::history::{HistoryEntry, HistoryState};
 use crate::upload::retry::retry_upload_from_history;
 use crate::upload::UploadState;
 
-fn load_entry_json(history: &HistoryState, id: &str) -> Result<(HistoryEntry, serde_json::Value), String> {
+fn load_entry_json(
+    history: &HistoryState,
+    id: &str,
+) -> Result<(HistoryEntry, serde_json::Value), String> {
     let entry = history
         .get_by_id(id)?
         .ok_or_else(|| "Historieneintrag nicht gefunden.".to_string())?;
@@ -101,9 +104,15 @@ pub async fn resend_history_notifications(
         json = updated.to_json();
     }
 
-    let result =
-        resend_notifications(&json, &email, phone.as_deref(), &share_link, send_email, send_sms)
-            .await?;
+    let result = resend_notifications(
+        &json,
+        &email,
+        phone.as_deref(),
+        &share_link,
+        send_email,
+        send_sms,
+    )
+    .await?;
     history.add_or_update_from_value(&result.history_updates)?;
     events::emit(events::UPLOAD_HISTORY_UPDATE, &result.history_updates);
 

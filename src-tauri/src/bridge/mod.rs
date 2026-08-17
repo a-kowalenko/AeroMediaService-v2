@@ -79,14 +79,10 @@ impl BridgeState {
         let token = token.trim().to_string();
         if token.is_empty() {
             self.stop().await;
-            return Err(
-                "Bridge aktiv, aber bridge_token fehlt (Token-Auth ist Pflicht).".into(),
-            );
+            return Err("Bridge aktiv, aber bridge_token fehlt (Token-Auth ist Pflicht).".into());
         }
 
-        let monitor_path = config
-            .get("monitor_path", Some(""))
-            .unwrap_or_default();
+        let monitor_path = config.get("monitor_path", Some("")).unwrap_or_default();
         let version = env!("CARGO_PKG_VERSION").to_string();
 
         self.stop().await;

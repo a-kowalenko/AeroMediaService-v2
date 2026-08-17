@@ -9,12 +9,12 @@
 //! Manual version switch uses the same silent `download_and_install` path as
 //! auto-update, pointed at that release's `latest.json` (allows downgrade).
 
+use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Runtime};
-use once_cell::sync::Lazy;
 
 /// Frontend listens for download/install progress while applying an update.
 pub const EVENT_UPDATE_INSTALL_PROGRESS: &str = "update-install-progress";
@@ -135,8 +135,7 @@ pub fn get_updater_install_hint() -> Option<String> {
             let path = exe.to_string_lossy();
             if !path.contains("/Applications/") {
                 return Some(
-                    "Für automatische Updates sollte die App im Ordner „Programme“ liegen."
-                        .into(),
+                    "Für automatische Updates sollte die App im Ordner „Programme“ liegen.".into(),
                 );
             }
         }
@@ -145,9 +144,7 @@ pub fn get_updater_install_hint() -> Option<String> {
     #[cfg(target_os = "linux")]
     {
         if std::env::var_os("APPIMAGE").is_none() {
-            Some(
-                "Automatische Updates funktionieren zuverlässig nur als AppImage.".into(),
-            )
+            Some("Automatische Updates funktionieren zuverlässig nur als AppImage.".into())
         } else {
             None
         }
@@ -538,8 +535,10 @@ fn normalize_tag(tag: &str) -> String {
 
 /// Loose semver compare: `candidate >= minimum` (numeric segments only).
 fn version_at_least(candidate: &str, minimum: &str) -> bool {
-    compare_version_parts(&parse_version_parts(candidate), &parse_version_parts(minimum))
-        != std::cmp::Ordering::Less
+    compare_version_parts(
+        &parse_version_parts(candidate),
+        &parse_version_parts(minimum),
+    ) != std::cmp::Ordering::Less
 }
 
 fn compare_versions_desc(a: &str, b: &str) -> std::cmp::Ordering {
@@ -672,7 +671,10 @@ mod tests {
         assert!(updater_endpoints()
             .iter()
             .any(|e| e.contains("aero-media-service-releases")));
-        assert_eq!(EVENT_UPDATE_INSTALL_PROGRESS, crate::events::UPDATE_INSTALL_PROGRESS);
+        assert_eq!(
+            EVENT_UPDATE_INSTALL_PROGRESS,
+            crate::events::UPDATE_INSTALL_PROGRESS
+        );
     }
 
     #[test]

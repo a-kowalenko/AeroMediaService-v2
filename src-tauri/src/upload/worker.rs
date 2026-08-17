@@ -9,9 +9,7 @@ use tokio::sync::mpsc::UnboundedReceiver;
 
 use crate::cloud::{CloudClient, CloudError};
 use crate::events;
-use crate::model::handoff::{
-    write_job_outbox, OutboxError, OutboxState, CODE_CANCELLED,
-};
+use crate::model::handoff::{write_job_outbox, OutboxError, OutboxState, CODE_CANCELLED};
 use crate::model::kunde::Kunde;
 use crate::model::marker::remove_upload_markers;
 use crate::storage::logging;
@@ -125,14 +123,14 @@ pub async fn process_job(
     events::emit_job_active(false);
 
     match outcome {
-        JobOutcome::Success { remote_path, share_link } => {
+        JobOutcome::Success {
+            remote_path,
+            share_link,
+        } => {
             logging::log_info(&format!("Upload für {dir_name} erfolgreich abgeschlossen."));
-            let notify = crate::notify::notify_after_upload(
-                dir_name,
-                share_link.as_deref(),
-                Some(kunde),
-            )
-            .await;
+            let notify =
+                crate::notify::notify_after_upload(dir_name, share_link.as_deref(), Some(kunde))
+                    .await;
             events::emit(
                 events::UPLOAD_HISTORY_UPDATE,
                 success_history(
@@ -152,7 +150,8 @@ pub async fn process_job(
                 None,
                 Some(ARCHIVE_SUCCESS),
             );
-            if let Some(moved) = archive::archive_directory(archive_path, local_dir_path, ARCHIVE_SUCCESS)
+            if let Some(moved) =
+                archive::archive_directory(archive_path, local_dir_path, ARCHIVE_SUCCESS)
             {
                 emit_archive_history(&moved);
             }
@@ -249,7 +248,16 @@ async fn run_single_job(
 
     let remote_path = format!("/{dir_name}");
 
-    match upload_with_retries(client, local_dir_path, &remote_path, dir_name, kunde, control).await {
+    match upload_with_retries(
+        client,
+        local_dir_path,
+        &remote_path,
+        dir_name,
+        kunde,
+        control,
+    )
+    .await
+    {
         Ok(()) => {}
         Err(e) if e.is_cancelled() => return JobOutcome::Cancelled,
         Err(e) => return JobOutcome::Failed(e.to_string()),
@@ -261,12 +269,16 @@ async fn run_single_job(
         Ok(link) => link,
         Err(e) if e.is_cancelled() => return JobOutcome::Cancelled,
         Err(e) => {
-            logging::log_error(&format!("Konnte Freigabelink für {dir_name} nicht erstellen: {e}"));
+            logging::log_error(&format!(
+                "Konnte Freigabelink für {dir_name} nicht erstellen: {e}"
+            ));
             None
         }
     };
     if share_link.is_none() {
-        logging::log_error(&format!("Konnte Freigabelink für {dir_name} nicht erstellen."));
+        logging::log_error(&format!(
+            "Konnte Freigabelink für {dir_name} nicht erstellen."
+        ));
     }
 
     JobOutcome::Success {
@@ -455,7 +467,10 @@ mod tests {
             }
             Ok(n > self.fail_times)
         }
-        async fn get_shareable_link(&self, _remote_path: &str) -> Result<Option<String>, CloudError> {
+        async fn get_shareable_link(
+            &self,
+            _remote_path: &str,
+        ) -> Result<Option<String>, CloudError> {
             Ok(self.share.clone())
         }
     }
@@ -506,7 +521,11 @@ mod tests {
         .await;
 
         assert!(!job_dir.exists());
-        assert!(archive.join(ARCHIVE_SUCCESS).join("job-ok").join("photo.jpg").is_file());
+        assert!(archive
+            .join(ARCHIVE_SUCCESS)
+            .join("job-ok")
+            .join("photo.jpg")
+            .is_file());
         assert!(!archive
             .join(ARCHIVE_SUCCESS)
             .join("job-ok")

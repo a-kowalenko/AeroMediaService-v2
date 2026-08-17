@@ -46,11 +46,7 @@ impl CustomApiClient {
                 format!("/{trimmed}")
             }
         };
-        let url = format!(
-            "{}{}",
-            api_base_url.trim_end_matches('/'),
-            health_path
-        );
+        let url = format!("{}{}", api_base_url.trim_end_matches('/'), health_path);
         let response = match self
             .http
             .get(&url)
@@ -76,7 +72,13 @@ impl CustomApiClient {
             return Ok(true);
         }
         if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN {
-            let snippet: String = response.text().await.unwrap_or_default().chars().take(200).collect();
+            let snippet: String = response
+                .text()
+                .await
+                .unwrap_or_default()
+                .chars()
+                .take(200)
+                .collect();
             let msg = "Bearer-Token ungueltig oder ohne 'upload'-Permission";
             logging::log_error(&format!("API Connection: {msg} — {snippet}"));
             events::emit_connection_status(format!("Fehler: {msg}"));
@@ -126,8 +128,16 @@ impl CustomApiClient {
         control: &UploadControl,
     ) -> Result<reqwest::Response, CloudError> {
         let url = format!("{}{path_suffix}", self.upload_root()?);
-        self.post_json_url(&url, json_body, timeout, tag, soft_fail_statuses, control, false)
-            .await
+        self.post_json_url(
+            &url,
+            json_body,
+            timeout,
+            tag,
+            soft_fail_statuses,
+            control,
+            false,
+        )
+        .await
     }
 
     pub(super) async fn post_json_url(
@@ -169,7 +179,9 @@ impl CustomApiClient {
                     }
                     if (200..300).contains(&status) {
                         if attempt > 1 {
-                            logging::log_info(&format!("{tag}: HTTP {status} nach Versuch {attempt}"));
+                            logging::log_info(&format!(
+                                "{tag}: HTTP {status} nach Versuch {attempt}"
+                            ));
                         }
                         return Ok(response);
                     }

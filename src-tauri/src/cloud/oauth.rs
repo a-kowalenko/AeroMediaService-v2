@@ -54,7 +54,9 @@ pub async fn finish_oauth(
     let auth_code = auth_code.trim();
     let code_verifier = code_verifier.trim();
     if app_key.is_empty() || app_secret.is_empty() {
-        return Err(CloudError::Message("App Key/Secret fehlen für OAuth.".into()));
+        return Err(CloudError::Message(
+            "App Key/Secret fehlen für OAuth.".into(),
+        ));
     }
     if auth_code.is_empty() {
         return Err(CloudError::Message("Auth-Code fehlt.".into()));
@@ -84,7 +86,9 @@ pub async fn finish_oauth(
     if !response.status().is_success() {
         let status = response.status();
         let body = response.text().await.unwrap_or_default();
-        logging::log_error(&format!("OAuth Token-Austausch fehlgeschlagen: {status} {body}"));
+        logging::log_error(&format!(
+            "OAuth Token-Austausch fehlgeschlagen: {status} {body}"
+        ));
         return Err(CloudError::Http(format!(
             "OAuth Token-Austausch fehlgeschlagen: {status}"
         )));
@@ -108,7 +112,9 @@ pub async fn finish_oauth(
         .to_string();
 
     secrets::save_secret(refresh_key, &refresh).map_err(|e| CloudError::Message(e.to_string()))?;
-    logging::log_info(&format!("Refresh-Token im Keyring gespeichert ({refresh_key})."));
+    logging::log_info(&format!(
+        "Refresh-Token im Keyring gespeichert ({refresh_key})."
+    ));
     Ok((access, refresh))
 }
 
@@ -187,7 +193,9 @@ mod tests {
     fn code_verifier_is_url_safe_and_long_enough() {
         let v = generate_code_verifier();
         assert!(v.len() >= 43);
-        assert!(v.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'));
+        assert!(v
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'));
     }
 
     #[test]

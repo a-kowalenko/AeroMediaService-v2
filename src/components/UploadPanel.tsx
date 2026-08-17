@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { CloudUpload, Pause, Play, Timer, X } from "lucide-react";
+import { CloudUpload, Pause, Play, Radio, Timer, X } from "lucide-react";
 import { Panel } from "./Panel";
 import { ProgressBar } from "./ProgressBar";
 import { Button } from "@/components/ui/button";
@@ -55,11 +55,22 @@ function remainingSeconds(item: PendingView, now: number): number {
   return Math.max(0, item.remaining_seconds - elapsed);
 }
 
+function isHandoffItem(item: StabilityPendingItem): boolean {
+  return item.kind === "handoff";
+}
+
 function stabilityLabel(item: PendingView, now: number): string {
   if (item.waiting_for_media) return "Wartet auf Medien-Dateien";
   const left = remainingSeconds(item, now);
   if (left <= 0) return "Inhalt stabil — Upload wird vorbereitet";
   return `Warte auf Datei-Stabilität · noch ${Math.ceil(left)} s`;
+}
+
+function pendingItemLabel(item: PendingView, now: number): string {
+  if (isHandoffItem(item)) {
+    return "Vom Studio gemeldet — Upload wird vorbereitet";
+  }
+  return stabilityLabel(item, now);
 }
 
 function stabilityProgress(item: PendingView, now: number): number {
@@ -162,21 +173,28 @@ export function UploadPanel({ className, compact = false }: Props) {
   }
 
   const hasPending = pending.length > 0;
+  const handoffPending = pending.filter((item) => isHandoffItem(item));
+  const stabilityPending = pending.filter((item) => !isHandoffItem(item));
+  const onlyHandoff = hasPending && stabilityPending.length === 0;
   const activeJob = queue.find((item) => item.state === "active");
   const queueLabel =
     queue.length === 0
       ? "Keine Aufträge"
       : `${queue.length} in Warteschlange`;
-  const chipLabel = active ? "Aktiv" : hasPending ? "Wartet" : "Idle";
+  const chipLabel = active ? "Aktiv" : onlyHandoff ? "Neu" : hasPending ? "Wartet" : "Idle";
   const description = active
     ? activeJob?.dir_name || "Upload läuft"
-    : hasPending
-      ? pending.length === 1
-        ? "Stabilität prüfen…"
-        : `${pending.length} Ordner warten`
-      : queue.length > 0
-        ? queueLabel
-        : undefined;
+    : onlyHandoff
+      ? handoffPending.length === 1
+        ? "Neuer Auftrag…"
+        : `${handoffPending.length} neue Aufträge`
+      : hasPending
+        ? pending.length === 1
+          ? "Stabilität prüfen…"
+          : `${pending.length} Ordner warten`
+        : queue.length > 0
+          ? queueLabel
+          : undefined;
 
   return (
     <Panel
@@ -190,9 +208,11 @@ export function UploadPanel({ className, compact = false }: Props) {
             "inline-flex items-center gap-1.5 rounded-md border px-2 py-0.5 text-[11px] font-medium",
             active
               ? "border-primary/35 bg-primary/10 text-primary"
-              : hasPending
-                ? "border-warning/35 bg-warning/10 text-warning"
-                : "border-border bg-card-elevated/80 text-muted",
+              : onlyHandoff
+                ? "border-primary/35 bg-primary/10 text-primary"
+                : hasPending
+                  ? "border-warning/35 bg-warning/10 text-warning"
+                  : "border-border bg-card-elevated/80 text-muted",
           )}
         >
           <span
@@ -200,9 +220,11 @@ export function UploadPanel({ className, compact = false }: Props) {
               "h-1.5 w-1.5 rounded-full",
               active
                 ? "bg-primary ams-chip-active"
-                : hasPending
-                  ? "bg-warning ams-chip-active"
-                  : "bg-muted",
+                : onlyHandoff
+                  ? "bg-primary ams-chip-active"
+                  : hasPending
+                    ? "bg-warning ams-chip-active"
+                    : "bg-muted",
             )}
           />
           {chipLabel}
@@ -221,34 +243,57 @@ export function UploadPanel({ className, compact = false }: Props) {
       {hasPending ? (
         <div className={cn(active ? "mb-4" : "mb-1")}>
           <p className="mb-2 text-[11px] font-semibold tracking-[0.08em] text-muted uppercase">
-            Stabilität
+            {onlyHandoff
+              ? "Neue Aufträge"
+              : handoffPending.length > 0
+                ? "Eingehend"
+                : "Stabilität"}
           </p>
           <ul className="space-y-1.5">
             {pending.map((item) => {
+              const handoff = isHandoffItem(item);
               const left = remainingSeconds(item, now);
-              const detail = item.waiting_for_media
-                ? "Dateien"
-                : left <= 0
-                  ? "bereit"
-                  : `${Math.ceil(left)}s`;
+              const detail = handoff
+                ? "neu"
+                : item.waiting_for_media
+                  ? "Dateien"
+                  : left <= 0
+                    ? "bereit"
+                    : `${Math.ceil(left)}s`;
               return (
                 <li
-                  key={item.dir_name}
-                  className="rounded-lg border border-warning/25 bg-warning/5 px-2.5 py-2 text-sm"
+                  key={`${item.kind ?? "stability"}-${item.dir_name}`}
+                  className={cn(
+                    "rounded-lg border px-2.5 py-2 text-sm",
+                    handoff
+                      ? "border-primary/25 bg-primary/5"
+                      : "border-warning/25 bg-warning/5",
+                  )}
                 >
                   <div className="flex items-center justify-between gap-2">
                     <strong className="truncate text-foreground">
                       {item.dir_name}
                     </strong>
-                    <span className="inline-flex shrink-0 items-center gap-1 rounded-md bg-warning/15 px-1.5 py-0.5 text-[10px] font-medium text-warning">
-                      <Timer className="h-3 w-3" />
+                    <span
+                      className={cn(
+                        "inline-flex shrink-0 items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] font-medium",
+                        handoff
+                          ? "bg-primary/15 text-primary"
+                          : "bg-warning/15 text-warning",
+                      )}
+                    >
+                      {handoff ? (
+                        <Radio className="h-3 w-3" />
+                      ) : (
+                        <Timer className="h-3 w-3" />
+                      )}
                       {detail}
                     </span>
                   </div>
                   <p className="mt-0.5 truncate text-xs text-muted">
-                    {stabilityLabel(item, now)}
+                    {pendingItemLabel(item, now)}
                   </p>
-                  {!item.waiting_for_media ? (
+                  {!handoff && !item.waiting_for_media ? (
                     <div className="mt-2">
                       <ProgressBar
                         percent={stabilityProgress(item, now)}

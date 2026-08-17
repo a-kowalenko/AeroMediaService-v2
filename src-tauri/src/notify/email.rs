@@ -56,7 +56,11 @@ pub struct MailFolder {
 }
 
 /// Sandbox: rewrite the recipient to the fallback address. `Err` if sandbox has no fallback.
-pub fn resolve_recipient(original: &str, sandbox: bool, fallback: &str) -> Result<String, &'static str> {
+pub fn resolve_recipient(
+    original: &str,
+    sandbox: bool,
+    fallback: &str,
+) -> Result<String, &'static str> {
     if !sandbox {
         return Ok(original.to_string());
     }
@@ -73,7 +77,9 @@ pub fn load_smtp_config() -> SmtpConfig {
         port: parse_port(&setting_or_default("smtp_port", "587"), 587),
         user: secret_first(&["smtp_user"]).unwrap_or_default(),
         password: secret_first(&["smtp_pass"]).unwrap_or_default(),
-        sender_addr: setting_or_default("smtp_sender_addr", "").trim().to_string(),
+        sender_addr: setting_or_default("smtp_sender_addr", "")
+            .trim()
+            .to_string(),
         sender_name: setting_or_default("smtp_sender_name", "Dropbox Uploader"),
         sandbox: setting_flag("smtp_sandbox_mode"),
         fallback_recipient: setting_or_default("smtp_fallback_recipient", "")
@@ -100,19 +106,22 @@ pub fn load_imap_config() -> ImapConfig {
         )
     };
     ImapConfig {
-        enabled: setting_or_default("imap_save_sent_enabled", "true")
-            .eq_ignore_ascii_case("true"),
+        enabled: setting_or_default("imap_save_sent_enabled", "true").eq_ignore_ascii_case("true"),
         host,
         port: parse_port(&setting_or_default("imap_port", "993"), 993),
         user,
         password,
-        configured_folder: setting_or_default("imap_sent_folder", "").trim().to_string(),
+        configured_folder: setting_or_default("imap_sent_folder", "")
+            .trim()
+            .to_string(),
     }
 }
 
 fn parse_port(raw: &str, default: u16) -> u16 {
     raw.trim().parse().unwrap_or_else(|_| {
-        logging::log_error(&format!("Ungültiger SMTP/IMAP-Port '{raw}', verwende {default}."));
+        logging::log_error(&format!(
+            "Ungültiger SMTP/IMAP-Port '{raw}', verwende {default}."
+        ));
         default
     })
 }
@@ -209,7 +218,10 @@ pub async fn send_email(to_recipient: &str, subject: &str, body: &str) -> bool {
         }
     };
 
-    if cfg.host.is_empty() || cfg.user.is_empty() || cfg.password.is_empty() || cfg.sender_addr.is_empty()
+    if cfg.host.is_empty()
+        || cfg.user.is_empty()
+        || cfg.password.is_empty()
+        || cfg.sender_addr.is_empty()
     {
         logging::log_error("E-Mail-Versand fehlgeschlagen: SMTP-Einstellungen unvollständig.");
         return false;
@@ -331,7 +343,8 @@ async fn save_to_sent_folder(raw_message: Vec<u8>) {
         logging::log_warn("IMAP-Ablage übersprungen: Zugangsdaten unvollständig.");
         return;
     }
-    let result = tokio::task::spawn_blocking(move || save_to_sent_folder_blocking(cfg, raw_message)).await;
+    let result =
+        tokio::task::spawn_blocking(move || save_to_sent_folder_blocking(cfg, raw_message)).await;
     if let Err(e) = result {
         logging::log_warn(&format!("IMAP-Ablage fehlgeschlagen (SMTP war OK): {e}"));
     }
@@ -351,7 +364,10 @@ fn save_to_sent_folder_blocking(cfg: ImapConfig, raw_message: Vec<u8>) {
     }
 }
 
-fn imap_append_sent(cfg: &ImapConfig, raw_message: &[u8]) -> Result<(String, &'static str), String> {
+fn imap_append_sent(
+    cfg: &ImapConfig,
+    raw_message: &[u8],
+) -> Result<(String, &'static str), String> {
     let mut session = imap_login(&cfg.host, cfg.port, &cfg.user, &cfg.password)?;
     let folders = list_mail_folders(&mut session);
     if folders.is_empty() {
@@ -386,11 +402,7 @@ fn imap_append_sent(cfg: &ImapConfig, raw_message: &[u8]) -> Result<(String, &'s
         ));
     }
 
-    let append = session.append_with_flags(
-        &sent_folder,
-        raw_message,
-        &[imap::types::Flag::Seen],
-    );
+    let append = session.append_with_flags(&sent_folder, raw_message, &[imap::types::Flag::Seen]);
     let _ = session.logout();
     match append {
         Ok(()) => Ok((sent_folder, source)),
@@ -410,7 +422,9 @@ fn imap_login(
         .to_socket_addrs()
         .map_err(|e| format!("IMAP-Ablage fehlgeschlagen (SMTP war OK): {e}"))?
         .next()
-        .ok_or_else(|| "IMAP-Ablage fehlgeschlagen (SMTP war OK): Host nicht auflösbar".to_string())?;
+        .ok_or_else(|| {
+            "IMAP-Ablage fehlgeschlagen (SMTP war OK): Host nicht auflösbar".to_string()
+        })?;
     let tcp = TcpStream::connect_timeout(&addr, Duration::from_secs(10))
         .map_err(|e| format!("IMAP-Ablage fehlgeschlagen (SMTP war OK): {e}"))?;
     let _ = tcp.set_read_timeout(Some(Duration::from_secs(20)));
@@ -441,16 +455,9 @@ fn list_mail_folders(
                 let folder_name = if delimiter.is_empty() {
                     path.clone()
                 } else {
-                    path.rsplit(&delimiter)
-                        .next()
-                        .unwrap_or(&path)
-                        .to_string()
+                    path.rsplit(&delimiter).next().unwrap_or(&path).to_string()
                 };
-                let flags = name
-                    .attributes()
-                    .iter()
-                    .map(flag_to_string)
-                    .collect();
+                let flags = name.attributes().iter().map(flag_to_string).collect();
                 Some(MailFolder {
                     flags,
                     path,
@@ -536,8 +543,7 @@ mod tests {
         assert_eq!(path, "Outbox");
         assert_eq!(source, "configured");
 
-        let (path, source) =
-            resolve_sent_folder_path(&folders, Some("Outbox"), "INBOX").unwrap();
+        let (path, source) = resolve_sent_folder_path(&folders, Some("Outbox"), "INBOX").unwrap();
         assert_eq!(path, "Outbox");
         assert_eq!(source, "cache");
     }

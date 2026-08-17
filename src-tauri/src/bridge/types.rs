@@ -187,12 +187,7 @@ mod tests {
         assert!(h.online);
         assert_eq!(
             h.capabilities,
-            vec![
-                "manifest-v1",
-                "status-outbox",
-                "lookup",
-                "ready",
-            ]
+            vec!["manifest-v1", "status-outbox", "lookup", "ready",]
         );
         assert!(h.capabilities.iter().any(|c| c == "ready"));
     }

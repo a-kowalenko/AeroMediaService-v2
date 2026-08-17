@@ -25,7 +25,8 @@ use crate::model::marker::ApiMarkerQuery;
 use crate::storage::logging;
 
 /// Callback to interrupt the monitor wait loop (no upload enqueue).
-pub type MonitorWakeFn = Arc<dyn Fn() + Send + Sync>;
+/// Args: folder_name, correlation_id (either may be empty).
+pub type MonitorWakeFn = Arc<dyn Fn(String, String) + Send + Sync>;
 
 #[derive(Clone)]
 struct AppState {
@@ -273,7 +274,7 @@ async fn handoff_ready(
         if cid.is_empty() { "-" } else { cid },
         if folder.is_empty() { "-" } else { folder },
     ));
-    (state.wake_monitor)();
+    (state.wake_monitor)(folder.to_string(), cid.to_string());
     (StatusCode::OK, Json(HandoffReadyResponse::woken()))
 }
 
@@ -297,7 +298,7 @@ mod tests {
     }
 
     fn noop_wake() -> MonitorWakeFn {
-        Arc::new(|| {})
+        Arc::new(|_, _| {})
     }
 
     #[tokio::test]
@@ -431,7 +432,7 @@ mod tests {
     async fn handoff_ready_wakes_monitor_without_auth_bypass() {
         let wakes = Arc::new(AtomicUsize::new(0));
         let wakes_c = Arc::clone(&wakes);
-        let wake: MonitorWakeFn = Arc::new(move || {
+        let wake: MonitorWakeFn = Arc::new(move |_, _| {
             wakes_c.fetch_add(1, Ordering::SeqCst);
         });
 

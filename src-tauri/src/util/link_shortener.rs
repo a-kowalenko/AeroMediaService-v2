@@ -126,7 +126,9 @@ fn resolve_credentials(
         .map(str::to_string)
         .or_else(|| secrets::get_secret("shortener_api_key").ok().flatten());
 
-    if base.as_ref().map(|s| s.is_empty()).unwrap_or(true) || api_key.as_ref().map(|s| s.is_empty()).unwrap_or(true) {
+    if base.as_ref().map(|s| s.is_empty()).unwrap_or(true)
+        || api_key.as_ref().map(|s| s.is_empty()).unwrap_or(true)
+    {
         let legacy_url = secrets::get_secret("skylink_api_url").ok().flatten();
         let legacy_key = secrets::get_secret("skylink_api_key").ok().flatten();
         if api_key.as_ref().map(|s| s.is_empty()).unwrap_or(true) {
@@ -192,7 +194,13 @@ pub async fn shorten_with(
         .build()
         .unwrap_or_else(|_| reqwest::Client::new());
 
-    match client.post(&endpoint).headers(headers).json(&body).send().await {
+    match client
+        .post(&endpoint)
+        .headers(headers)
+        .json(&body)
+        .send()
+        .await
+    {
         Ok(response) => {
             let status = response.status();
             if status.as_u16() == 201 {
@@ -200,7 +208,9 @@ pub async fn shorten_with(
                     Ok(payload) => {
                         if let Some(short_url) = payload.get("short_url").and_then(Value::as_str) {
                             if !short_url.is_empty() {
-                                logging::log_info(&format!("Link erfolgreich gekürzt: {short_url}"));
+                                logging::log_info(&format!(
+                                    "Link erfolgreich gekürzt: {short_url}"
+                                ));
                                 return short_url.to_string();
                             }
                         }
@@ -210,7 +220,8 @@ pub async fn shorten_with(
                 }
                 return long_url.to_string();
             }
-            let error_msg = parse_error_status(status.as_u16(), &response.text().await.unwrap_or_default());
+            let error_msg =
+                parse_error_status(status.as_u16(), &response.text().await.unwrap_or_default());
             logging::log_warn(&format!(
                 "Kürzen fehlgeschlagen (Status {}): {error_msg}",
                 status.as_u16()
@@ -287,7 +298,10 @@ mod tests {
             legacy_url_to_base("https://host.example/api/create/"),
             "https://host.example"
         );
-        assert_eq!(legacy_url_to_base("https://host.example"), "https://host.example");
+        assert_eq!(
+            legacy_url_to_base("https://host.example"),
+            "https://host.example"
+        );
     }
 
     #[tokio::test]

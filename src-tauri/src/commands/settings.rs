@@ -90,10 +90,7 @@ pub fn save_setting(
 
     if matches!(
         key.as_str(),
-        "monitor_path"
-            | "scan_interval"
-            | "folder_stability_enabled"
-            | "folder_stability_seconds"
+        "monitor_path" | "scan_interval" | "folder_stability_enabled" | "folder_stability_seconds"
     ) {
         monitor.wake();
     }

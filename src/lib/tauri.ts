@@ -56,6 +56,8 @@ export type StabilityPendingItem = {
   remaining_seconds: number;
   required_seconds: number;
   waiting_for_media: boolean;
+  kind?: string;
+  correlation_id?: string;
 };
 
 export function getStabilityPending(): Promise<StabilityPendingItem[]> {
@@ -422,6 +424,8 @@ export type MediaFolderInfo = {
   is_ready: boolean;
   block_reason: string | null;
   folder_state: FolderState;
+  match_score?: number;
+  recommended?: boolean;
 };
 
 export type MediaDirectoryListing = {
@@ -432,6 +436,29 @@ export type MediaDirectoryListing = {
 
 export type AssignResult = {
   file_path: string;
+};
+
+export type BatchCustomerProposal = {
+  customer: Customer;
+  suggested_path: string | null;
+  suggested_name: string | null;
+  match_score: number;
+  included: boolean;
+};
+
+export type BatchAssignmentProposal = {
+  rows: BatchCustomerProposal[];
+  folders: MediaFolderInfo[];
+};
+
+export type BatchAssignItem = {
+  id: string;
+  path: string;
+};
+
+export type BatchAssignOutcome = {
+  assigned: Array<{ id: string; file_path: string }>;
+  errors: Array<{ id: string; message: string }>;
 };
 
 export function listCustomers(
@@ -473,9 +500,15 @@ export function setCustomerProcessed(
   return invoke<Customer>("set_customer_processed", { id, processed });
 }
 
-export function listMediaFolders(path?: string | null): Promise<MediaDirectoryListing> {
+export function listMediaFolders(
+  path?: string | null,
+  vorname?: string | null,
+  nachname?: string | null,
+): Promise<MediaDirectoryListing> {
   return invoke<MediaDirectoryListing>("list_media_folders_cmd", {
     path: path ?? null,
+    vorname: vorname ?? null,
+    nachname: nachname ?? null,
   });
 }
 
@@ -487,6 +520,16 @@ export function assignCustomerToFolder(
     id,
     targetPath,
   });
+}
+
+export function proposeCustomerAssignments(): Promise<BatchAssignmentProposal> {
+  return invoke<BatchAssignmentProposal>("propose_customer_assignments");
+}
+
+export function assignCustomersBatch(
+  items: BatchAssignItem[],
+): Promise<BatchAssignOutcome> {
+  return invoke<BatchAssignOutcome>("assign_customers_batch", { items });
 }
 
 export function getAssignmentHistory(): Promise<AssignmentHistoryEntry[]> {

@@ -131,8 +131,14 @@ pub async fn finish_dropbox_oauth(
         }
     };
     match result {
-        Ok(true) => Ok(ConnectResult::ok("Verbunden", "Dropbox-Verbindung hergestellt.")),
-        Ok(false) => Ok(ConnectResult::fail("Nicht verbunden", "OAuth fehlgeschlagen.")),
+        Ok(true) => Ok(ConnectResult::ok(
+            "Verbunden",
+            "Dropbox-Verbindung hergestellt.",
+        )),
+        Ok(false) => Ok(ConnectResult::fail(
+            "Nicht verbunden",
+            "OAuth fehlgeschlagen.",
+        )),
         Err(e) => Ok(ConnectResult::fail("OAuth-Fehler", e.to_string())),
     }
 }
@@ -304,7 +310,9 @@ async fn connect_dropbox_for_pure_contact_markers(cloud: &CloudState) {
     }
     match cloud.dropbox.connect_session(false).await {
         Ok(true) => {
-            logging::log_info("Natives Dropbox parallel verbunden (Legacy-Fallback für reine Kontakt-Marker).");
+            logging::log_info(
+                "Natives Dropbox parallel verbunden (Legacy-Fallback für reine Kontakt-Marker).",
+            );
         }
         Ok(false) | Err(_) => {
             logging::log_warn(
@@ -373,7 +381,10 @@ pub async fn auto_connect_cloud(
 }
 
 #[tauri::command]
-pub async fn get_sms_balance(api_key: Option<String>, sandbox: Option<bool>) -> Result<String, String> {
+pub async fn get_sms_balance(
+    api_key: Option<String>,
+    sandbox: Option<bool>,
+) -> Result<String, String> {
     let key = if let Some(k) = api_key.filter(|s| !s.trim().is_empty()) {
         k
     } else {

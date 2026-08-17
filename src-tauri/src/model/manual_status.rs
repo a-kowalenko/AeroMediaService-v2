@@ -67,8 +67,7 @@ pub fn collect_manual_status_warnings(entry: &Value, action: &str) -> Vec<String
         }
         if json_str(entry, "share_link").trim().is_empty() {
             warnings.push(
-                "Kein Download-Link gespeichert — erneuter Versand ist ggf. nicht möglich."
-                    .into(),
+                "Kein Download-Link gespeichert — erneuter Versand ist ggf. nicht möglich.".into(),
             );
         }
     }
@@ -111,9 +110,16 @@ fn target_sms_status(entry: &Value, delivered: bool) -> Option<&'static str> {
         return Some("Gesendet");
     }
     let lower = current.to_lowercase();
-    if ["gesendet", "zugestellt", "übertragen", "gepuffert", "akzeptiert", "übersprungen"]
-        .iter()
-        .any(|token| lower.contains(token))
+    if [
+        "gesendet",
+        "zugestellt",
+        "übertragen",
+        "gepuffert",
+        "akzeptiert",
+        "übersprungen",
+    ]
+    .iter()
+    .any(|token| lower.contains(token))
     {
         None
     } else {
@@ -123,8 +129,7 @@ fn target_sms_status(entry: &Value, delivered: bool) -> Option<&'static str> {
 
 fn apply_resolve_problem(entry: &Value, updates: &mut Map<String, Value>) {
     let upload_status = json_str(entry, "status").trim();
-    if is_problem_status(Some(upload_status)) || matches!(upload_status, "Fehler" | "Abgebrochen")
-    {
+    if is_problem_status(Some(upload_status)) || matches!(upload_status, "Fehler" | "Abgebrochen") {
         updates.insert("status".into(), Value::String("Erfolgreich".into()));
         updates.insert("error_msg".into(), Value::String(String::new()));
     }
@@ -313,8 +318,8 @@ mod tests {
             "phone": "016099501966",
             "sms_status": "Gesendet",
         });
-        let payload = build_manual_status_update(&entry, ACTION_MARK_COMPLETE, "Kunde bestätigt")
-            .unwrap();
+        let payload =
+            build_manual_status_update(&entry, ACTION_MARK_COMPLETE, "Kunde bestätigt").unwrap();
         let merged = merge(&entry, payload);
         assert_eq!(json_str(&merged, "sms_status"), "Zugestellt");
         assert_eq!(merged.get("manual_status_override"), Some(&json!(true)));

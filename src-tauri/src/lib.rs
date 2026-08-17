@@ -1,36 +1,36 @@
+mod bridge;
+mod cloud;
 mod commands;
 mod constants;
 mod events;
 #[allow(dead_code)]
 mod model;
 mod monitor;
-mod storage;
-mod cloud;
-mod bridge;
 mod notify;
+mod storage;
+mod updater;
 mod upload;
 mod util;
-mod updater;
 
 use std::sync::Arc;
 
-use commands::{
-    apply_bridge_config, assign_customer_to_folder, auto_connect_cloud, cancel_upload,
-    channels_delivered, clear_history, connect_active_cloud, connect_custom_api, connect_dropbox,
-    delete_customer, delete_history_items, disconnect_active_cloud, disconnect_custom_api,
-    disconnect_dropbox, finish_dropbox_oauth, get_app_version, get_assignment_history,
-    get_bridge_status, get_cloud_connection_status, get_history, get_history_entry,
-    get_manual_status_warnings, get_monitoring_status, get_recent_logs, get_sandbox_warnings,
-    get_secret, get_setting, get_sms_balance, get_stability_pending, get_upload_control_state,
-    get_upload_queue,
-    list_customers, list_media_folders_cmd, lookup_share_link, migrate_legacy_settings,
-    pause_upload, resend_history_notifications, reset_setup, resume_upload, retry_upload,
-    save_customer, save_history_contact, save_secret, save_setting, set_customer_processed,
-    set_manual_status, start_dropbox_oauth, start_monitoring, stop_monitoring, sync_sms_journal,
-    test_link_shortener, update_customer, verify_dropbox_status, ConfigState,
-};
 use bridge::BridgeState;
 use cloud::CloudState;
+use commands::{
+    apply_bridge_config, assign_customer_to_folder, assign_customers_batch, auto_connect_cloud,
+    cancel_upload, channels_delivered, clear_history, connect_active_cloud, connect_custom_api,
+    connect_dropbox, delete_customer, delete_history_items, disconnect_active_cloud,
+    disconnect_custom_api, disconnect_dropbox, finish_dropbox_oauth, get_app_version,
+    get_assignment_history, get_bridge_status, get_cloud_connection_status, get_history,
+    get_history_entry, get_manual_status_warnings, get_monitoring_status, get_recent_logs,
+    get_sandbox_warnings, get_secret, get_setting, get_sms_balance, get_stability_pending,
+    get_upload_control_state, get_upload_queue, list_customers, list_media_folders_cmd,
+    lookup_share_link, migrate_legacy_settings, pause_upload, propose_customer_assignments,
+    resend_history_notifications, reset_setup, resume_upload, retry_upload, save_customer,
+    save_history_contact, save_secret, save_setting, set_customer_processed, set_manual_status,
+    start_dropbox_oauth, start_monitoring, stop_monitoring, sync_sms_journal, test_link_shortener,
+    update_customer, verify_dropbox_status, ConfigState,
+};
 use monitor::MonitorState;
 use storage::customers::CustomerState;
 use storage::history::HistoryState;
@@ -116,6 +116,8 @@ pub fn run() {
             set_customer_processed,
             list_media_folders_cmd,
             assign_customer_to_folder,
+            propose_customer_assignments,
+            assign_customers_batch,
             get_assignment_history,
             get_cloud_connection_status,
             verify_dropbox_status,
@@ -158,7 +160,9 @@ pub fn run() {
                 Ok(n) => log_info(&format!(
                     "Legacy-Historie importiert: {n} Einträge aus upload_history.json"
                 )),
-                Err(e) => log_warn(&format!("Legacy-Historie konnte nicht importiert werden: {e}")),
+                Err(e) => log_warn(&format!(
+                    "Legacy-Historie konnte nicht importiert werden: {e}"
+                )),
             }
             match config_state.with_store_mut(|store| {
                 storage::legacy_migrate::migrate_from_legacy(store, false)
@@ -166,7 +170,9 @@ pub fn run() {
             }) {
                 Ok(report) if report.skipped => {}
                 Ok(report) => log_info(&report.message),
-                Err(e) => log_warn(&format!("Legacy-QSettings/Keyring-Migration fehlgeschlagen: {e}")),
+                Err(e) => log_warn(&format!(
+                    "Legacy-QSettings/Keyring-Migration fehlgeschlagen: {e}"
+                )),
             }
             events::set_event_emitter({
                 let handle = app.handle().clone();

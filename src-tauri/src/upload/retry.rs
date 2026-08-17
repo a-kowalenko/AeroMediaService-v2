@@ -129,7 +129,9 @@ pub async fn retry_upload_from_history(
         return Err("Kein Archiv-Ordner konfiguriert.".into());
     }
     if !Path::new(monitor_path).is_dir() {
-        return Err(format!("Überwachungsordner existiert nicht: {monitor_path}"));
+        return Err(format!(
+            "Überwachungsordner existiert nicht: {monitor_path}"
+        ));
     }
 
     let archived_hint = {
@@ -161,7 +163,9 @@ pub async fn retry_upload_from_history(
     }
 
     if registry.is_registered(&target_path) {
-        return Err(format!("„{dir_name}“ ist bereits in der Upload-Warteschlange."));
+        return Err(format!(
+            "„{dir_name}“ ist bereits in der Upload-Warteschlange."
+        ));
     }
 
     if !has_uploadable_files(&archived_path) {
@@ -187,7 +191,9 @@ pub async fn retry_upload_from_history(
 
     if !marker_raw.is_empty() {
         write_processing_marker(&target_path, &marker_raw).map_err(|e| e.to_string())?;
-        logging::log_info(&format!("Marker {MARKER_PROCESSING} für Retry geschrieben."));
+        logging::log_info(&format!(
+            "Marker {MARKER_PROCESSING} für Retry geschrieben."
+        ));
     }
 
     let use_dropbox_client = if marker_raw.is_empty() {

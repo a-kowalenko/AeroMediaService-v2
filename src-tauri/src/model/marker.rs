@@ -318,7 +318,10 @@ fn parse_marker_bool(data: &Map<String, Value>, key: &str, default: bool) -> boo
         None => default,
         Some(Value::Bool(b)) => *b,
         Some(Value::String(s)) => {
-            matches!(s.trim().to_ascii_lowercase().as_str(), "true" | "1" | "yes" | "ja")
+            matches!(
+                s.trim().to_ascii_lowercase().as_str(),
+                "true" | "1" | "yes" | "ja"
+            )
         }
         Some(Value::Number(n)) => {
             if let Some(i) = n.as_i64() {
@@ -507,9 +510,18 @@ mod tests {
         let cp1252_raw = read_marker_file(&cp1252_path).unwrap();
         let folder_raw = read_marker_raw(dir.path()).unwrap();
 
-        assert_eq!(serde_json::from_str::<Value>(&utf8_raw).unwrap()["nachname"], "Möller");
-        assert_eq!(serde_json::from_str::<Value>(&cp1252_raw).unwrap()["nachname"], "Möller");
-        assert_eq!(serde_json::from_str::<Value>(&folder_raw).unwrap()["nachname"], "Möller");
+        assert_eq!(
+            serde_json::from_str::<Value>(&utf8_raw).unwrap()["nachname"],
+            "Möller"
+        );
+        assert_eq!(
+            serde_json::from_str::<Value>(&cp1252_raw).unwrap()["nachname"],
+            "Möller"
+        );
+        assert_eq!(
+            serde_json::from_str::<Value>(&folder_raw).unwrap()["nachname"],
+            "Möller"
+        );
 
         let kunde = resolve_kunde_from_marker(&cp1252_raw).unwrap();
         assert_eq!(kunde.last_name.as_deref(), Some("Möller"));
@@ -526,21 +538,30 @@ mod tests {
 
         let raw = read_marker_file(&path).unwrap();
         assert!(!raw.starts_with('\u{feff}'));
-        assert_eq!(serde_json::from_str::<Value>(&raw).unwrap()["nachname"], "Möller");
+        assert_eq!(
+            serde_json::from_str::<Value>(&raw).unwrap()["nachname"],
+            "Möller"
+        );
     }
 
     #[test]
     fn processing_marker_is_preferred_over_fertig() {
         let dir = tempdir().unwrap();
-        write_fertig_marker(dir.path(), r#"{"vorname":"A","nachname":"Fertig","email":"a@b.de"}"#)
-            .unwrap();
+        write_fertig_marker(
+            dir.path(),
+            r#"{"vorname":"A","nachname":"Fertig","email":"a@b.de"}"#,
+        )
+        .unwrap();
         write_processing_marker(
             dir.path(),
             r#"{"vorname":"A","nachname":"Processing","email":"a@b.de"}"#,
         )
         .unwrap();
         let raw = read_marker_raw(dir.path()).unwrap();
-        assert_eq!(serde_json::from_str::<Value>(&raw).unwrap()["nachname"], "Processing");
+        assert_eq!(
+            serde_json::from_str::<Value>(&raw).unwrap()["nachname"],
+            "Processing"
+        );
     }
 
     #[test]
@@ -631,8 +652,8 @@ mod tests {
 
     #[test]
     fn resolve_direct_marker_and_reject_api_lookup() {
-        let k = resolve_kunde_from_marker(&serde_json::to_string(&sample_extended()).unwrap())
-            .unwrap();
+        let k =
+            resolve_kunde_from_marker(&serde_json::to_string(&sample_extended()).unwrap()).unwrap();
         assert!(k.outside_foto);
 
         let api = json!({
@@ -718,10 +739,7 @@ mod tests {
 
     #[test]
     fn missing_contact_fields_and_invalid_json() {
-        assert!(matches!(
-            load_marker_data("   "),
-            Err(MarkerError::Empty)
-        ));
+        assert!(matches!(load_marker_data("   "), Err(MarkerError::Empty)));
         assert!(matches!(
             load_marker_data("[1,2]"),
             Err(MarkerError::NotAnObject)

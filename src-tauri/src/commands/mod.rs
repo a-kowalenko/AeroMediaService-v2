@@ -15,11 +15,14 @@ pub use cloud::{
     verify_dropbox_status,
 };
 pub use customers::{
-    assign_customer_to_folder, delete_customer, get_assignment_history, list_customers,
-    list_media_folders_cmd, save_customer, set_customer_processed, update_customer,
+    assign_customer_to_folder, assign_customers_batch, delete_customer, get_assignment_history,
+    list_customers, list_media_folders_cmd, propose_customer_assignments, save_customer,
+    set_customer_processed, update_customer,
 };
 pub use history::{clear_history, delete_history_items, get_history, get_history_entry};
-pub use monitor::{get_monitoring_status, get_stability_pending, start_monitoring, stop_monitoring};
+pub use monitor::{
+    get_monitoring_status, get_stability_pending, start_monitoring, stop_monitoring,
+};
 pub use operator::{
     channels_delivered, get_manual_status_warnings, get_sandbox_warnings, lookup_share_link,
     resend_history_notifications, retry_upload, save_history_contact, set_manual_status,

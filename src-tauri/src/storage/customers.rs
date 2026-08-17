@@ -16,11 +16,10 @@ use thiserror::Error;
 use uuid::Uuid;
 
 use crate::constants::CUSTOMERS_DB_FILE;
-use crate::model::marker::{
-    marker_paths, write_fertig_marker, MARKER_FERTIG, MARKER_PROCESSING,
-};
+use crate::model::marker::{marker_paths, write_fertig_marker, MARKER_FERTIG, MARKER_PROCESSING};
 use crate::storage::app_config_dir;
 use crate::storage::config::ConfigError;
+use crate::storage::folder_match;
 
 const BUSY_WINDOW_MS: u128 = 3000;
 const ASSIGNMENT_HISTORY_LIMIT: usize = 100;
@@ -89,6 +88,10 @@ pub struct MediaFolderInfo {
     pub is_ready: bool,
     pub block_reason: Option<String>,
     pub folder_state: FolderState,
+    #[serde(default)]
+    pub match_score: u32,
+    #[serde(default)]
+    pub recommended: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -101,6 +104,45 @@ pub struct MediaDirectoryListing {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AssignResult {
     pub file_path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BatchCustomerProposal {
+    pub customer: Customer,
+    pub suggested_path: Option<String>,
+    pub suggested_name: Option<String>,
+    pub match_score: u32,
+    pub included: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BatchAssignmentProposal {
+    pub rows: Vec<BatchCustomerProposal>,
+    pub folders: Vec<MediaFolderInfo>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BatchAssignItem {
+    pub id: String,
+    pub path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BatchAssignOk {
+    pub id: String,
+    pub file_path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BatchAssignError {
+    pub id: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BatchAssignOutcome {
+    pub assigned: Vec<BatchAssignOk>,
+    pub errors: Vec<BatchAssignError>,
 }
 
 #[derive(Clone)]
@@ -116,15 +158,9 @@ impl CustomerState {
         })
     }
 
-    pub fn list(
-        &self,
-        search: &str,
-        filter: &str,
-    ) -> Result<Vec<Customer>, String> {
+    pub fn list(&self, search: &str, filter: &str) -> Result<Vec<Customer>, String> {
         let store = self.store.lock().map_err(|e| e.to_string())?;
-        store
-            .list(search, filter)
-            .map_err(|e| e.to_string())
+        store.list(search, filter).map_err(|e| e.to_string())
     }
 
     pub fn save(
@@ -157,11 +193,7 @@ impl CustomerState {
             .map_err(|e| e.to_string())
     }
 
-    pub fn assign_to_folder(
-        &self,
-        id: &str,
-        target_path: &Path,
-    ) -> Result<AssignResult, String> {
+    pub fn assign_to_folder(&self, id: &str, target_path: &Path) -> Result<AssignResult, String> {
         let store = self.store.lock().map_err(|e| e.to_string())?;
         store
             .assign_to_folder(id, target_path)
@@ -171,6 +203,25 @@ impl CustomerState {
     pub fn assignment_history(&self) -> Result<Vec<AssignmentHistoryEntry>, String> {
         let store = self.store.lock().map_err(|e| e.to_string())?;
         store.assignment_history().map_err(|e| e.to_string())
+    }
+
+    pub fn assign_many(&self, items: &[BatchAssignItem]) -> Result<BatchAssignOutcome, String> {
+        let mut assigned = Vec::new();
+        let mut errors = Vec::new();
+        for item in items {
+            let path = PathBuf::from(item.path.trim());
+            match self.assign_to_folder(&item.id, &path) {
+                Ok(result) => assigned.push(BatchAssignOk {
+                    id: item.id.clone(),
+                    file_path: result.file_path,
+                }),
+                Err(message) => errors.push(BatchAssignError {
+                    id: item.id.clone(),
+                    message,
+                }),
+            }
+        }
+        Ok(BatchAssignOutcome { assigned, errors })
     }
 }
 
@@ -511,6 +562,9 @@ pub fn list_media_folders(dir_path: &Path) -> Result<MediaDirectoryListing, Cust
         }
         let full = entry.path();
         let name = entry.file_name().to_string_lossy().to_string();
+        if is_hidden_dir_name(&name) {
+            continue;
+        }
         let info = inspect_media_folder(&full, &name)?;
         folders.push(info);
     }
@@ -526,6 +580,96 @@ pub fn list_media_folders(dir_path: &Path) -> Result<MediaDirectoryListing, Cust
         parent,
         folders,
     })
+}
+
+/// Rank folders for a customer: recommended first, then by match score.
+pub fn rank_folders_for_customer(
+    folders: &mut Vec<MediaFolderInfo>,
+    vorname: &str,
+    nachname: &str,
+) {
+    if vorname.trim().is_empty() && nachname.trim().is_empty() {
+        return;
+    }
+    let today = Local::now().format("%Y%m%d").to_string();
+    for folder in folders.iter_mut() {
+        let assignable = matches!(folder.folder_state, FolderState::Ready);
+        folder.match_score =
+            folder_match::score_folder_name(&folder.name, vorname, nachname, assignable, &today);
+        folder.recommended = false;
+    }
+
+    let best = folders.iter().map(|f| f.match_score).max().unwrap_or(0);
+    let last_name_hits = folders
+        .iter()
+        .filter(|f| f.match_score >= folder_match::SCORE_NACHNAME)
+        .count();
+
+    for folder in folders.iter_mut() {
+        let assignable = matches!(folder.folder_state, FolderState::Ready);
+        folder.recommended =
+            folder_match::is_recommended(folder.match_score, assignable, best, last_name_hits);
+    }
+
+    folders.sort_by(|a, b| {
+        folder_match::cmp_rank(
+            a.recommended,
+            a.match_score,
+            &a.name,
+            b.recommended,
+            b.match_score,
+            &b.name,
+        )
+    });
+}
+
+pub fn propose_batch_assignments(
+    customers: &[Customer],
+    folders: &[MediaFolderInfo],
+) -> Vec<BatchCustomerProposal> {
+    let today = Local::now().format("%Y%m%d").to_string();
+    let ready: Vec<&MediaFolderInfo> = folders
+        .iter()
+        .filter(|f| matches!(f.folder_state, FolderState::Ready))
+        .collect();
+    let names: Vec<(&str, &str)> = customers
+        .iter()
+        .map(|c| (c.vorname.as_str(), c.nachname.as_str()))
+        .collect();
+    let folder_names: Vec<&str> = ready.iter().map(|f| f.name.as_str()).collect();
+    let hits = folder_match::propose_unique_assignments(&names, &folder_names, &today);
+
+    let mut by_customer: Vec<Option<(usize, u32)>> = vec![None; customers.len()];
+    for hit in hits {
+        if hit.customer_index < by_customer.len() {
+            by_customer[hit.customer_index] = Some((hit.folder_index, hit.score));
+        }
+    }
+
+    customers
+        .iter()
+        .enumerate()
+        .map(|(idx, customer)| {
+            if let Some((folder_idx, score)) = by_customer[idx] {
+                let folder = ready[folder_idx];
+                BatchCustomerProposal {
+                    customer: customer.clone(),
+                    suggested_path: Some(folder.path.clone()),
+                    suggested_name: Some(folder.name.clone()),
+                    match_score: score,
+                    included: true,
+                }
+            } else {
+                BatchCustomerProposal {
+                    customer: customer.clone(),
+                    suggested_path: None,
+                    suggested_name: None,
+                    match_score: 0,
+                    included: false,
+                }
+            }
+        })
+        .collect()
 }
 
 fn inspect_media_folder(path: &Path, name: &str) -> Result<MediaFolderInfo, CustomerError> {
@@ -594,7 +738,13 @@ fn inspect_media_folder(path: &Path, name: &str) -> Result<MediaFolderInfo, Cust
         is_ready,
         block_reason,
         folder_state,
+        match_score: 0,
+        recommended: false,
     })
+}
+
+fn is_hidden_dir_name(name: &str) -> bool {
+    name.starts_with('.')
 }
 
 pub fn folder_block_reason(folder_path: &Path) -> Option<String> {
@@ -622,7 +772,9 @@ pub fn build_contact_marker_json(
     if !phone.is_empty() {
         map.insert("telefon".into(), json!(phone));
     }
-    Ok(serde_json::to_string_pretty(&serde_json::Value::Object(map))?)
+    Ok(serde_json::to_string_pretty(&serde_json::Value::Object(
+        map,
+    ))?)
 }
 
 fn map_customer(row: &rusqlite::Row<'_>) -> rusqlite::Result<Customer> {
@@ -678,9 +830,7 @@ mod tests {
         store
             .save("Anna", "Adler", "a@example.com", "+49111")
             .unwrap();
-        store
-            .save("Bernd", "Bauer", "b@example.com", "")
-            .unwrap();
+        store.save("Bernd", "Bauer", "b@example.com", "").unwrap();
 
         let all = store.list("", "all").unwrap();
         assert_eq!(all.len(), 2);
@@ -750,8 +900,11 @@ mod tests {
         let occupied = root.path().join("occupied");
         fs::create_dir_all(&ready).unwrap();
         fs::create_dir_all(&occupied).unwrap();
-        fs::write(occupied.join(MARKER_FERTIG), r#"{"vorname":"A","nachname":"B","email":"a@b.de"}"#)
-            .unwrap();
+        fs::write(
+            occupied.join(MARKER_FERTIG),
+            r#"{"vorname":"A","nachname":"B","email":"a@b.de"}"#,
+        )
+        .unwrap();
 
         let listing = list_media_folders(root.path()).unwrap();
         assert_eq!(listing.folders.len(), 2);
@@ -764,5 +917,92 @@ mod tests {
         assert_eq!(occ.block_reason.as_deref(), Some(MARKER_FERTIG));
         let ready_info = listing.folders.iter().find(|f| f.name == "ready").unwrap();
         assert!(matches!(ready_info.folder_state, FolderState::Ready));
+    }
+
+    #[test]
+    fn list_media_folders_skips_dot_directories() {
+        let root = tempdir().unwrap();
+        fs::create_dir_all(root.path().join("Job-1")).unwrap();
+        fs::create_dir_all(root.path().join(".ams-handoff")).unwrap();
+        fs::create_dir_all(root.path().join(".hidden")).unwrap();
+
+        let listing = list_media_folders(root.path()).unwrap();
+        assert_eq!(listing.folders.len(), 1);
+        assert_eq!(listing.folders[0].name, "Job-1");
+    }
+
+    #[test]
+    fn rank_folders_pins_matching_ready_job() {
+        let mut folders = vec![
+            MediaFolderInfo {
+                name: "20260815_Bernd_Bauer_TA_X".into(),
+                path: "/b".into(),
+                is_ready: true,
+                block_reason: None,
+                folder_state: FolderState::Ready,
+                match_score: 0,
+                recommended: false,
+            },
+            MediaFolderInfo {
+                name: "20260815_Max_Mustermann_TA_Schmidt".into(),
+                path: "/m".into(),
+                is_ready: true,
+                block_reason: None,
+                folder_state: FolderState::Ready,
+                match_score: 0,
+                recommended: false,
+            },
+            MediaFolderInfo {
+                name: "zzz-other".into(),
+                path: "/z".into(),
+                is_ready: true,
+                block_reason: None,
+                folder_state: FolderState::Ready,
+                match_score: 0,
+                recommended: false,
+            },
+        ];
+        rank_folders_for_customer(&mut folders, "Max", "Mustermann");
+        assert_eq!(folders[0].name, "20260815_Max_Mustermann_TA_Schmidt");
+        assert!(folders[0].recommended);
+        assert!(folders[0].match_score >= folder_match::SCORE_NACHNAME);
+        assert!(!folders[1].recommended);
+    }
+
+    fn sample_customer(id: &str, vorname: &str, nachname: &str) -> Customer {
+        Customer {
+            id: id.into(),
+            vorname: vorname.into(),
+            nachname: nachname.into(),
+            email: format!("{vorname}@ex.de"),
+            telefon: String::new(),
+            processed: false,
+            assigned_path: String::new(),
+            created_at: String::new(),
+            updated_at: String::new(),
+        }
+    }
+
+    #[test]
+    fn propose_batch_includes_unmatched_unchecked() {
+        let customers = vec![
+            sample_customer("1", "Max", "Mustermann"),
+            sample_customer("2", "Ohne", "Treffer"),
+        ];
+        let folders = vec![MediaFolderInfo {
+            name: "20260815_Max_Mustermann_TA_X".into(),
+            path: "/m".into(),
+            is_ready: true,
+            block_reason: None,
+            folder_state: FolderState::Ready,
+            match_score: 0,
+            recommended: false,
+        }];
+        let rows = propose_batch_assignments(&customers, &folders);
+        assert_eq!(rows.len(), 2);
+        assert!(rows[0].included);
+        assert_eq!(rows[0].suggested_path.as_deref(), Some("/m"));
+        assert!(!rows[1].included);
+        assert!(rows[1].suggested_path.is_none());
     }
 }

@@ -209,10 +209,7 @@ pub async fn sync_history_with_journal(history: &HistoryState) -> Result<usize, 
         .into_iter()
         .map(|e| e.to_json())
         .collect();
-    if !entries
-        .iter()
-        .any(history_entry_needs_sms_journal_check)
-    {
+    if !entries.iter().any(history_entry_needs_sms_journal_check) {
         return Ok(0);
     }
 
@@ -267,7 +264,11 @@ mod tests {
             "sms_status": "Gesendet",
             "last_updated": ref_ts,
         });
-        let journal_ts = ref_ts.replace('T', " ").chars().take(19).collect::<String>();
+        let journal_ts = ref_ts
+            .replace('T', " ")
+            .chars()
+            .take(19)
+            .collect::<String>();
         let journal = vec![json!({
             "id": "77123456789",
             "to": "4916099501966",
@@ -292,7 +293,11 @@ mod tests {
             "sms_status": "Gesendet",
             "last_updated": ref_ts,
         });
-        let journal_ts = ref_ts.replace('T', " ").chars().take(19).collect::<String>();
+        let journal_ts = ref_ts
+            .replace('T', " ")
+            .chars()
+            .take(19)
+            .collect::<String>();
         let journal = vec![json!({
             "id": "77123456789",
             "to": "4916099501966",
@@ -314,10 +319,8 @@ mod tests {
             "last_updated": iso_now(),
         });
         assert!(!history_entry_needs_sms_journal_check(&item));
-        let changed = apply_journal_message_to_item(
-            &mut item,
-            &json!({"dlr": "TRANSMITTED", "id": "123"}),
-        );
+        let changed =
+            apply_journal_message_to_item(&mut item, &json!({"dlr": "TRANSMITTED", "id": "123"}));
         assert!(!changed);
         assert_eq!(json_str(&item, "sms_status"), "Zugestellt");
     }

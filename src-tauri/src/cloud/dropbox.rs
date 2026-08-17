@@ -20,7 +20,9 @@ use crate::events;
 use crate::model::kunde::Kunde;
 use crate::storage::logging;
 use crate::storage::secrets;
-use crate::upload::checkpoint::{clear_checkpoint, load_checkpoint, manifest_fingerprint, save_checkpoint};
+use crate::upload::checkpoint::{
+    clear_checkpoint, load_checkpoint, manifest_fingerprint, save_checkpoint,
+};
 use crate::upload::control::UploadControl;
 use crate::util::link_shortener;
 
@@ -113,10 +115,7 @@ impl DropboxClient {
     }
 
     fn token(&self) -> Option<String> {
-        self.access_token
-            .lock()
-            .ok()
-            .and_then(|g| g.clone())
+        self.access_token.lock().ok().and_then(|g| g.clone())
     }
 
     fn set_token(&self, token: Option<String>) {
@@ -388,7 +387,8 @@ impl DropboxClient {
                 .map_err(|e| CloudError::Message(e.to_string()))?,
         );
         if let Some(arg) = api_arg {
-            let encoded = serde_json::to_string(arg).map_err(|e| CloudError::Message(e.to_string()))?;
+            let encoded =
+                serde_json::to_string(arg).map_err(|e| CloudError::Message(e.to_string()))?;
             headers.insert(
                 "Dropbox-API-Arg",
                 HeaderValue::from_str(&encoded).map_err(|e| CloudError::Message(e.to_string()))?,
@@ -397,7 +397,11 @@ impl DropboxClient {
         Ok(headers)
     }
 
-    async fn with_retry<F, Fut>(&self, tag: &str, mut operation: F) -> Result<reqwest::Response, CloudError>
+    async fn with_retry<F, Fut>(
+        &self,
+        tag: &str,
+        mut operation: F,
+    ) -> Result<reqwest::Response, CloudError>
     where
         F: FnMut() -> Fut,
         Fut: std::future::Future<Output = Result<reqwest::Response, CloudError>>,
@@ -521,8 +525,9 @@ impl DropboxClient {
                     if text.is_empty() {
                         return Ok(Value::Null);
                     }
-                    return serde_json::from_str(&text)
-                        .map_err(|e| CloudError::Http(format!("{path}: ungültiges JSON ({e}) {text}")));
+                    return serde_json::from_str(&text).map_err(|e| {
+                        CloudError::Http(format!("{path}: ungültiges JSON ({e}) {text}"))
+                    });
                 }
                 Err(e) if auth_try == 0 && e.to_string().contains("401") => {
                     token = self.refresh_access_token().await?;
@@ -658,7 +663,10 @@ impl DropboxClient {
         let current_total = base_bytes_uploaded + file_size;
         let total_progress = percent(current_total, total_job_size);
         events::emit_progress_total(total_progress, current_total, total_job_size);
-        Ok(finished.get("id").and_then(Value::as_str).map(str::to_string))
+        Ok(finished
+            .get("id")
+            .and_then(Value::as_str)
+            .map(str::to_string))
     }
 
     pub(crate) async fn get_shareable_link_raw(
@@ -807,7 +815,8 @@ impl CloudClient for DropboxClient {
             start_idx = start_idx.min(files.len());
             let da = ck.get("db_active").cloned().unwrap_or(Value::Null);
             if start_idx < files.len()
-                && da.get("rel_path").and_then(Value::as_str) == Some(files[start_idx].rel_norm.as_str())
+                && da.get("rel_path").and_then(Value::as_str)
+                    == Some(files[start_idx].rel_norm.as_str())
             {
                 let offset = da.get("offset").and_then(Value::as_u64).unwrap_or(0);
                 if offset > 0 {
@@ -868,7 +877,11 @@ impl CloudClient for DropboxClient {
             logging::log_debug(&status_msg);
             events::emit_progress_file(0, 0, file.size);
 
-            let resume = if i == start_idx { resume_db.clone() } else { None };
+            let resume = if i == start_idx {
+                resume_db.clone()
+            } else {
+                None
+            };
             let result = if file.size <= CHUNK_SIZE as u64 {
                 self.upload_small_file(&file.local_path, &file.dropbox_path, file.size, control)
                     .await
@@ -1012,7 +1025,10 @@ fn walk_collect(root: &Path, current: &Path, remote_base: &str, out: &mut Vec<Up
 pub fn join_dropbox_path(remote_base: &str, relative: &str) -> String {
     let base = remote_base.replace('\\', "/");
     let base = base.trim_end_matches('/');
-    let rel = relative.replace('\\', "/").trim_start_matches('/').to_string();
+    let rel = relative
+        .replace('\\', "/")
+        .trim_start_matches('/')
+        .to_string();
     if rel.is_empty() {
         base.to_string()
     } else if base.is_empty() {

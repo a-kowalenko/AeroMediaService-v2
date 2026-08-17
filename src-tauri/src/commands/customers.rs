@@ -6,8 +6,9 @@ use tauri::State;
 
 use crate::commands::settings::ConfigState;
 use crate::storage::customers::{
-    list_media_folders, AssignResult, AssignmentHistoryEntry, Customer, CustomerState,
-    MediaDirectoryListing,
+    list_media_folders, propose_batch_assignments, rank_folders_for_customer, AssignResult,
+    AssignmentHistoryEntry, BatchAssignItem, BatchAssignOutcome, BatchAssignmentProposal, Customer,
+    CustomerState, MediaDirectoryListing,
 };
 
 #[tauri::command]
@@ -47,10 +48,7 @@ pub fn update_customer(
 }
 
 #[tauri::command]
-pub fn delete_customer(
-    customers: State<'_, CustomerState>,
-    id: String,
-) -> Result<(), String> {
+pub fn delete_customer(customers: State<'_, CustomerState>, id: String) -> Result<(), String> {
     customers.delete(&id)
 }
 
@@ -67,6 +65,8 @@ pub fn set_customer_processed(
 pub fn list_media_folders_cmd(
     config: State<'_, ConfigState>,
     path: Option<String>,
+    vorname: Option<String>,
+    nachname: Option<String>,
 ) -> Result<MediaDirectoryListing, String> {
     let target = match path {
         Some(p) if !p.trim().is_empty() => PathBuf::from(p.trim()),
@@ -81,7 +81,13 @@ pub fn list_media_folders_cmd(
             PathBuf::from(monitor.trim())
         }
     };
-    list_media_folders(&target).map_err(|e| e.to_string())
+    let mut listing = list_media_folders(&target).map_err(|e| e.to_string())?;
+    let vorname = vorname.unwrap_or_default();
+    let nachname = nachname.unwrap_or_default();
+    if !vorname.trim().is_empty() || !nachname.trim().is_empty() {
+        rank_folders_for_customer(&mut listing.folders, &vorname, &nachname);
+    }
+    Ok(listing)
 }
 
 #[tauri::command]
@@ -99,4 +105,32 @@ pub fn get_assignment_history(
     customers: State<'_, CustomerState>,
 ) -> Result<Vec<AssignmentHistoryEntry>, String> {
     customers.assignment_history()
+}
+
+#[tauri::command]
+pub fn propose_customer_assignments(
+    customers: State<'_, CustomerState>,
+    config: State<'_, ConfigState>,
+) -> Result<BatchAssignmentProposal, String> {
+    let monitor = config.get("monitor_path", Some(""))?;
+    if monitor.trim().is_empty() {
+        return Err(
+            "Kein Überwachungsordner konfiguriert. Bitte in den Einstellungen setzen.".into(),
+        );
+    }
+    let listing = list_media_folders(&PathBuf::from(monitor.trim())).map_err(|e| e.to_string())?;
+    let open = customers.list("", "unprocessed")?;
+    let rows = propose_batch_assignments(&open, &listing.folders);
+    Ok(BatchAssignmentProposal {
+        rows,
+        folders: listing.folders,
+    })
+}
+
+#[tauri::command]
+pub fn assign_customers_batch(
+    customers: State<'_, CustomerState>,
+    items: Vec<BatchAssignItem>,
+) -> Result<BatchAssignOutcome, String> {
+    customers.assign_many(&items)
 }

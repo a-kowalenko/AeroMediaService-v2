@@ -209,10 +209,7 @@ impl CustomApiClient {
         if order_id.is_empty() {
             return Ok(());
         }
-        let url = format!(
-            "{}/api/orders/{order_id}/manifest-status",
-            self.origin()?
-        );
+        let url = format!("{}/api/orders/{order_id}/manifest-status", self.origin()?);
         let started = Instant::now();
         logging::log_info(&format!(
             "Warte auf Manifest-Verknüpfung (order_id={order_id})..."
@@ -253,7 +250,11 @@ impl CustomApiClient {
                         }
                         events::emit_status(format!(
                             "Verknüpfe Dateien in Cloud... ({})",
-                            if status.is_empty() { "processing" } else { status }
+                            if status.is_empty() {
+                                "processing"
+                            } else {
+                                status
+                            }
                         ));
                     }
                 }
@@ -287,7 +288,10 @@ impl CustomApiClient {
         mut on_checkpoint: impl FnMut(Value) -> Result<(), CloudError>,
     ) -> Result<(), CloudError> {
         let totals = manifest.get("totals").cloned().unwrap_or(json!({}));
-        let files_count = totals.get("files_count").and_then(Value::as_u64).unwrap_or(0);
+        let files_count = totals
+            .get("files_count")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
         if files_count == 0 {
             return Err(CloudError::Message(
                 "Manifest v1.1: keine Dateien in Standard-Kategorien.".into(),
@@ -299,7 +303,10 @@ impl CustomApiClient {
             meta.get("version").and_then(Value::as_str).unwrap_or(""),
             meta.get("link_mode").and_then(Value::as_str).unwrap_or(""),
             files_count,
-            totals.get("bytes_total").and_then(Value::as_u64).unwrap_or(0)
+            totals
+                .get("bytes_total")
+                .and_then(Value::as_u64)
+                .unwrap_or(0)
         ));
         on_checkpoint(json!({ "phase": "manifest_pending" }))?;
         control.wait_if_paused().await?;

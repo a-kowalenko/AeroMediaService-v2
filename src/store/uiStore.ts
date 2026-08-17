@@ -1,6 +1,19 @@
 import { create } from "zustand";
 
+export type WorkspaceTab = "history" | "customers";
 export type DialogKind = "error" | "success" | "warning" | "confirm" | "prompt" | null;
+
+const WORKSPACE_TAB_KEY = "ams.workspaceTab";
+
+function readWorkspaceTab(): WorkspaceTab {
+  try {
+    const value = sessionStorage.getItem(WORKSPACE_TAB_KEY);
+    if (value === "history" || value === "customers") return value;
+  } catch {
+    /* private mode / unavailable */
+  }
+  return "history";
+}
 
 export type DialogPrimaryAction = {
   label: string;
@@ -24,6 +37,8 @@ export type PromptDialogOptions = {
 };
 
 type UiState = {
+  workspaceTab: WorkspaceTab;
+  setWorkspaceTab: (tab: WorkspaceTab) => void;
   dialogKind: DialogKind;
   dialogTitle: string;
   dialogMessage: string;
@@ -89,6 +104,15 @@ function settlePrompt(value: string | null) {
 }
 
 export const useUiStore = create<UiState>((set, get) => ({
+  workspaceTab: readWorkspaceTab(),
+  setWorkspaceTab: (workspaceTab) => {
+    set({ workspaceTab });
+    try {
+      sessionStorage.setItem(WORKSPACE_TAB_KEY, workspaceTab);
+    } catch {
+      /* ignore */
+    }
+  },
   dialogKind: null,
   ...emptyDialogFields,
 

@@ -223,7 +223,10 @@ pub fn http_is_transient(status: u16, body: &str) -> bool {
 }
 
 pub fn body_suggests_invocation_timeout(text: &str) -> bool {
-    !text.is_empty() && text.to_ascii_uppercase().contains("FUNCTION_INVOCATION_TIMEOUT")
+    !text.is_empty()
+        && text
+            .to_ascii_uppercase()
+            .contains("FUNCTION_INVOCATION_TIMEOUT")
 }
 
 pub fn backoff_delay_secs(attempt: u32) -> f64 {
@@ -376,8 +379,14 @@ mod tests {
 
     #[test]
     fn api_origin_strips_trailing_api() {
-        assert_eq!(api_origin("https://host.example/api"), "https://host.example");
-        assert_eq!(api_origin("https://host.example/api/"), "https://host.example");
+        assert_eq!(
+            api_origin("https://host.example/api"),
+            "https://host.example"
+        );
+        assert_eq!(
+            api_origin("https://host.example/api/"),
+            "https://host.example"
+        );
         assert_eq!(api_origin("https://host.example"), "https://host.example");
         assert_eq!(
             upload_api_root("https://host.example/api"),
@@ -416,7 +425,8 @@ mod tests {
             Some("https://x")
         );
         assert_eq!(
-            extract_customer_url(&serde_json::json!({"data": {"final_url": "https://y"}})).as_deref(),
+            extract_customer_url(&serde_json::json!({"data": {"final_url": "https://y"}}))
+                .as_deref(),
             Some("https://y")
         );
         assert_eq!(extract_customer_url(&serde_json::json!({"url": ""})), None);
@@ -425,7 +435,8 @@ mod tests {
     #[test]
     fn extract_link_from_customer_payload_nested() {
         assert_eq!(
-            extract_link_from_customer_payload(&serde_json::json!({"link": " https://x "})).as_deref(),
+            extract_link_from_customer_payload(&serde_json::json!({"link": " https://x "}))
+                .as_deref(),
             Some("https://x")
         );
         assert_eq!(
@@ -445,6 +456,9 @@ mod tests {
     fn guess_mime_common_media() {
         assert_eq!(guess_mime(std::path::Path::new("a.JPG")), "image/jpeg");
         assert_eq!(guess_mime(std::path::Path::new("clip.mp4")), "video/mp4");
-        assert_eq!(guess_mime(std::path::Path::new("x.bin")), "application/octet-stream");
+        assert_eq!(
+            guess_mime(std::path::Path::new("x.bin")),
+            "application/octet-stream"
+        );
     }
 }

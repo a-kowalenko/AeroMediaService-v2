@@ -42,9 +42,10 @@ import {
 } from "@/lib/tauri";
 import { compareVersionParts } from "@/lib/versionCompare";
 import { isCloudConnected, useAppStore } from "@/store/appStore";
+import { useCustomerStore } from "@/store/customerStore";
 import { useLogStore } from "@/store/logStore";
 import { initTheme, useThemeStore } from "@/store/themeStore";
-import { useUiStore } from "@/store/uiStore";
+import { useUiStore, type WorkspaceTab } from "@/store/uiStore";
 import "./App.css";
 
 initTheme();
@@ -86,6 +87,10 @@ function App() {
   const showError = useUiStore((s) => s.showError);
   const showSuccess = useUiStore((s) => s.showSuccess);
   const showWarning = useUiStore((s) => s.showWarning);
+  const workspaceTab = useUiStore((s) => s.workspaceTab);
+  const setWorkspaceTab = useUiStore((s) => s.setWorkspaceTab);
+  const openCustomerCount = useCustomerStore((s) => s.openCount);
+  const refreshCustomerCounts = useCustomerStore((s) => s.refreshCounts);
   const connected = isCloudConnected(connectionStatus);
 
   const installBlockedReason = (() => {
@@ -223,6 +228,7 @@ function App() {
     getUpdaterInstallHint()
       .then(setUpdaterPlatformHint)
       .catch(() => setUpdaterPlatformHint(null));
+    void refreshCustomerCounts();
     void (async () => {
       try {
         const theme = (await getSetting("ui_theme", "dark")).trim().toLowerCase();
@@ -239,7 +245,7 @@ function App() {
         setSetupWizardOpen(true);
       }
     })();
-  }, [setMonitoring, setConnectionStatus, setThemeMode]);
+  }, [setMonitoring, setConnectionStatus, setThemeMode, refreshCustomerCounts]);
 
   useEffect(() => {
     const unlisteners: Array<() => void> = [];
@@ -463,13 +469,25 @@ function App() {
 
           <main className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
             <Tabs
-              defaultValue="history"
+              value={workspaceTab}
+              onValueChange={(value) => {
+                if (value === "history" || value === "customers") {
+                  setWorkspaceTab(value as WorkspaceTab);
+                }
+              }}
               className="flex min-h-0 flex-1 flex-col overflow-hidden"
             >
               <div className="shrink-0 border-b border-border px-3 pt-2 sm:px-4">
                 <TabsList>
                   <TabsTrigger value="history">Historie</TabsTrigger>
-                  <TabsTrigger value="customers">Kunden</TabsTrigger>
+                  <TabsTrigger value="customers" className="gap-1.5">
+                    Kunden
+                    {openCustomerCount > 0 ? (
+                      <span className="rounded-full bg-primary-soft px-1.5 text-[10px] font-semibold leading-4 text-primary">
+                        {openCustomerCount}
+                      </span>
+                    ) : null}
+                  </TabsTrigger>
                 </TabsList>
               </div>
               <TabsContent

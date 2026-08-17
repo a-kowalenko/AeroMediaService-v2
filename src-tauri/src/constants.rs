@@ -54,8 +54,13 @@ pub fn setting_default(key: &str) -> Option<&'static str> {
         "custom_api_health_endpoint" => Some("/health"),
         "link_shortener_enabled" => Some("false"),
         "shortener_expires_preset" => Some("permanent"),
-        "smtp_host" | "smtp_sender_addr" | "smtp_fallback_recipient" | "imap_host"
-        | "imap_sent_folder" | "seven_sender" | "twilio_whatsapp_from" => Some(""),
+        "smtp_host"
+        | "smtp_sender_addr"
+        | "smtp_fallback_recipient"
+        | "imap_host"
+        | "imap_sent_folder"
+        | "seven_sender"
+        | "twilio_whatsapp_from" => Some(""),
         "smtp_port" => Some("587"),
         "smtp_sender_name" => Some("Dropbox Uploader"),
         "smtp_sandbox_mode" => Some("false"),
@@ -174,7 +179,10 @@ mod tests {
         assert_eq!(setting_default("bridge_enabled"), Some("false"));
         assert_eq!(setting_default("bridge_bind"), Some("0.0.0.0:8787"));
         assert_eq!(setting_default("selected_cloud_service"), Some("dropbox"));
-        assert_eq!(setting_default("custom_api_upload_mode"), Some("proxied_session"));
+        assert_eq!(
+            setting_default("custom_api_upload_mode"),
+            Some("proxied_session")
+        );
         assert_eq!(
             normalize_custom_api_upload_mode("direct_dropbox_complete"),
             CUSTOM_API_UPLOAD_MODE_DIRECT_DROPBOX
@@ -194,9 +202,15 @@ mod tests {
         assert!(is_direct_dropbox_upload_mode("direct"));
         assert!(!is_direct_dropbox_upload_mode("proxied_session"));
         assert_eq!(setting_default("link_shortener_enabled"), Some("false"));
-        assert_eq!(setting_default("shortener_expires_preset"), Some("permanent"));
+        assert_eq!(
+            setting_default("shortener_expires_preset"),
+            Some("permanent")
+        );
         assert_eq!(setting_default("smtp_port"), Some("587"));
-        assert_eq!(setting_default("smtp_sender_name"), Some("Dropbox Uploader"));
+        assert_eq!(
+            setting_default("smtp_sender_name"),
+            Some("Dropbox Uploader")
+        );
         assert_eq!(setting_default("smtp_sandbox_mode"), Some("false"));
         assert_eq!(setting_default("imap_save_sent_enabled"), Some("true"));
         assert_eq!(setting_default("imap_port"), Some("993"));

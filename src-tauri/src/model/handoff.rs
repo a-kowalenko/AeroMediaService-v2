@@ -363,13 +363,15 @@ pub fn load_and_validate_manifest(folder: &Path) -> Result<HandoffManifestV1, Ma
 }
 
 pub fn parse_manifest_json(raw: &str) -> Result<HandoffManifestV1, ManifestError> {
-    let value: Value = serde_json::from_str(raw.trim())
-        .map_err(|e| ManifestError::InvalidJson(e.to_string()))?;
+    let value: Value =
+        serde_json::from_str(raw.trim()).map_err(|e| ManifestError::InvalidJson(e.to_string()))?;
 
     let schema = value
         .get("schema")
         .and_then(|v| v.as_u64())
-        .ok_or_else(|| ManifestError::InvalidJson("Feld 'schema' fehlt oder ist ungültig.".into()))?;
+        .ok_or_else(|| {
+            ManifestError::InvalidJson("Feld 'schema' fehlt oder ist ungültig.".into())
+        })?;
     if schema != SCHEMA_V1 as u64 {
         return Err(ManifestError::UnsupportedSchema(format!(
             "Unsupported Manifest-Schema {schema} (erwartet {SCHEMA_V1})."
@@ -405,7 +407,10 @@ pub fn parse_manifest_json(raw: &str) -> Result<HandoffManifestV1, ManifestError
     Ok(manifest)
 }
 
-pub fn validate_integrity(folder: &Path, manifest: &HandoffManifestV1) -> Result<(), ManifestError> {
+pub fn validate_integrity(
+    folder: &Path,
+    manifest: &HandoffManifestV1,
+) -> Result<(), ManifestError> {
     for entry in &manifest.integrity.files {
         let rel = normalize_rel_path(&entry.path);
         if rel.is_empty() || Path::new(&rel).is_absolute() || has_parent_component(&rel) {
@@ -487,11 +492,7 @@ mod tests {
     }
 
     fn write_manifest(dir: &Path, m: &HandoffManifestV1) {
-        fs::write(
-            manifest_path(dir),
-            serde_json::to_string_pretty(m).unwrap(),
-        )
-        .unwrap();
+        fs::write(manifest_path(dir), serde_json::to_string_pretty(m).unwrap()).unwrap();
     }
 
     #[test]

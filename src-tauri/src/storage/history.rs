@@ -247,10 +247,15 @@ impl HistoryState {
 
     pub fn import_legacy_json_if_needed(&self) -> Result<usize, String> {
         let mut store = self.store.lock().map_err(|e| e.to_string())?;
-        store.import_legacy_json_if_needed().map_err(|e| e.to_string())
+        store
+            .import_legacy_json_if_needed()
+            .map_err(|e| e.to_string())
     }
 
-    pub fn add_or_update_from_value(&self, payload: &Value) -> Result<Option<HistoryEntry>, String> {
+    pub fn add_or_update_from_value(
+        &self,
+        payload: &Value,
+    ) -> Result<Option<HistoryEntry>, String> {
         let mut store = self.store.lock().map_err(|e| e.to_string())?;
         store.add_or_update(payload).map_err(|e| e.to_string())
     }
@@ -274,9 +279,7 @@ impl HistoryState {
 
     pub fn all_entries(&self) -> Result<Vec<HistoryEntry>, String> {
         let store = self.store.lock().map_err(|e| e.to_string())?;
-        store
-            .get_filtered_history("")
-            .map_err(|e| e.to_string())
+        store.get_filtered_history("").map_err(|e| e.to_string())
     }
 
     pub fn delete_items(&self, ids: &[String]) -> Result<usize, String> {
@@ -489,7 +492,10 @@ impl HistoryStore {
         })
     }
 
-    pub fn get_filtered_history(&self, search_text: &str) -> Result<Vec<HistoryEntry>, HistoryError> {
+    pub fn get_filtered_history(
+        &self,
+        search_text: &str,
+    ) -> Result<Vec<HistoryEntry>, HistoryError> {
         let conn = self.connect()?;
         let mut stmt =
             conn.prepare("SELECT * FROM history ORDER BY last_updated DESC, created_at DESC")?;
@@ -591,7 +597,8 @@ fn merge_patch(entry: &mut HistoryEntry, data: &Value) {
     if let Some(v) = json_str_if_present(data, "booking_number") {
         entry.booking_number = v;
     }
-    if let Some(v) = json_str_if_present(data, "type").or_else(|| json_str_if_present(data, "customer_type"))
+    if let Some(v) =
+        json_str_if_present(data, "type").or_else(|| json_str_if_present(data, "customer_type"))
     {
         entry.customer_type = v;
     }
@@ -807,7 +814,10 @@ mod tests {
     #[test]
     fn skips_payload_without_dir_name() {
         let (_dir, mut store) = open_tmp();
-        assert!(store.add_or_update(&json!({"status": "Fehler"})).unwrap().is_none());
+        assert!(store
+            .add_or_update(&json!({"status": "Fehler"}))
+            .unwrap()
+            .is_none());
         assert!(store.get_filtered_history("").unwrap().is_empty());
     }
 

@@ -34,14 +34,22 @@ struct PendingState {
     waiting_for_media: bool,
 }
 
-/// UI snapshot of a folder waiting for unchanged content (or media files).
+/// UI snapshot of a folder waiting before upload (stability wait or ATS handoff/ready).
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct StabilityPendingItem {
     pub dir_name: String,
     pub remaining_seconds: f64,
     pub required_seconds: f64,
     pub waiting_for_media: bool,
+    /// `stability` (folder wait) or `handoff` (ATS ready signal, claim follows).
+    #[serde(default)]
+    pub kind: String,
+    #[serde(default)]
+    pub correlation_id: String,
 }
+
+pub const PENDING_KIND_STABILITY: &str = "stability";
+pub const PENDING_KIND_HANDOFF: &str = "handoff";
 
 /// Case-normalized absolute path key (legacy `os.path.normcase(os.path.abspath(...))`).
 pub fn folder_key(dir_path: &Path) -> String {
@@ -158,10 +166,7 @@ impl FolderStabilityTracker {
         }
 
         let fingerprint = folder_content_fingerprint(dir_path);
-        let dir_name = dir_path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("");
+        let dir_name = dir_path.file_name().and_then(|n| n.to_str()).unwrap_or("");
 
         if fingerprint.file_count == 0 {
             let state = self.pending.entry(key).or_insert_with(|| PendingState {
@@ -254,7 +259,9 @@ impl FolderStabilityTracker {
             .pending
             .values()
             .map(|state| {
-                let elapsed = now.saturating_duration_since(state.stable_since).as_secs_f64();
+                let elapsed = now
+                    .saturating_duration_since(state.stable_since)
+                    .as_secs_f64();
                 let remaining = if state.waiting_for_media {
                     0.0
                 } else {
@@ -265,6 +272,8 @@ impl FolderStabilityTracker {
                     remaining_seconds: remaining,
                     required_seconds: required,
                     waiting_for_media: state.waiting_for_media,
+                    kind: PENDING_KIND_STABILITY.to_string(),
+                    correlation_id: String::new(),
                 }
             })
             .collect();
@@ -322,7 +331,13 @@ mod tests {
         let dir = tempdir().unwrap();
         write_bytes(&dir.path().join(MARKER_FERTIG), 4);
         let fp = folder_content_fingerprint(dir.path());
-        assert_eq!(fp, FolderFingerprint { total_bytes: 0, file_count: 0 });
+        assert_eq!(
+            fp,
+            FolderFingerprint {
+                total_bytes: 0,
+                file_count: 0
+            }
+        );
         assert!(!has_uploadable_files(dir.path()));
     }
 
@@ -453,6 +468,7 @@ mod tests {
             dir.path().file_name().unwrap().to_string_lossy()
         );
         assert!(!snap[0].waiting_for_media);
+        assert_eq!(snap[0].kind, PENDING_KIND_STABILITY);
         assert!((snap[0].required_seconds - 15.0).abs() < 0.01);
         assert!((snap[0].remaining_seconds - 15.0).abs() < 0.01);
 

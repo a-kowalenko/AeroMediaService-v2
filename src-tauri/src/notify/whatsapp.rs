@@ -34,7 +34,9 @@ pub fn load_twilio_config() -> TwilioConfig {
     TwilioConfig {
         account_sid: secret_first(&["twilio_account_sid"]).unwrap_or_default(),
         auth_token: secret_first(&["twilio_auth_token"]).unwrap_or_default(),
-        from_number: setting_or_default("twilio_whatsapp_from", "").trim().to_string(),
+        from_number: setting_or_default("twilio_whatsapp_from", "")
+            .trim()
+            .to_string(),
     }
 }
 

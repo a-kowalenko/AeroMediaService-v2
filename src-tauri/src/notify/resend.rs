@@ -74,7 +74,9 @@ pub fn sandbox_warnings(email_sandbox: bool, fallback: &str, sms_sandbox: bool) 
         if fallback.is_empty() {
             warnings.push("E-Mail-Sandbox aktiv — kein Fallback-Empfänger konfiguriert.".into());
         } else {
-            warnings.push(format!("E-Mail-Sandbox aktiv — Versand geht an {fallback}."));
+            warnings.push(format!(
+                "E-Mail-Sandbox aktiv — Versand geht an {fallback}."
+            ));
         }
     }
     if sms_sandbox {
@@ -350,10 +352,7 @@ pub fn format_resend_result_message(result: &ResendResult) -> String {
         } else {
             format!(" an {email_to}")
         };
-        lines.push(format!(
-            "{prefix} E-Mail{target}: {}",
-            email_result.status
-        ));
+        lines.push(format!("{prefix} E-Mail{target}: {}", email_result.status));
     }
     if let Some(sms_result) = &result.sms_result {
         let prefix = if sms_result.success { "✓" } else { "✗" };
@@ -372,10 +371,7 @@ pub fn format_resend_result_message(result: &ResendResult) -> String {
 }
 
 pub fn resend_had_failures(result: &ResendResult) -> bool {
-    result
-        .email_result
-        .as_ref()
-        .is_some_and(|r| !r.success)
+    result.email_result.as_ref().is_some_and(|r| !r.success)
         || result.sms_result.as_ref().is_some_and(|r| !r.success)
 }
 
@@ -686,11 +682,8 @@ mod tests {
 
     #[test]
     fn contact_update_payload() {
-        let payload = build_contact_update_payload(
-            &json!({"dir_name": "d1"}),
-            "a@b.de",
-            Some("0160"),
-        );
+        let payload =
+            build_contact_update_payload(&json!({"dir_name": "d1"}), "a@b.de", Some("0160"));
         assert_eq!(json_str(&payload, "dir_name"), "d1");
         assert_eq!(json_str(&payload, "email"), "a@b.de");
         assert_eq!(json_str(&payload, "phone"), "0160");

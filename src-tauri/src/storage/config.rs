@@ -172,7 +172,9 @@ mod tests {
     fn rejects_secret_keys() {
         let dir = tempdir().unwrap();
         let mut store = ConfigStore::open_at(dir.path().join(CONFIG_DB_FILE)).unwrap();
-        let err = store.save("db_app_secret", "should-not-persist").unwrap_err();
+        let err = store
+            .save("db_app_secret", "should-not-persist")
+            .unwrap_err();
         assert!(matches!(err, ConfigError::SecretKey(_)));
         let raw = std::fs::read(dir.path().join(CONFIG_DB_FILE)).unwrap();
         assert!(!String::from_utf8_lossy(&raw).contains("should-not-persist"));
@@ -182,7 +184,10 @@ mod tests {
     fn rejects_empty_key() {
         let dir = tempdir().unwrap();
         let mut store = ConfigStore::open_at(dir.path().join(CONFIG_DB_FILE)).unwrap();
-        assert!(matches!(store.save("  ", "x").unwrap_err(), ConfigError::EmptyKey));
+        assert!(matches!(
+            store.save("  ", "x").unwrap_err(),
+            ConfigError::EmptyKey
+        ));
     }
 
     #[test]

@@ -62,15 +62,9 @@ pub fn parse_iso_timestamp(ts_str: Option<&str>) -> Option<f64> {
 
 fn parse_naive(text: &str) -> Option<NaiveDateTime> {
     let candidates: &[&str] = if text.contains('T') {
-        &[
-            "%Y-%m-%dT%H:%M:%S%.f",
-            "%Y-%m-%dT%H:%M:%S",
-        ]
+        &["%Y-%m-%dT%H:%M:%S%.f", "%Y-%m-%dT%H:%M:%S"]
     } else {
-        &[
-            "%Y-%m-%d %H:%M:%S%.f",
-            "%Y-%m-%d %H:%M:%S",
-        ]
+        &["%Y-%m-%d %H:%M:%S%.f", "%Y-%m-%d %H:%M:%S"]
     };
     for fmt in candidates {
         let slice = if fmt.contains("%.f") {
@@ -108,9 +102,16 @@ pub fn is_sms_sent_status(status_value: Option<&str>) -> bool {
     if s == "übersprungen" {
         return true;
     }
-    ["gesendet", "zugestellt", "erfolgreich", "übertragen", "gepuffert", "akzeptiert"]
-        .iter()
-        .any(|token| s.contains(token))
+    [
+        "gesendet",
+        "zugestellt",
+        "erfolgreich",
+        "übertragen",
+        "gepuffert",
+        "akzeptiert",
+    ]
+    .iter()
+    .any(|token| s.contains(token))
 }
 
 pub fn is_sms_delivered_status(status_value: Option<&str>, item: Option<&Value>) -> bool {
@@ -420,10 +421,7 @@ mod tests {
             })),
             "In Bearbeitung"
         );
-        assert_eq!(
-            build_overall_status(&json!({})),
-            "Unbekannt"
-        );
+        assert_eq!(build_overall_status(&json!({})), "Unbekannt");
     }
 
     #[test]

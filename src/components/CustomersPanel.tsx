@@ -1,29 +1,33 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ClipboardEvent, type FormEvent, type Ref } from "react";
 import {
   Check,
   ClipboardPaste,
+  History,
+  ListChecks,
   Pencil,
+  RotateCcw,
   Search,
   Trash2,
   UserPlus,
 } from "lucide-react";
 import { FolderSelectionModal } from "./FolderSelectionModal";
+import { BatchAssignDialog } from "./BatchAssignDialog";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogFooter,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { cn, formatHistoryDate } from "@/lib/utils";
 import type { Customer } from "@/lib/tauri";
 import { useCustomerStore, type CustomerFilter } from "@/store/customerStore";
 import { useUiStore } from "@/store/uiStore";
-import { showAppToast } from "@/lib/toast";
 
 type FormState = {
   vorname: string;
@@ -96,16 +100,37 @@ function validateForm(form: FormState): string | null {
   return null;
 }
 
+function customerLabel(customer: Pick<Customer, "vorname" | "nachname">): string {
+  return `${customer.vorname} ${customer.nachname}`.trim();
+}
+
+/** Folder name from a stored marker path (`…/Job-1/_fertig.txt` → `Job-1`). */
+function assignedDirName(assignedPath: string): string {
+  const parts = assignedPath
+    .trim()
+    .replace(/\\/g, "/")
+    .split("/")
+    .filter((part) => part.length > 0);
+  if (parts.length === 0) return "";
+  const last = parts[parts.length - 1] ?? "";
+  if (last === "_fertig.txt" || last === "_in_verarbeitung.txt") {
+    return parts[parts.length - 2] ?? last;
+  }
+  return last;
+}
+
 export function CustomersPanel() {
   const items = useCustomerStore((s) => s.items);
   const history = useCustomerStore((s) => s.history);
   const search = useCustomerStore((s) => s.search);
   const filter = useCustomerStore((s) => s.filter);
+  const view = useCustomerStore((s) => s.view);
+  const openCount = useCustomerStore((s) => s.openCount);
+  const highlightId = useCustomerStore((s) => s.highlightId);
   const loading = useCustomerStore((s) => s.loading);
-  const error = useCustomerStore((s) => s.error);
-  const message = useCustomerStore((s) => s.message);
   const setSearch = useCustomerStore((s) => s.setSearch);
   const setFilter = useCustomerStore((s) => s.setFilter);
+  const setView = useCustomerStore((s) => s.setView);
   const load = useCustomerStore((s) => s.load);
   const loadHistory = useCustomerStore((s) => s.loadHistory);
   const add = useCustomerStore((s) => s.add);
@@ -115,20 +140,36 @@ export function CustomersPanel() {
   const assign = useCustomerStore((s) => s.assign);
   const confirm = useUiStore((s) => s.confirm);
 
+  const [intakeOpen, setIntakeOpen] = useState(false);
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
   const [formError, setFormError] = useState("");
   const [formBusy, setFormBusy] = useState(false);
+  const [assignAfterSave, setAssignAfterSave] = useState(false);
   const [clipboardCustomer, setClipboardCustomer] = useState<ClipboardCustomer | null>(
     null,
   );
   const lastAppliedClipboardRef = useRef("");
+  const vornameRef = useRef<HTMLInputElement>(null);
 
   const [exportingId, setExportingId] = useState<string | null>(null);
+  const [exportingLabel, setExportingLabel] = useState("");
+  const [exportingVorname, setExportingVorname] = useState("");
+  const [exportingNachname, setExportingNachname] = useState("");
+  const [exportingEmail, setExportingEmail] = useState("");
   const [assignBusy, setAssignBusy] = useState(false);
   const [editing, setEditing] = useState<Customer | null>(null);
   const [editForm, setEditForm] = useState<FormState>(EMPTY_FORM);
   const [editError, setEditError] = useState("");
   const [editBusy, setEditBusy] = useState(false);
+  const [batchOpen, setBatchOpen] = useState(false);
+
+  function startAssign(customer: Pick<Customer, "id" | "vorname" | "nachname" | "email">) {
+    setExportingId(customer.id);
+    setExportingLabel(customerLabel(customer));
+    setExportingVorname(customer.vorname);
+    setExportingNachname(customer.nachname);
+    setExportingEmail(customer.email);
+  }
 
   const checkClipboard = useCallback(async () => {
     try {
@@ -166,6 +207,12 @@ export function CustomersPanel() {
     };
   }, [checkClipboard]);
 
+  useEffect(() => {
+    if (!intakeOpen) return;
+    const id = window.setTimeout(() => vornameRef.current?.focus(), 40);
+    return () => window.clearTimeout(id);
+  }, [intakeOpen]);
+
   function applyClipboard(parsed: ClipboardCustomer) {
     setForm({
       vorname: parsed.vorname,
@@ -176,28 +223,71 @@ export function CustomersPanel() {
     setFormError("");
   }
 
-  async function onSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    const err = validateForm(form);
+  function openIntake(prefill?: ClipboardCustomer) {
+    setFormError("");
+    setAssignAfterSave(false);
+    if (prefill) {
+      applyClipboard(prefill);
+      lastAppliedClipboardRef.current = JSON.stringify(prefill);
+      setClipboardCustomer(null);
+    } else {
+      setForm(EMPTY_FORM);
+    }
+    setIntakeOpen(true);
+  }
+
+  function closeIntake() {
+    if (formBusy) return;
+    setIntakeOpen(false);
+    setForm(EMPTY_FORM);
+    setFormError("");
+    setAssignAfterSave(false);
+    lastAppliedClipboardRef.current = "";
+    void checkClipboard();
+  }
+
+  async function submitIntake(parsed?: ClipboardCustomer) {
+    const payload = parsed ?? form;
+    const err = validateForm(payload);
     if (err) {
       setFormError(err);
-      return;
+      if (parsed) {
+        applyClipboard(parsed);
+        setIntakeOpen(true);
+      }
+      return null;
     }
     setFormBusy(true);
     setFormError("");
     try {
-      await add(form.vorname, form.nachname, form.email, form.telefon);
-      setForm(EMPTY_FORM);
+      const customer = await add(
+        payload.vorname,
+        payload.nachname,
+        payload.email,
+        payload.telefon,
+      );
       lastAppliedClipboardRef.current = "";
       setClipboardCustomer(null);
+      setForm(EMPTY_FORM);
+      setIntakeOpen(false);
+      setAssignAfterSave(false);
+      return customer;
     } catch {
-      /* store sets error */
+      return null;
     } finally {
       setFormBusy(false);
     }
   }
 
-  function onFormPaste(e: React.ClipboardEvent) {
+  async function onSubmit(e: FormEvent) {
+    e.preventDefault();
+      const customer = await submitIntake();
+    if (customer && assignAfterSave) {
+      startAssign(customer);
+    }
+  }
+
+  function onFormPaste(e: ClipboardEvent) {
     const text = e.clipboardData.getData("text");
     const parsed = parseCustomerJsonPaste(text);
     if (!parsed) return;
@@ -207,6 +297,14 @@ export function CustomersPanel() {
     setClipboardCustomer(null);
   }
 
+  async function onQuickAddFromClipboard() {
+    if (!clipboardCustomer) return;
+    const snapshot = clipboardCustomer;
+    lastAppliedClipboardRef.current = JSON.stringify(snapshot);
+    const customer = await submitIntake(snapshot);
+    if (customer) setClipboardCustomer(null);
+  }
+
   async function onAssign(folderPath: string) {
     if (!exportingId) return;
     setAssignBusy(true);
@@ -214,7 +312,7 @@ export function CustomersPanel() {
       await assign(exportingId, folderPath);
       setExportingId(null);
     } catch {
-      /* store sets error */
+      /* store toasts */
     } finally {
       setAssignBusy(false);
     }
@@ -267,7 +365,6 @@ export function CustomersPanel() {
     try {
       await remove(editing.id);
       setEditing(null);
-      showAppToast("Kunde gelöscht.", { tone: "success" });
     } catch {
       /* store */
     } finally {
@@ -275,53 +372,346 @@ export function CustomersPanel() {
     }
   }
 
+  async function toggleProcessed(customer: Customer) {
+    const next = !customer.processed;
+    const ok = await confirm(
+      next
+        ? `${customerLabel(customer)} als erledigt markieren, ohne Ordner zuzuweisen?`
+        : `${customerLabel(customer)} wieder in die offene Warteschlange legen?`,
+      {
+        title: next ? "Als erledigt markieren" : "Wieder öffnen",
+        primaryLabel: next ? "Als erledigt" : "Wieder öffnen",
+      },
+    );
+    if (!ok) return;
+    await setProcessed(customer.id, next);
+  }
+
   const filters: Array<[CustomerFilter, string]> = [
+    ["all", "Alle"],
     ["unprocessed", "Offen"],
     ["processed", "Erledigt"],
-    ["all", "Alle"],
   ];
+
+  const emptyQueueText = loading
+    ? "Laden…"
+    : search.trim()
+      ? "Keine Treffer für die Suche."
+      : filter === "processed"
+        ? "Noch keine erledigten Kunden."
+        : filter === "all"
+          ? "Noch keine Kunden."
+          : "Keine offenen Kunden.";
 
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-      <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-border px-4 py-3">
-        <div>
-          <h2 className="text-sm font-semibold tracking-tight text-foreground sm:text-base">
-            Kunden
+      <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-border/70 bg-card-elevated/40 px-4 py-3">
+        <div className="min-w-0 flex-1 basis-full sm:basis-auto">
+          <h2 className="text-sm font-semibold tracking-tight text-foreground">
+            {view === "history" ? "Zuweisungen" : "Kundenwarteschlange"}
           </h2>
-          <p className="mt-0.5 text-xs text-muted">
-            Aufnehmen und per _fertig.txt dem Medienordner zuweisen.
+          <p className="text-xs text-muted">
+            {view === "history"
+              ? history.length === 0
+                ? "Noch keine Marker geschrieben"
+                : `${history.length} Zuweisungen`
+              : openCount === 1
+                ? "1 Kunde offen · Ordner zuweisen schreibt _fertig.txt"
+                : `${openCount} Kunden offen · Ordner zuweisen schreibt _fertig.txt`}
           </p>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="flex gap-1">
+            <Button
+              type="button"
+              size="sm"
+              variant={view === "queue" ? "default" : "secondary"}
+              onClick={() => setView("queue")}
+            >
+              Warteschlange
+              {openCount > 0 ? (
+                <span
+                  className={cn(
+                    "rounded-full px-1.5 text-[10px] font-semibold leading-4",
+                    view === "queue"
+                      ? "bg-primary-foreground/20"
+                      : "bg-primary-soft text-primary",
+                  )}
+                >
+                  {openCount}
+                </span>
+              ) : null}
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant={view === "history" ? "default" : "secondary"}
+              onClick={() => setView("history")}
+            >
+              <History className="h-3.5 w-3.5" />
+              Verlauf
+            </Button>
+          </div>
+          {view === "queue" ? (
+            <Button
+              type="button"
+              size="sm"
+              variant="secondary"
+              disabled={openCount === 0}
+              onClick={() => setBatchOpen(true)}
+              title="Offene Kunden passenden Ordnern zuordnen und bestätigen"
+            >
+              <ListChecks className="h-3.5 w-3.5" />
+              Alle zuweisen
+            </Button>
+          ) : null}
+          <Button type="button" size="sm" onClick={() => openIntake()}>
+            <UserPlus className="h-3.5 w-3.5" />
+            Kunde aufnehmen
+          </Button>
         </div>
       </div>
 
-      <Tabs defaultValue="queue" className="flex min-h-0 flex-1 flex-col overflow-hidden">
-        <div className="shrink-0 px-4 pt-3">
-          <TabsList className="w-full sm:w-auto">
-            <TabsTrigger value="intake">Aufnehmen</TabsTrigger>
-            <TabsTrigger value="queue">Warteschlange</TabsTrigger>
-            <TabsTrigger value="history">Zuweisungen</TabsTrigger>
-          </TabsList>
+      {view === "queue" && clipboardCustomer ? (
+        <div className="shrink-0 border-b border-sky-500/25 bg-sky-500/10 px-4 py-2.5">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <p className="text-sm text-foreground">
+              Zwischenablage:{" "}
+              <span className="font-medium">
+                {clipboardCustomer.vorname} {clipboardCustomer.nachname}
+              </span>
+              <span className="ml-1.5 text-xs text-muted">{clipboardCustomer.email}</span>
+            </p>
+            <div className="flex gap-1.5">
+              <Button
+                type="button"
+                variant="secondary"
+                size="sm"
+                onClick={() => openIntake(clipboardCustomer)}
+              >
+                <ClipboardPaste className="h-3.5 w-3.5" />
+                Übernehmen
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                disabled={formBusy}
+                onClick={() => void onQuickAddFromClipboard()}
+              >
+                Direkt anlegen
+              </Button>
+            </div>
+          </div>
         </div>
+      ) : null}
 
-        {(error || message) && (
-          <div className="shrink-0 px-4 pt-2">
-            {error ? (
-              <p className="text-xs text-destructive">{error}</p>
+      {view === "queue" ? (
+        <div className="flex min-h-0 flex-1 flex-col overflow-hidden px-4 py-3">
+          <div className="mb-3 flex flex-wrap items-center gap-2">
+            <div className="relative min-w-[12rem] flex-1">
+              <Search className="pointer-events-none absolute top-1/2 left-2.5 h-3.5 w-3.5 -translate-y-1/2 text-muted" />
+              <Input
+                className="h-8 pl-8 text-xs"
+                placeholder="Suchen…"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                aria-label="Kunden durchsuchen"
+              />
+            </div>
+            <div className="flex gap-1">
+              {filters.map(([key, label]) => (
+                <Button
+                  key={key}
+                  type="button"
+                  size="sm"
+                  variant={filter === key ? "default" : "secondary"}
+                  onClick={() => setFilter(key)}
+                >
+                  {label}
+                  {key === "unprocessed" && openCount > 0 ? (
+                    <span
+                      className={cn(
+                        "rounded-full px-1.5 text-[10px] font-semibold leading-4",
+                        filter === key
+                          ? "bg-primary-foreground/20"
+                          : "bg-primary-soft text-primary",
+                      )}
+                    >
+                      {openCount}
+                    </span>
+                  ) : null}
+                </Button>
+              ))}
+            </div>
+          </div>
+
+          <div className="min-h-0 flex-1 overflow-y-auto rounded-lg border border-border">
+            {items.length === 0 ? (
+              <div className="flex h-full min-h-[12rem] flex-col items-center justify-center gap-3 p-6 text-center">
+                <p className="text-sm text-muted">{emptyQueueText}</p>
+                {!loading && !search.trim() && filter !== "processed" ? (
+                  <Button type="button" onClick={() => openIntake()}>
+                    <UserPlus className="h-3.5 w-3.5" />
+                    Ersten Kunden aufnehmen
+                  </Button>
+                ) : null}
+              </div>
             ) : (
-              <p className="text-xs text-emerald-600 dark:text-emerald-400">{message}</p>
+              <ul className="divide-y divide-border">
+                {items.map((customer) => {
+                  const highlighted = customer.id === highlightId;
+                  return (
+                    <li
+                      key={customer.id}
+                      className={cn(
+                        "flex flex-wrap items-center gap-2 px-3 py-2.5 transition-colors sm:flex-nowrap",
+                        highlighted
+                          ? "bg-[var(--ams-row-active)]"
+                          : "hover:bg-[var(--ams-row-hover)]",
+                      )}
+                    >
+                      <div className="min-w-0 flex-1 basis-[11rem]">
+                        <p className="truncate text-sm font-medium text-foreground">
+                          {customerLabel(customer)}
+                          {customer.processed ? (
+                            <span className="ml-2 inline-flex items-center rounded-full border border-success/30 bg-success/10 px-1.5 py-px text-[10px] font-medium tracking-wide text-success uppercase">
+                              erledigt
+                            </span>
+                          ) : (
+                            <span className="ml-2 inline-flex items-center rounded-full border border-warning/35 bg-warning/10 px-1.5 py-px text-[10px] font-medium tracking-wide text-warning uppercase">
+                              offen
+                            </span>
+                          )}
+                        </p>
+                        <p className="truncate text-xs text-muted">
+                          {customer.email}
+                          {customer.telefon ? ` · ${customer.telefon}` : ""}
+                        </p>
+                      </div>
+                      {customer.assigned_path.trim() ? (
+                        <div className="min-w-0 flex-1 basis-[12rem]">
+                          <p className="truncate text-xs text-muted">
+                            {formatHistoryDate(
+                              history.find((entry) => entry.customer_id === customer.id)
+                                ?.created_at || customer.updated_at,
+                            )}
+                          </p>
+                          <p
+                            className="truncate font-mono text-xs text-foreground"
+                            title={customer.assigned_path}
+                          >
+                            {assignedDirName(customer.assigned_path)}
+                          </p>
+                        </div>
+                      ) : null}
+                      <div className="flex shrink-0 flex-wrap gap-1.5">
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant={customer.processed ? "secondary" : "default"}
+                          onClick={() => startAssign(customer)}
+                          title={
+                            customer.processed
+                              ? "Erneut _fertig.txt in einen Ordner schreiben"
+                              : "Ordner wählen und _fertig.txt schreiben"
+                          }
+                        >
+                          {customer.processed ? "Erneut zuweisen" : "Zuweisen"}
+                        </Button>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="secondary"
+                          onClick={() => openEdit(customer)}
+                          title="Bearbeiten"
+                        >
+                          <Pencil className="h-3.5 w-3.5" />
+                        </Button>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="secondary"
+                          onClick={() => void toggleProcessed(customer)}
+                          title={
+                            customer.processed
+                              ? "Als offen markieren"
+                              : "Als erledigt markieren"
+                          }
+                        >
+                          {customer.processed ? (
+                            <RotateCcw className="h-3.5 w-3.5" />
+                          ) : (
+                            <Check className="h-3.5 w-3.5" />
+                          )}
+                        </Button>
+                      </div>
+                    </li>
+                  );
+                })}
+              </ul>
             )}
           </div>
-        )}
+        </div>
+      ) : (
+        <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
+          {history.length === 0 ? (
+            <div className="flex min-h-[12rem] flex-col items-center justify-center gap-3 text-center">
+              <p className="text-sm text-muted">Noch keine Zuweisungen.</p>
+              <Button type="button" variant="secondary" onClick={() => setView("queue")}>
+                Zur Warteschlange
+              </Button>
+            </div>
+          ) : (
+            <div className="overflow-x-auto rounded-lg border border-border">
+              <table className="w-full min-w-[32rem] text-left text-sm">
+                <thead className="border-b border-border bg-card-elevated text-xs text-muted">
+                  <tr>
+                    <th className="px-3 py-2 font-medium">Zeit</th>
+                    <th className="px-3 py-2 font-medium">Kunde</th>
+                    <th className="px-3 py-2 font-medium">E-Mail</th>
+                    <th className="px-3 py-2 font-medium">Pfad</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-border">
+                  {history.map((entry) => (
+                    <tr key={entry.id} className="hover:bg-[var(--ams-row-hover)]">
+                      <td className="px-3 py-2 whitespace-nowrap text-xs text-muted">
+                        {formatHistoryDate(entry.created_at)}
+                      </td>
+                      <td className="px-3 py-2">
+                        {entry.vorname} {entry.nachname}
+                      </td>
+                      <td className="px-3 py-2 text-muted">{entry.email}</td>
+                      <td
+                        className="max-w-[16rem] truncate px-3 py-2 font-mono text-xs text-muted"
+                        title={entry.file_path}
+                      >
+                        {entry.file_path}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
 
-        <TabsContent
-          value="intake"
-          className="mt-0 min-h-0 flex-1 overflow-y-auto px-4 py-4 data-[state=inactive]:hidden"
-        >
-          <form
-            onSubmit={(e) => void onSubmit(e)}
-            onPaste={onFormPaste}
-            className="mx-auto max-w-lg space-y-3"
-          >
+      <Dialog
+        open={intakeOpen}
+        onOpenChange={(open) => {
+          if (!open) closeIntake();
+        }}
+      >
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Kunde aufnehmen</DialogTitle>
+            <DialogDescription>
+              In die Warteschlange legen. Anschließend einem Medienordner zuweisen.
+            </DialogDescription>
+          </DialogHeader>
+          <form onSubmit={(e) => void onSubmit(e)} onPaste={onFormPaste} className="space-y-3">
             {clipboardCustomer ? (
               <div className="flex items-center justify-between gap-3 rounded-lg border border-sky-500/30 bg-sky-500/10 px-3 py-2.5">
                 <p className="text-sm text-foreground">
@@ -347,6 +737,7 @@ export function CustomersPanel() {
             ) : null}
 
             <Field
+              inputRef={vornameRef}
               label="Vorname *"
               value={form.vorname}
               onChange={(v) => setForm((f) => ({ ...f, vorname: v }))}
@@ -369,186 +760,50 @@ export function CustomersPanel() {
               onChange={(v) => setForm((f) => ({ ...f, telefon: v }))}
             />
 
+            <label className="flex items-start gap-2 pt-1 text-sm text-foreground">
+              <Checkbox
+                checked={assignAfterSave}
+                onCheckedChange={(v) => setAssignAfterSave(v === true)}
+                className="mt-0.5"
+              />
+              <span>Nach dem Speichern direkt einem Ordner zuweisen</span>
+            </label>
+
             {formError ? <p className="text-xs text-destructive">{formError}</p> : null}
 
-            <Button type="submit" className="w-full" disabled={formBusy}>
-              <UserPlus className="h-3.5 w-3.5" />
-              {formBusy ? "Speichern…" : "Kunde anlegen"}
-            </Button>
-            {(form.vorname || form.nachname || form.email || form.telefon) && (
-              <Button
-                type="button"
-                variant="secondary"
-                className="w-full"
-                onClick={() => {
-                  setForm(EMPTY_FORM);
-                  setFormError("");
-                  lastAppliedClipboardRef.current = "";
-                  void checkClipboard();
-                }}
-              >
-                Zurücksetzen
+            <DialogFooter className="gap-2 pt-1">
+              <Button type="button" variant="secondary" disabled={formBusy} onClick={closeIntake}>
+                Abbrechen
               </Button>
-            )}
+              <Button type="submit" disabled={formBusy}>
+                <UserPlus className="h-3.5 w-3.5" />
+                {formBusy ? "Speichern…" : "In Warteschlange"}
+              </Button>
+            </DialogFooter>
           </form>
-        </TabsContent>
-
-        <TabsContent
-          value="queue"
-          className="mt-0 flex min-h-0 flex-1 flex-col overflow-hidden px-4 py-3 data-[state=inactive]:hidden"
-        >
-          <div className="mb-3 flex flex-wrap items-center gap-2">
-            <div className="relative min-w-[12rem] flex-1">
-              <Search className="pointer-events-none absolute top-1/2 left-2.5 h-3.5 w-3.5 -translate-y-1/2 text-muted" />
-              <Input
-                className="pl-8"
-                placeholder="Suchen…"
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-              />
-            </div>
-            <div className="flex gap-1">
-              {filters.map(([key, label]) => (
-                <Button
-                  key={key}
-                  type="button"
-                  size="sm"
-                  variant={filter === key ? "default" : "secondary"}
-                  onClick={() => setFilter(key)}
-                >
-                  {label}
-                </Button>
-              ))}
-            </div>
-          </div>
-
-          <div className="min-h-0 flex-1 overflow-y-auto rounded-lg border border-border">
-            {loading && items.length === 0 ? (
-              <p className="p-4 text-sm text-muted">Laden…</p>
-            ) : items.length === 0 ? (
-              <p className="p-4 text-sm text-muted">Keine Kunden in dieser Ansicht.</p>
-            ) : (
-              <ul className="divide-y divide-border">
-                {items.map((customer) => (
-                  <li
-                    key={customer.id}
-                    className="flex flex-wrap items-center gap-2 px-3 py-2.5 sm:flex-nowrap"
-                  >
-                    <div className="min-w-0 flex-1">
-                      <p className="truncate text-sm font-medium text-foreground">
-                        {customer.vorname} {customer.nachname}
-                        {customer.processed ? (
-                          <span className="ml-2 text-[10px] font-normal tracking-wide text-muted uppercase">
-                            erledigt
-                          </span>
-                        ) : null}
-                      </p>
-                      <p className="truncate text-xs text-muted">
-                        {customer.email}
-                        {customer.telefon ? ` · ${customer.telefon}` : ""}
-                      </p>
-                    </div>
-                    <div className="flex shrink-0 flex-wrap gap-1.5">
-                      <Button
-                        type="button"
-                        size="sm"
-                        disabled={customer.processed}
-                        onClick={() => setExportingId(customer.id)}
-                        title={
-                          customer.processed
-                            ? "Bereits zugewiesen"
-                            : "Ordner wählen und _fertig.txt schreiben"
-                        }
-                      >
-                        Zuweisen
-                      </Button>
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant="secondary"
-                        onClick={() => openEdit(customer)}
-                        title="Bearbeiten"
-                      >
-                        <Pencil className="h-3.5 w-3.5" />
-                      </Button>
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant="secondary"
-                        onClick={() =>
-                          void setProcessed(customer.id, !customer.processed)
-                        }
-                        title={
-                          customer.processed
-                            ? "Als offen markieren"
-                            : "Als erledigt markieren"
-                        }
-                      >
-                        <Check
-                          className={cn(
-                            "h-3.5 w-3.5",
-                            customer.processed && "text-emerald-600",
-                          )}
-                        />
-                      </Button>
-                    </div>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
-        </TabsContent>
-
-        <TabsContent
-          value="history"
-          className="mt-0 min-h-0 flex-1 overflow-y-auto px-4 py-3 data-[state=inactive]:hidden"
-        >
-          {history.length === 0 ? (
-            <p className="text-sm text-muted">Noch keine Zuweisungen.</p>
-          ) : (
-            <div className="overflow-x-auto rounded-lg border border-border">
-              <table className="w-full min-w-[32rem] text-left text-sm">
-                <thead className="border-b border-border bg-card-elevated text-xs text-muted">
-                  <tr>
-                    <th className="px-3 py-2 font-medium">Zeit</th>
-                    <th className="px-3 py-2 font-medium">Kunde</th>
-                    <th className="px-3 py-2 font-medium">E-Mail</th>
-                    <th className="px-3 py-2 font-medium">Pfad</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-border">
-                  {history.map((entry) => (
-                    <tr key={entry.id}>
-                      <td className="px-3 py-2 whitespace-nowrap text-xs text-muted">
-                        {formatHistoryDate(entry.created_at)}
-                      </td>
-                      <td className="px-3 py-2">
-                        {entry.vorname} {entry.nachname}
-                      </td>
-                      <td className="px-3 py-2 text-muted">{entry.email}</td>
-                      <td
-                        className="max-w-[16rem] truncate px-3 py-2 font-mono text-xs text-muted"
-                        title={entry.file_path}
-                      >
-                        {entry.file_path}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </TabsContent>
-      </Tabs>
+        </DialogContent>
+      </Dialog>
 
       <FolderSelectionModal
         open={Boolean(exportingId)}
         busy={assignBusy}
+        customerLabel={exportingLabel || undefined}
+        vorname={exportingVorname}
+        nachname={exportingNachname}
+        email={exportingEmail}
         onClose={() => {
-          if (!assignBusy) setExportingId(null);
+          if (!assignBusy) {
+            setExportingId(null);
+            setExportingLabel("");
+            setExportingVorname("");
+            setExportingNachname("");
+            setExportingEmail("");
+          }
         }}
         onSelect={(path) => void onAssign(path)}
       />
+
+      <BatchAssignDialog open={batchOpen} onClose={() => setBatchOpen(false)} />
 
       <Dialog
         open={Boolean(editing)}
@@ -604,11 +859,7 @@ export function CustomersPanel() {
               >
                 Abbrechen
               </Button>
-              <Button
-                type="button"
-                disabled={editBusy}
-                onClick={() => void saveEdit()}
-              >
+              <Button type="button" disabled={editBusy} onClick={() => void saveEdit()}>
                 Speichern
               </Button>
             </div>
@@ -624,16 +875,19 @@ function Field({
   value,
   onChange,
   type = "text",
+  inputRef,
 }: {
   label: string;
   value: string;
   onChange: (value: string) => void;
   type?: string;
+  inputRef?: Ref<HTMLInputElement>;
 }) {
   return (
     <div className="space-y-1.5">
       <Label>{label}</Label>
       <Input
+        ref={inputRef}
         type={type}
         value={value}
         onChange={(e) => onChange(e.target.value)}

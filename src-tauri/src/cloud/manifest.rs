@@ -94,22 +94,17 @@ pub fn build_manifest_v11(
             .get("name")
             .and_then(Value::as_str)
             .map(str::to_string)
-            .unwrap_or_else(|| {
-                rel_path
-                    .rsplit('/')
-                    .next()
-                    .unwrap_or(&rel_path)
-                    .to_string()
-            });
+            .unwrap_or_else(|| rel_path.rsplit('/').next().unwrap_or(&rel_path).to_string());
         let size = file_row
             .get("size")
             .and_then(Value::as_u64)
-            .or_else(|| file_row.get("size").and_then(Value::as_i64).map(|v| v as u64))
             .or_else(|| {
                 file_row
-                    .get("file_size")
-                    .and_then(Value::as_u64)
+                    .get("size")
+                    .and_then(Value::as_i64)
+                    .map(|v| v as u64)
             })
+            .or_else(|| file_row.get("file_size").and_then(Value::as_u64))
             .unwrap_or(0);
         let mime = file_row
             .get("mime")
@@ -278,7 +273,10 @@ mod tests {
         assert_eq!(manifest["meta"]["uploader_version"], "0.1.0");
         assert_eq!(manifest["base_dir"], "Job-1");
         assert_eq!(manifest["root_folder"]["path"], "/Job-1");
-        assert_eq!(manifest["root_folder"]["share_link"], "https://dropbox.com/s/x");
+        assert_eq!(
+            manifest["root_folder"]["share_link"],
+            "https://dropbox.com/s/x"
+        );
         assert_eq!(manifest["customer"]["type"], "handcam");
         assert_eq!(manifest["customer"]["first_name"], "Anna");
         assert!(manifest["customer"]["outside_foto"].as_bool().unwrap());

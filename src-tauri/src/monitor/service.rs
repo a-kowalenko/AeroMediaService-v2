@@ -6,7 +6,7 @@ use std::fs;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::Notify;
@@ -26,6 +26,7 @@ use crate::model::marker::{
 };
 use crate::monitor::stability::{
     folder_key, has_uploadable_files, FolderStabilityTracker, ObserveResult, StabilityPendingItem,
+    PENDING_KIND_HANDOFF,
 };
 use crate::storage::logging;
 use crate::upload::registry::{UploadJob, UploadQueueRegistry};
@@ -34,6 +35,8 @@ use crate::util::archive::{self, handle_customer_lookup_failure, is_marker_forma
 const MISSING_PATH_WAIT_SECS: u64 = 60;
 const DEFAULT_SCAN_INTERVAL_SECS: u64 = 10;
 const DEFAULT_STABILITY_SECS: f64 = 15.0;
+/// How long a Bridge `handoff/ready` row stays in the left panel if never claimed.
+const HANDOFF_UI_TTL: Duration = Duration::from_secs(120);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ClaimResult {
@@ -44,7 +47,10 @@ pub enum ClaimResult {
     AlreadyClaimed,
     CustomerLookupFailed,
     /// Manifest gate rejected the folder; leave it for the next scan (no claim).
-    ManifestRejected { code: String, message: String },
+    ManifestRejected {
+        code: String,
+        message: String,
+    },
     MarkerError(String),
     IoError(String),
     Queued,
@@ -62,24 +68,121 @@ pub struct EnqueueContext<'a> {
     pub manifest_required: bool,
 }
 
+#[derive(Debug, Clone)]
+struct HandoffPendingEntry {
+    dir_name: String,
+    correlation_id: String,
+    since: Instant,
+}
+
 pub struct MonitorState {
     running: Arc<AtomicBool>,
     wake: Arc<Notify>,
+    /// Set when Bridge/UI requests a scan so a wake during `scan_once` is not lost.
+    scan_requested: Arc<AtomicBool>,
     task: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
     registry: Arc<UploadQueueRegistry>,
     jobs: UnboundedSender<UploadJob>,
     stability_pending: Arc<Mutex<Vec<StabilityPendingItem>>>,
+    handoff_pending: Arc<Mutex<Vec<HandoffPendingEntry>>>,
 }
 
-fn publish_stability_pending(
-    store: &Mutex<Vec<StabilityPendingItem>>,
-    items: Vec<StabilityPendingItem>,
+fn incoming_snapshot(
+    stability: &[StabilityPendingItem],
+    handoff: &[HandoffPendingEntry],
+    now: Instant,
+) -> Vec<StabilityPendingItem> {
+    let mut items: Vec<StabilityPendingItem> = handoff
+        .iter()
+        .filter(|entry| now.saturating_duration_since(entry.since) < HANDOFF_UI_TTL)
+        .filter(|entry| {
+            !stability
+                .iter()
+                .any(|s| s.dir_name.eq_ignore_ascii_case(&entry.dir_name))
+        })
+        .map(|entry| StabilityPendingItem {
+            dir_name: entry.dir_name.clone(),
+            remaining_seconds: 0.0,
+            required_seconds: 0.0,
+            waiting_for_media: false,
+            kind: PENDING_KIND_HANDOFF.to_string(),
+            correlation_id: entry.correlation_id.clone(),
+        })
+        .collect();
+    items.extend(stability.iter().cloned());
+    items.sort_by(|a, b| a.dir_name.cmp(&b.dir_name));
+    items
+}
+
+fn publish_incoming(
+    stability_store: &Mutex<Vec<StabilityPendingItem>>,
+    handoff_store: &Mutex<Vec<HandoffPendingEntry>>,
+    stability_items: Option<Vec<StabilityPendingItem>>,
 ) {
-    {
-        let mut guard = store.lock().unwrap_or_else(|e| e.into_inner());
-        *guard = items.clone();
+    if let Some(items) = stability_items {
+        let mut guard = stability_store.lock().unwrap_or_else(|e| e.into_inner());
+        *guard = items;
     }
-    events::emit(events::STABILITY_PENDING_CHANGED, items);
+    let stability = stability_store
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
+    let handoff = handoff_store
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
+    events::emit(
+        events::STABILITY_PENDING_CHANGED,
+        incoming_snapshot(&stability, &handoff, Instant::now()),
+    );
+}
+
+fn note_handoff_entry(
+    store: &Mutex<Vec<HandoffPendingEntry>>,
+    folder_name: &str,
+    correlation_id: &str,
+) {
+    let dir_name = folder_name.trim();
+    if dir_name.is_empty() {
+        return;
+    }
+    let cid = correlation_id.trim().to_string();
+    let mut guard = store.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(existing) = guard
+        .iter_mut()
+        .find(|e| e.dir_name.eq_ignore_ascii_case(dir_name))
+    {
+        existing.since = Instant::now();
+        if !cid.is_empty() {
+            existing.correlation_id = cid;
+        }
+        return;
+    }
+    guard.push(HandoffPendingEntry {
+        dir_name: dir_name.to_string(),
+        correlation_id: cid,
+        since: Instant::now(),
+    });
+}
+
+fn prune_handoff_entries(
+    store: &Mutex<Vec<HandoffPendingEntry>>,
+    scan_path: &Path,
+    registry: &UploadQueueRegistry,
+) {
+    let now = Instant::now();
+    let mut guard = store.lock().unwrap_or_else(|e| e.into_inner());
+    guard.retain(|entry| {
+        if now.saturating_duration_since(entry.since) >= HANDOFF_UI_TTL {
+            return false;
+        }
+        let path = scan_path.join(&entry.dir_name);
+        if registry.is_registered(&path) {
+            return false;
+        }
+        let (_, processing_path) = marker_paths(&path);
+        !processing_path.is_file()
+    });
 }
 
 impl MonitorState {
@@ -87,10 +190,12 @@ impl MonitorState {
         Self {
             running: Arc::new(AtomicBool::new(false)),
             wake: Arc::new(Notify::new()),
+            scan_requested: Arc::new(AtomicBool::new(false)),
             task: Mutex::new(None),
             registry,
             jobs,
             stability_pending: Arc::new(Mutex::new(Vec::new())),
+            handoff_pending: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -99,20 +204,35 @@ impl MonitorState {
     }
 
     pub fn stability_snapshot(&self) -> Vec<StabilityPendingItem> {
-        self.stability_pending
+        let stability = self
+            .stability_pending
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .clone()
+            .clone();
+        let handoff = self
+            .handoff_pending
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        incoming_snapshot(&stability, &handoff, Instant::now())
     }
 
     pub fn wake(&self) {
+        self.scan_requested.store(true, Ordering::SeqCst);
         self.wake.notify_waiters();
     }
 
     /// Shared wake callback for Bridge `POST /v1/handoff/ready` (monitor interrupt only).
-    pub fn wake_fn(&self) -> Arc<dyn Fn() + Send + Sync> {
+    /// `folder_name` / `correlation_id` may be empty; a non-empty folder is shown in the left panel.
+    pub fn wake_fn(&self) -> Arc<dyn Fn(String, String) + Send + Sync> {
         let wake = Arc::clone(&self.wake);
-        Arc::new(move || {
+        let scan_requested = Arc::clone(&self.scan_requested);
+        let handoff_pending = Arc::clone(&self.handoff_pending);
+        let stability_pending = Arc::clone(&self.stability_pending);
+        Arc::new(move |folder_name: String, correlation_id: String| {
+            note_handoff_entry(&handoff_pending, &folder_name, &correlation_id);
+            publish_incoming(&stability_pending, &handoff_pending, None);
+            scan_requested.store(true, Ordering::SeqCst);
             wake.notify_waiters();
         })
     }
@@ -140,13 +260,25 @@ impl MonitorState {
         self.running.store(true, Ordering::SeqCst);
         let running = Arc::clone(&self.running);
         let wake = Arc::clone(&self.wake);
+        let scan_requested = Arc::clone(&self.scan_requested);
         let registry = Arc::clone(&self.registry);
         let jobs = self.jobs.clone();
         let stability_pending = Arc::clone(&self.stability_pending);
+        let handoff_pending = Arc::clone(&self.handoff_pending);
 
         logging::log_info("Starte Monitor...");
         let handle = tauri::async_runtime::spawn(async move {
-            run_loop(running, wake, registry, jobs, stability_pending, get_setting).await;
+            run_loop(
+                running,
+                wake,
+                scan_requested,
+                registry,
+                jobs,
+                stability_pending,
+                handoff_pending,
+                get_setting,
+            )
+            .await;
         });
         *task_guard = Some(handle);
         Ok(true)
@@ -159,7 +291,17 @@ impl MonitorState {
         if let Some(handle) = handle {
             let _ = tokio::time::timeout(Duration::from_secs(5), handle).await;
         }
-        publish_stability_pending(&self.stability_pending, Vec::new());
+        {
+            self.handoff_pending
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clear();
+        }
+        publish_incoming(
+            &self.stability_pending,
+            &self.handoff_pending,
+            Some(Vec::new()),
+        );
         logging::log_info("Monitor-Thread gestoppt.");
     }
 }
@@ -179,9 +321,11 @@ impl Drop for MonitorState {
 async fn run_loop<F>(
     running: Arc<AtomicBool>,
     wake: Arc<Notify>,
+    scan_requested: Arc<AtomicBool>,
     registry: Arc<UploadQueueRegistry>,
     jobs: UnboundedSender<UploadJob>,
     stability_pending: Arc<Mutex<Vec<StabilityPendingItem>>>,
+    handoff_pending: Arc<Mutex<Vec<HandoffPendingEntry>>>,
     get_setting: F,
 ) where
     F: Fn(&str) -> String + Send + Sync,
@@ -237,16 +381,27 @@ async fn run_loop<F>(
 
         logging::log_debug(&format!("Scanne Verzeichnis: {}", scan_path.display()));
         scan_once(scan_path, &mut tracker, stability_enabled, &ctx).await;
-        publish_stability_pending(&stability_pending, tracker.snapshot());
+        prune_handoff_entries(&handoff_pending, scan_path, &registry);
+        publish_incoming(
+            &stability_pending,
+            &handoff_pending,
+            Some(tracker.snapshot()),
+        );
 
-        if running.load(Ordering::SeqCst) {
+        if running.load(Ordering::SeqCst) && !scan_requested.swap(false, Ordering::SeqCst) {
             logging::log_debug(&format!("Scan beendet. Warte {scan_interval} Sekunden."));
             wait_interruptible(&running, &wake, Duration::from_secs(scan_interval)).await;
         }
     }
 
     tracker.clear();
-    publish_stability_pending(&stability_pending, Vec::new());
+    {
+        handoff_pending
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
+    }
+    publish_incoming(&stability_pending, &handoff_pending, Some(Vec::new()));
     logging::log_info("Monitor-Thread beendet.");
 }
 
@@ -473,14 +628,19 @@ pub async fn try_claim_and_enqueue(folder: &Path, ctx: &EnqueueContext<'_>) -> C
                     }),
                     Some(archive::ARCHIVE_ERROR),
                 );
-                archive::handle_marker_failure(ctx.archive_path, folder, &e.to_string(), Some(&marker_raw));
+                archive::handle_marker_failure(
+                    ctx.archive_path,
+                    folder,
+                    &e.to_string(),
+                    Some(&marker_raw),
+                );
             }
             return ClaimResult::MarkerError(e.to_string());
         }
     };
 
-    let use_dropbox = should_use_dropbox_client_for_marker(ctx.selected_cloud, &marker_raw)
-        .unwrap_or(false);
+    let use_dropbox =
+        should_use_dropbox_client_for_marker(ctx.selected_cloud, &marker_raw).unwrap_or(false);
     if use_dropbox {
         logging::log_info(&format!(
             "Reiner Kontakt-Marker für '{dir_name}' — Upload über DropboxClient (Custom API aktiv)."
@@ -509,7 +669,9 @@ pub async fn try_claim_and_enqueue(folder: &Path, ctx: &EnqueueContext<'_>) -> C
         correlation_id: handoff_cid.clone(),
     };
     if ctx.registry.enqueue(ctx.jobs, job, true) {
-        logging::log_info(&format!("'{dir_name}' zur Upload-Warteschlange hinzugefügt."));
+        logging::log_info(&format!(
+            "'{dir_name}' zur Upload-Warteschlange hinzugefügt."
+        ));
         write_job_outbox(
             folder,
             handoff_cid.as_deref(),
@@ -528,7 +690,9 @@ async fn recover_stalled_folders(scan_path: &Path, ctx: &EnqueueContext<'_>) -> 
     let names = match fs::read_dir(scan_path) {
         Ok(rd) => rd,
         Err(e) => {
-            logging::log_warn(&format!("Recovery: Konnte Überwachungsordner nicht lesen: {e}"));
+            logging::log_warn(&format!(
+                "Recovery: Konnte Überwachungsordner nicht lesen: {e}"
+            ));
             return 0;
         }
     };
@@ -721,6 +885,47 @@ mod tests {
         fs::write(dir.join("photo.jpg"), b"jpeg-bytes").unwrap();
     }
 
+    #[test]
+    fn incoming_snapshot_shows_handoff_until_stability_takes_over() {
+        let handoff = vec![HandoffPendingEntry {
+            dir_name: "JobA".into(),
+            correlation_id: "cid-1".into(),
+            since: Instant::now(),
+        }];
+        let merged = incoming_snapshot(&[], &handoff, Instant::now());
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].kind, PENDING_KIND_HANDOFF);
+        assert_eq!(merged[0].correlation_id, "cid-1");
+
+        let stability = vec![StabilityPendingItem {
+            dir_name: "JobA".into(),
+            remaining_seconds: 10.0,
+            required_seconds: 15.0,
+            waiting_for_media: false,
+            kind: "stability".into(),
+            correlation_id: String::new(),
+        }];
+        let merged = incoming_snapshot(&stability, &handoff, Instant::now());
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].kind, "stability");
+    }
+
+    #[test]
+    fn prune_handoff_drops_registered_or_processing_folders() {
+        let root = tempdir().unwrap();
+        let job = root.path().join("JobB");
+        fs::create_dir(&job).unwrap();
+        fs::write(job.join(MARKER_PROCESSING), b"x").unwrap();
+        let store = Mutex::new(vec![HandoffPendingEntry {
+            dir_name: "JobB".into(),
+            correlation_id: "c".into(),
+            since: Instant::now(),
+        }]);
+        let registry = UploadQueueRegistry::new();
+        prune_handoff_entries(&store, root.path(), &registry);
+        assert!(store.lock().unwrap().is_empty());
+    }
+
     fn ctx<'a>(
         registry: &'a UploadQueueRegistry,
         jobs: &'a UnboundedSender<UploadJob>,
@@ -762,7 +967,10 @@ mod tests {
         let (tx, mut rx) = unbounded_channel();
         let context = ctx(&registry, &tx, "dropbox", "");
 
-        assert_eq!(try_claim_and_enqueue(dir.path(), &context).await, ClaimResult::Queued);
+        assert_eq!(
+            try_claim_and_enqueue(dir.path(), &context).await,
+            ClaimResult::Queued
+        );
         assert!(!dir.path().join(MARKER_FERTIG).is_file());
         assert!(dir.path().join(MARKER_PROCESSING).is_file());
         let job = rx.try_recv().unwrap();
@@ -783,7 +991,10 @@ mod tests {
         let mut context = ctx(&registry, &tx, "dropbox", "");
         context.customer_lookup = Some(mock_lookup);
 
-        assert_eq!(try_claim_and_enqueue(dir.path(), &context).await, ClaimResult::Queued);
+        assert_eq!(
+            try_claim_and_enqueue(dir.path(), &context).await,
+            ClaimResult::Queued
+        );
         assert!(dir.path().join(MARKER_PROCESSING).is_file());
         let job = rx.try_recv().unwrap();
         assert_eq!(job.kunde.first_name.as_deref(), Some("API"));
@@ -827,7 +1038,10 @@ mod tests {
         let registry = UploadQueueRegistry::new();
         let (tx, mut rx) = unbounded_channel();
         let context = ctx(&registry, &tx, "custom_api", "");
-        assert_eq!(try_claim_and_enqueue(dir.path(), &context).await, ClaimResult::Queued);
+        assert_eq!(
+            try_claim_and_enqueue(dir.path(), &context).await,
+            ClaimResult::Queued
+        );
         let job = rx.try_recv().unwrap();
         assert!(!job.use_dropbox_client);
     }
@@ -840,7 +1054,10 @@ mod tests {
         let registry = UploadQueueRegistry::new();
         let (tx, mut rx) = unbounded_channel();
         let context = ctx(&registry, &tx, "custom_api", "");
-        assert_eq!(try_claim_and_enqueue(dir.path(), &context).await, ClaimResult::Queued);
+        assert_eq!(
+            try_claim_and_enqueue(dir.path(), &context).await,
+            ClaimResult::Queued
+        );
         let job = rx.try_recv().unwrap();
         assert!(job.use_dropbox_client);
     }
@@ -852,7 +1069,10 @@ mod tests {
         let registry = UploadQueueRegistry::new();
         let (tx, _rx) = unbounded_channel();
         let context = ctx(&registry, &tx, "dropbox", "");
-        assert_eq!(try_claim_and_enqueue(dir.path(), &context).await, ClaimResult::NoMedia);
+        assert_eq!(
+            try_claim_and_enqueue(dir.path(), &context).await,
+            ClaimResult::NoMedia
+        );
         assert!(dir.path().join(MARKER_FERTIG).is_file());
         assert!(!registry.is_registered(dir.path()));
     }

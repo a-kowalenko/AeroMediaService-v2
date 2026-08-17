@@ -81,7 +81,9 @@ pub fn archive_directory(
 
     let target_dir = Path::new(archive_base).join(subfolder_name);
     if let Err(e) = fs::create_dir_all(&target_dir) {
-        logging::log_error(&format!("Konnte {subfolder_name}-Ordner nicht erstellen: {e}"));
+        logging::log_error(&format!(
+            "Konnte {subfolder_name}-Ordner nicht erstellen: {e}"
+        ));
         return None;
     }
 
@@ -96,10 +98,7 @@ pub fn archive_directory(
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(0);
-        destination_path = PathBuf::from(format!(
-            "{}_{stamp}",
-            destination_path.to_string_lossy()
-        ));
+        destination_path = PathBuf::from(format!("{}_{stamp}", destination_path.to_string_lossy()));
         logging::log_warn(&format!(
             "Zielpfad existiert, benenne um zu: {}",
             destination_path.display()

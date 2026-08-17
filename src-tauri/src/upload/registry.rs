@@ -132,7 +132,9 @@ impl UploadQueueRegistry {
                     dir_name: entry.dir_name.clone(),
                     customer_label: entry.customer_label.clone(),
                     state: entry.state.as_str().to_string(),
-                    wait_seconds: now.saturating_duration_since(entry.enqueued_at).as_secs_f64(),
+                    wait_seconds: now
+                        .saturating_duration_since(entry.enqueued_at)
+                        .as_secs_f64(),
                 })
                 .collect()
         })

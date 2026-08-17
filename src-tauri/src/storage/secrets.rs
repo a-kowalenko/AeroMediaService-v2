@@ -179,7 +179,10 @@ mod tests {
     #[test]
     fn memory_backend_roundtrip_and_delete_on_empty() {
         save_secret("db_app_key", "test-key-value").unwrap();
-        assert_eq!(get_secret("db_app_key").unwrap().as_deref(), Some("test-key-value"));
+        assert_eq!(
+            get_secret("db_app_key").unwrap().as_deref(),
+            Some("test-key-value")
+        );
         save_secret("db_app_key", "").unwrap();
         assert_eq!(get_secret("db_app_key").unwrap(), None);
     }

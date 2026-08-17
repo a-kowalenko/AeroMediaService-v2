@@ -7,9 +7,7 @@ use std::time::Duration;
 use serde_json::{json, Value};
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 
-use super::{
-    extract_customer_url, guess_mime, parse_next_offset, CustomApiClient, CHUNK_BYTES,
-};
+use super::{extract_customer_url, guess_mime, parse_next_offset, CustomApiClient, CHUNK_BYTES};
 use crate::cloud::dropbox::{self, DropboxSessionResume};
 use crate::cloud::manifest::build_manifest_v11;
 use crate::cloud::traits::{should_skip_upload_file, CloudError};
@@ -100,7 +98,9 @@ impl CustomApiClient {
         if let Some(ck) = resume_ck.as_ref() {
             if ck.get("phase").and_then(Value::as_str) == Some("finalizing") {
                 if let Some(sid) = ck.get("api_session_id").and_then(Value::as_str) {
-                    logging::log_info("Checkpoint: Finalisierung der Upload-Session wird fortgesetzt.");
+                    logging::log_info(
+                        "Checkpoint: Finalisierung der Upload-Session wird fortgesetzt.",
+                    );
                     self.set_last_session_id(Some(sid.to_string()));
                     if let Some(oid) = ck.get("order_id").and_then(value_as_string) {
                         self.set_last_order_id(Some(oid));
@@ -139,9 +139,7 @@ impl CustomApiClient {
             }
             logging::log_info(&format!(
                 "Proxied-Session wird fortgesetzt (session_id={sid}, next_file_index={:?}).",
-                resume_ck
-                    .as_ref()
-                    .and_then(|ck| ck.get("next_file_index"))
+                resume_ck.as_ref().and_then(|ck| ck.get("next_file_index"))
             ));
         }
 
@@ -214,7 +212,8 @@ impl CustomApiClient {
             start_idx = start_idx.min(files.len());
             let ca = ck.get("custom_active").cloned().unwrap_or(Value::Null);
             if start_idx < files.len()
-                && ca.get("file_name").and_then(Value::as_str) == Some(files[start_idx].name.as_str())
+                && ca.get("file_name").and_then(Value::as_str)
+                    == Some(files[start_idx].name.as_str())
             {
                 let ro = ca.get("server_offset").and_then(Value::as_u64).unwrap_or(0);
                 if ro > 0 {
@@ -362,7 +361,11 @@ impl CustomApiClient {
             let pct = percent(sent, file_size);
             let combined = base_uploaded + sent;
             events::emit_progress_file(pct, sent, file_size.max(1));
-            events::emit_progress_total(percent(combined, total_job_size), combined, total_job_size);
+            events::emit_progress_total(
+                percent(combined, total_job_size),
+                combined,
+                total_job_size,
+            );
         };
 
         logging::log_info(&format!(
@@ -552,7 +555,10 @@ impl CustomApiClient {
         logging::log_info("Warte auf Server-Finalisierung (Status-Poll)...");
         while started.elapsed() < max_wait || max_wait.is_zero() {
             for status_url in &urls {
-                match self.get_json(status_url, Duration::from_secs(15), control).await {
+                match self
+                    .get_json(status_url, Duration::from_secs(15), control)
+                    .await
+                {
                     Ok(response) if response.status().is_success() => {
                         if let Ok(result) = response.json::<Value>().await {
                             if let Some(url) = extract_customer_url(&result) {
@@ -739,7 +745,11 @@ impl CustomApiClient {
                 files.len()
             ));
             events::emit_progress_file(0, 0, file.size);
-            let resume = if i == start_idx { resume_dd.clone() } else { None };
+            let resume = if i == start_idx {
+                resume_dd.clone()
+            } else {
+                None
+            };
             let snapshot = uploaded_files.clone();
             let rel = file.rel_norm.clone();
             let dp = file.dropbox_path.clone();
@@ -880,7 +890,8 @@ impl CustomApiClient {
                         "root_share_link": root,
                         "phase": "manifest_pending",
                     });
-                    if let (Some(obj), Some(extra_obj)) = (payload.as_object_mut(), extra.as_object())
+                    if let (Some(obj), Some(extra_obj)) =
+                        (payload.as_object_mut(), extra.as_object())
                     {
                         for (k, v) in extra_obj {
                             obj.insert(k.clone(), v.clone());
@@ -1042,7 +1053,11 @@ fn percent(current: u64, total: u64) -> i32 {
     }
 }
 
-pub fn direct_init_payload(files: &[(String, u64, String)], folder_name: &str, kunde: &Kunde) -> Value {
+pub fn direct_init_payload(
+    files: &[(String, u64, String)],
+    folder_name: &str,
+    kunde: &Kunde,
+) -> Value {
     let mut metadata = serde_json::to_value(kunde).unwrap_or(json!({}));
     if let Some(obj) = metadata.as_object_mut() {
         obj.insert("base_folder_name".into(), json!(folder_name));

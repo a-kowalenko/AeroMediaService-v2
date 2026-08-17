@@ -29,10 +29,7 @@ pub fn manifest_fingerprint(files_manifest: &[Value]) -> String {
     for item in items {
         let name = item.get("name").and_then(Value::as_str).unwrap_or("");
         let size = json_size(item);
-        let file_type = item
-            .get("type")
-            .and_then(Value::as_str)
-            .unwrap_or("");
+        let file_type = item.get("type").and_then(Value::as_str).unwrap_or("");
         lines.push(format!("{name}|{size}|{file_type}"));
     }
     let raw = lines.join("\n");

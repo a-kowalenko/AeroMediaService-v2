@@ -84,7 +84,10 @@ pub fn parse_sms_response(status: u16, body: &str) -> SmsSendResult {
     let data: Value = match serde_json::from_str(body) {
         Ok(v) => v,
         Err(e) => {
-            return SmsSendResult::err(format!("Antwort konnte nicht verarbeitet werden: {e}"), None);
+            return SmsSendResult::err(
+                format!("Antwort konnte nicht verarbeitet werden: {e}"),
+                None,
+            );
         }
     };
 
@@ -366,10 +369,7 @@ mod tests {
 
     #[test]
     fn parse_accepts_id_and_rejects_false_success() {
-        let ok = parse_sms_response(
-            200,
-            r#"{"messages":[{"id":"12345","success":true}]}"#,
-        );
+        let ok = parse_sms_response(200, r#"{"messages":[{"id":"12345","success":true}]}"#);
         assert!(ok.success);
         assert_eq!(ok.sms_id.as_deref(), Some("12345"));
 
