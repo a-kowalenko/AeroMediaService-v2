@@ -20,7 +20,7 @@ use crate::model::handoff::{
     is_append_manifest, load_and_validate_manifest, parent_correlation_id,
     CODE_APPEND_PARENT_MISSING, CODE_APPEND_PARENT_NOT_READY,
 };
-use crate::model::marker::{build_kunde_from_marker, load_marker_data};
+use crate::model::marker::merge_kunde_media_flags;
 use crate::model::kunde::Kunde;
 use crate::monitor::stability::has_uploadable_files;
 use crate::notify::resend::remote_path_for_entry;
@@ -199,13 +199,6 @@ impl AppendCategory {
     }
 }
 
-fn kunde_from_marker_raw(marker_raw: &str) -> Kunde {
-    load_marker_data(marker_raw)
-        .ok()
-        .and_then(|data| build_kunde_from_marker(&data).ok())
-        .unwrap_or_default()
-}
-
 fn validate_unpaid_preview_rules(items: &[(AppendCategory, bool, &Path)], k: &Kunde) -> Result<(), String> {
     let has_unpaid_photos = items
         .iter()
@@ -317,11 +310,50 @@ fn unique_filename(dir: &Path, original: &str, used: &mut HashSet<String>) -> St
     format!("{stem}_{}{ext}", Uuid::new_v4().simple())
 }
 
-pub fn stage_append_files(items: &[AppendFileItem], marker_raw: &str) -> Result<PathBuf, String> {
+pub fn expand_append_media_paths(paths: &[String]) -> Result<Vec<String>, String> {
+    let mut out = Vec::new();
+    let mut seen = HashSet::new();
+    for raw in paths {
+        let path = PathBuf::from(raw.trim());
+        if raw.trim().is_empty() {
+            continue;
+        }
+        collect_media_files(&path, &mut out, &mut seen)?;
+    }
+    Ok(out)
+}
+
+fn collect_media_files(
+    path: &Path,
+    out: &mut Vec<String>,
+    seen: &mut HashSet<String>,
+) -> Result<(), String> {
+    let meta = fs::metadata(path).map_err(|e| format!("Pfad lesen '{}': {e}", path.display()))?;
+    if meta.is_file() {
+        let ext = ext_of(path);
+        if is_video_ext(&ext) || is_photo_ext(&ext) {
+            let key = path.to_string_lossy().to_string();
+            if seen.insert(key.clone()) {
+                out.push(key);
+            }
+        }
+        return Ok(());
+    }
+    if meta.is_dir() {
+        let entries = fs::read_dir(path)
+            .map_err(|e| format!("Ordner lesen '{}': {e}", path.display()))?;
+        for entry in entries {
+            let entry = entry.map_err(|e| format!("Ordner lesen '{}': {e}", path.display()))?;
+            collect_media_files(&entry.path(), out, seen)?;
+        }
+    }
+    Ok(())
+}
+
+pub fn stage_append_files(items: &[AppendFileItem], kunde: &Kunde) -> Result<PathBuf, String> {
     if items.is_empty() {
         return Err("Bitte mindestens eine Datei zum Nachladen wählen.".into());
     }
-    let kunde = kunde_from_marker_raw(marker_raw);
     let parsed: Vec<(AppendCategory, bool, PathBuf)> = items
         .iter()
         .map(|item| {
@@ -353,7 +385,7 @@ pub fn stage_append_files(items: &[AppendFileItem], marker_raw: &str) -> Result<
         .iter()
         .map(|(c, p, s)| (*c, *p, s.as_path()))
         .collect();
-    validate_unpaid_preview_rules(&parsed_refs, &kunde)?;
+    validate_unpaid_preview_rules(&parsed_refs, kunde)?;
 
     let root = std::env::temp_dir().join(format!("ams-append-{}", Uuid::new_v4()));
     fs::create_dir_all(&root).map_err(|e| format!("Staging-Ordner anlegen: {e}"))?;
@@ -368,8 +400,8 @@ pub fn stage_append_files(items: &[AppendFileItem], marker_raw: &str) -> Result<
             AppendCategory::OutsideVideo => "outside_video",
             AppendCategory::OutsideFoto => "outside_foto",
         };
-        let booked = cat.is_booked(&kunde);
-        let unpaid = cat.is_unpaid(&kunde);
+        let booked = cat.is_booked(kunde);
+        let unpaid = cat.is_unpaid(kunde);
 
         let fail = |e: String| {
             let _ = fs::remove_dir_all(&root);
@@ -634,6 +666,7 @@ pub fn build_append_parent_history_update(
         if let Some(v) = kunde.phone.clone().filter(|s| !s.trim().is_empty()) {
             history["phone"] = Value::String(v);
         }
+        merge_kunde_media_flags(&mut history, kunde);
     }
     history
 }
@@ -778,8 +811,8 @@ pub async fn append_media_from_files(
     control: &UploadControl,
     registry: &UploadQueueRegistry,
 ) -> Result<Value, String> {
-    let marker_raw = json_str(history_entry, "marker_raw");
-    let staged = StagedDir(stage_append_files(items, marker_raw)?);
+    let kunde = resolve_kunde_from_history_entry(history_entry).await?;
+    let staged = StagedDir(stage_append_files(items, &kunde)?);
     let result = append_media_from_history(
         history_entry,
         &staged.0,
@@ -878,7 +911,11 @@ mod tests {
         let video = src_dir.path().join("b.mp4");
         fs::write(&photo, b"jpeg").unwrap();
         fs::write(&video, b"mp4!").unwrap();
-        let marker = r#"{"vorname":"A","nachname":"B","email":"a@b.de","handcam_video":true,"ist_bezahlt_handcam_video":true}"#;
+        let kunde = Kunde {
+            handcam_video: true,
+            ist_bezahlt_handcam_video: true,
+            ..Kunde::default()
+        };
         let staged = stage_append_files(
             &[
                 AppendFileItem {
@@ -892,7 +929,7 @@ mod tests {
                     preview: true,
                 },
             ],
-            marker,
+            &kunde,
         )
         .unwrap();
         assert!(staged.join("Outside_Foto").join("a.jpg").is_file());
@@ -905,14 +942,18 @@ mod tests {
         let src_dir = tempfile::tempdir().unwrap();
         let photo = src_dir.path().join("a.jpg");
         fs::write(&photo, b"jpeg").unwrap();
-        let marker = r#"{"vorname":"A","nachname":"B","email":"a@b.de","outside_foto":true,"ist_bezahlt_outside_foto":false}"#;
+        let kunde = Kunde {
+            outside_foto: true,
+            ist_bezahlt_outside_foto: false,
+            ..Kunde::default()
+        };
         let err = stage_append_files(
             &[AppendFileItem {
                 path: photo.to_string_lossy().into(),
                 category: "outside_foto".into(),
                 preview: false,
             }],
-            marker,
+            &kunde,
         )
         .unwrap_err();
         assert!(err.contains("Wasserzeichen"), "{err}");
@@ -929,7 +970,7 @@ mod tests {
                 category: "handcam_foto".into(),
                 preview: false,
             }],
-            "",
+            &Kunde::default(),
         )
         .unwrap_err();
         assert!(err.contains("kein Foto"), "{err}");

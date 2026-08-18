@@ -231,6 +231,27 @@ export function appendHistoryFiles(
   return invoke<string>("append_history_files", { id, items });
 }
 
+export type HistoryBookingFlags = {
+  handcam_foto: boolean;
+  handcam_video: boolean;
+  outside_foto: boolean;
+  outside_video: boolean;
+  ist_bezahlt_handcam_foto: boolean;
+  ist_bezahlt_handcam_video: boolean;
+  ist_bezahlt_outside_foto: boolean;
+  ist_bezahlt_outside_video: boolean;
+};
+
+export function resolveHistoryBookingFlags(
+  id: string,
+): Promise<HistoryBookingFlags> {
+  return invoke<HistoryBookingFlags>("resolve_history_booking_flags", { id });
+}
+
+export function expandAppendMediaPaths(paths: string[]): Promise<string[]> {
+  return invoke<string[]>("expand_append_media_paths", { paths });
+}
+
 export function getSandboxWarnings(): Promise<string[]> {
   return invoke<string[]>("get_sandbox_warnings");
 }

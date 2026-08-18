@@ -29,7 +29,7 @@ use commands::{
     resend_history_notifications, reset_setup, resume_upload, retry_upload, save_customer,
     save_history_contact, save_secret, save_setting, set_customer_processed, set_manual_status,
     start_dropbox_oauth, start_monitoring, stop_monitoring, sync_sms_journal, test_link_shortener,
-    update_customer, verify_dropbox_status, ConfigState,
+    update_customer, verify_dropbox_status, resolve_history_booking_flags, expand_append_media_paths, ConfigState,
 };
 use monitor::MonitorState;
 use storage::customers::CustomerState;
@@ -101,6 +101,8 @@ pub fn run() {
             delete_history_items,
             clear_history,
             retry_upload,
+            resolve_history_booking_flags,
+            expand_append_media_paths,
             append_history_media,
             append_history_files,
             get_sandbox_warnings,

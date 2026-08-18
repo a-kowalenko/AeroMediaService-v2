@@ -1,18 +1,27 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
+import { Check, Film, FolderOpen, ImageIcon, Info, Upload, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
   DialogContent,
   DialogDescription,
-  DialogFooter,
-  DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Switch } from "@/components/ui/switch";
-import { cn } from "@/lib/utils";
+import { CatStatusChip, type CatStatus } from "@/components/BookingChips";
+import {
+  cn,
+  historyBookingFlags,
+  overlayBookingFlags,
+  type HistoryBookingFlags,
+} from "@/lib/utils";
 import type { AppendCategoryId, AppendFileItem, HistoryEntry } from "@/lib/tauri";
+import {
+  expandAppendMediaPaths,
+  resolveHistoryBookingFlags,
+} from "@/lib/tauri";
 
 type Props = {
   open: boolean;
@@ -23,119 +32,122 @@ type Props = {
 };
 
 type DraftItem = AppendFileItem & { name: string };
+type CatGroupId = "handcam" | "outside";
 
 type CatDef = {
   id: AppendCategoryId;
   label: string;
-  short: string;
+  kindLabel: string;
+  group: CatGroupId;
   video: boolean;
-  booked: (m: Record<string, unknown>) => boolean;
-  paid: (m: Record<string, unknown>) => boolean;
+  booked: (f: HistoryBookingFlags) => boolean;
+  paid: (f: HistoryBookingFlags) => boolean;
 };
 
 const CATS: CatDef[] = [
   {
-    id: "handcam_video",
-    label: "Handcam Video",
-    short: "HV",
-    video: true,
-    booked: (m) => truthy(m.handcam_video),
-    paid: (m) => truthy(m.ist_bezahlt_handcam_video),
-  },
-  {
     id: "handcam_foto",
     label: "Handcam Foto",
-    short: "HF",
+    kindLabel: "Foto",
+    group: "handcam",
     video: false,
-    booked: (m) => truthy(m.handcam_foto),
-    paid: (m) => truthy(m.ist_bezahlt_handcam_foto),
+    booked: (f) => f.handcam_foto,
+    paid: (f) => f.ist_bezahlt_handcam_foto,
   },
   {
-    id: "outside_video",
-    label: "Outside Video",
-    short: "OV",
+    id: "handcam_video",
+    label: "Handcam Video",
+    kindLabel: "Video",
+    group: "handcam",
     video: true,
-    booked: (m) => truthy(m.outside_video),
-    paid: (m) => truthy(m.ist_bezahlt_outside_video),
+    booked: (f) => f.handcam_video,
+    paid: (f) => f.ist_bezahlt_handcam_video,
   },
   {
     id: "outside_foto",
     label: "Outside Foto",
-    short: "OF",
+    kindLabel: "Foto",
+    group: "outside",
     video: false,
-    booked: (m) => truthy(m.outside_foto),
-    paid: (m) => truthy(m.ist_bezahlt_outside_foto),
+    booked: (f) => f.outside_foto,
+    paid: (f) => f.ist_bezahlt_outside_foto,
   },
+  {
+    id: "outside_video",
+    label: "Outside Video",
+    kindLabel: "Video",
+    group: "outside",
+    video: true,
+    booked: (f) => f.outside_video,
+    paid: (f) => f.ist_bezahlt_outside_video,
+  },
+];
+
+const CAT_GROUPS: { id: CatGroupId; label: string }[] = [
+  { id: "handcam", label: "Handcam" },
+  { id: "outside", label: "Outside" },
 ];
 
 const VIDEO_EXTS = ["mp4", "mov", "mkv", "avi", "m4v", "webm", "mts", "m2ts"];
 const PHOTO_EXTS = ["jpg", "jpeg", "png", "bmp", "tiff", "tif", "webp", "heic", "dng"];
 
-function truthy(v: unknown): boolean {
-  return v === true || v === 1 || v === "1" || String(v).toLowerCase() === "true";
-}
+const STATUS_HINT: Record<CatStatus, { text: string; className: string }> = {
+  paid: {
+    text: "Bezahlt — Dateien werden als Original nachgeladen.",
+    className:
+      "border-emerald-500/30 bg-emerald-500/10 text-emerald-950 dark:text-emerald-100",
+  },
+  open: {
+    text: "Nicht bezahlt — Originale plus optionale Preview mit Wasserzeichen.",
+    className:
+      "border-amber-500/30 bg-amber-500/10 text-amber-950 dark:text-amber-100",
+  },
+  new: {
+    text: "Nicht gebucht — Originale plus optionale Preview mit Wasserzeichen.",
+    className: "border-border/60 bg-muted/20 text-muted",
+  },
+};
 
 function basename(path: string): string {
   const n = path.replace(/\\/g, "/").split("/").pop();
   return n || path;
 }
 
-function extOf(path: string): string {
-  const base = basename(path);
-  const dot = base.lastIndexOf(".");
-  return dot < 0 ? "" : base.slice(dot + 1).toLowerCase();
-}
-
-function isVideoPath(path: string): boolean {
-  return VIDEO_EXTS.includes(extOf(path));
-}
-
-function isPhotoPath(path: string): boolean {
-  return PHOTO_EXTS.includes(extOf(path));
-}
-
 function catDef(id: AppendCategoryId): CatDef | undefined {
   return CATS.find((c) => c.id === id);
 }
 
-function parseMarker(entry: HistoryEntry | null): Record<string, unknown> {
-  if (!entry) return {};
-  try {
-    return JSON.parse(entry.marker_raw || "{}") as Record<string, unknown>;
-  } catch {
-    const t = (entry.type ?? "").toLowerCase();
-    if (t.includes("hand")) {
-      return { handcam_video: true, handcam_foto: true };
-    }
-    if (t.includes("out")) {
-      return { outside_video: true, outside_foto: true };
-    }
-    return {};
-  }
+function categoryStatus(f: HistoryBookingFlags, c: CatDef): CatStatus {
+  if (!c.booked(f)) return "new";
+  if (!c.paid(f)) return "open";
+  return "paid";
 }
 
-function categoryUnpaid(marker: Record<string, unknown>, id: AppendCategoryId): boolean {
-  const c = catDef(id);
-  return Boolean(c?.booked(marker) && !c.paid(marker));
-}
-
-function defaultPreviewForCategory(
-  marker: Record<string, unknown>,
-  id: AppendCategoryId,
-): boolean {
+function categoryNotPaid(f: HistoryBookingFlags, id: AppendCategoryId): boolean {
   const c = catDef(id);
   if (!c) return false;
-  if (!c.booked(marker)) return true;
-  return categoryUnpaid(marker, id);
+  return !c.booked(f) || !c.paid(f);
 }
 
-function itemModeLabel(marker: Record<string, unknown>, item: DraftItem): string {
+function itemModeLabel(f: HistoryBookingFlags, item: DraftItem): string {
   const c = catDef(item.category);
-  if (!c) return item.preview ? "Preview" : "Voll";
-  if (!c.booked(marker)) return item.preview ? "Preview" : "Voll";
-  if (c.paid(marker)) return "Original";
+  if (!c) return item.preview ? "Original + Preview" : "Original";
+  if (c.booked(f) && c.paid(f)) return "Original";
   if (item.preview) return "Original + Preview";
   return "Original";
+}
+
+function emptyFlags(): HistoryBookingFlags {
+  return {
+    handcam_foto: false,
+    handcam_video: false,
+    outside_foto: false,
+    outside_video: false,
+    ist_bezahlt_handcam_foto: false,
+    ist_bezahlt_handcam_video: false,
+    ist_bezahlt_outside_foto: false,
+    ist_bezahlt_outside_video: false,
+  };
 }
 
 export function AppendMediaDialog({
@@ -145,36 +157,178 @@ export function AppendMediaDialog({
   onOpenChange,
   onSubmit,
 }: Props) {
-  const [category, setCategory] = useState<AppendCategoryId>("handcam_foto");
-  const [unbookedPreviewDefault, setUnbookedPreviewDefault] = useState(true);
+  const [category, setCategory] = useState<AppendCategoryId>("handcam_video");
   const [items, setItems] = useState<DraftItem[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [flags, setFlags] = useState<HistoryBookingFlags>(emptyFlags);
+  const [dragOver, setDragOver] = useState(false);
+  const [picking, setPicking] = useState(false);
 
-  const marker = useMemo(() => parseMarker(entry), [entry]);
-  const activeCat = catDef(category);
-  const categoryBooked = Boolean(activeCat?.booked(marker));
-  const categoryUnpaidActive = categoryUnpaid(marker, category);
-  const categoryUnbooked = Boolean(activeCat && !activeCat.booked(marker));
+  const activeCat = useMemo(() => catDef(category), [category]);
+  const selectedStatus = activeCat ? categoryStatus(flags, activeCat) : "new";
+  const statusHint = STATUS_HINT[selectedStatus];
+  const customer =
+    `${entry?.first_name ?? ""} ${entry?.last_name ?? ""}`.trim() ||
+    entry?.dir_name ||
+    "—";
+
+  const groupedItems = useMemo(
+    () =>
+      CATS.map((c) => ({
+        cat: c,
+        items: items.filter((i) => i.category === c.id),
+      })).filter((g) => g.items.length > 0),
+    [items],
+  );
 
   useEffect(() => {
     if (!open) return;
-    const m = parseMarker(entry);
-    const first = CATS.find((c) => c.booked(m))?.id ?? "handcam_foto";
-    setCategory(first);
-    setUnbookedPreviewDefault(!catDef(first)?.booked(m));
+    const initial = entry ? historyBookingFlags(entry) : emptyFlags();
+    const firstBooked =
+      CATS.find((c) => c.id === "handcam_video" && c.booked(initial)) ??
+      CATS.find((c) => c.booked(initial));
+    setFlags(initial);
+    setCategory(firstBooked?.id ?? "handcam_video");
     setItems([]);
     setError(null);
+    setDragOver(false);
+
+    const id = entry?.id;
+    if (!id) return;
+    let cancelled = false;
+    void resolveHistoryBookingFlags(id)
+      .then((resolved) => {
+        if (cancelled) return;
+        const merged = overlayBookingFlags(initial, resolved);
+        setFlags(merged);
+        if (!CATS.some((c) => c.booked(initial))) {
+          const booked =
+            CATS.find((c) => c.id === "handcam_video" && c.booked(merged)) ??
+            CATS.find((c) => c.booked(merged));
+          setCategory(booked?.id ?? "handcam_video");
+        }
+      })
+      .catch((e) => {
+        if (!cancelled) setError(String(e));
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [open, entry?.id]);
+
+  const ingestPaths = useCallback(
+    async (rawPaths: string[]) => {
+      if (busy) return;
+      const cat = catDef(category);
+      if (!cat || rawPaths.length === 0) return;
+      let expanded: string[];
+      try {
+        expanded = await expandAppendMediaPaths(rawPaths);
+      } catch (e) {
+        setError(String(e));
+        return;
+      }
+      const previewDefault = categoryNotPaid(flags, category);
+      let added = 0;
+      let skippedKind = 0;
+      setItems((prev) => {
+        const known = new Set(prev.map((p) => p.path));
+        const batch: DraftItem[] = [];
+        skippedKind = 0;
+        for (const path of expanded) {
+          if (known.has(path)) continue;
+          const lower = path.toLowerCase();
+          const isVideo = VIDEO_EXTS.some((ext) => lower.endsWith(`.${ext}`));
+          const isPhoto = PHOTO_EXTS.some((ext) => lower.endsWith(`.${ext}`));
+          if (cat.video && !isVideo) {
+            skippedKind += 1;
+            continue;
+          }
+          if (!cat.video && !isPhoto) {
+            skippedKind += 1;
+            continue;
+          }
+          known.add(path);
+          batch.push({
+            path,
+            category,
+            preview: previewDefault,
+            name: basename(path),
+          });
+        }
+        added = batch.length;
+        return batch.length === 0 ? prev : [...prev, ...batch];
+      });
+      if (added === 0) {
+        if (expanded.length === 0) {
+          setError(
+            cat.video
+              ? "Keine unterstützten Videos gefunden."
+              : "Keine unterstützten Fotos gefunden.",
+          );
+        } else if (skippedKind > 0) {
+          setError(
+            cat.video
+              ? "Bitte Videos ablegen (aktuelle Kategorie ist Video)."
+              : "Bitte Fotos ablegen (aktuelle Kategorie ist Foto).",
+          );
+        }
+        return;
+      }
+      setError(null);
+    },
+    [busy, category, flags],
+  );
+
+  useEffect(() => {
+    if (!open || picking) return;
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+    try {
+      void getCurrentWebview()
+        .onDragDropEvent((event) => {
+          if (busy) {
+            setDragOver(false);
+            return;
+          }
+          if (event.payload.type === "enter" || event.payload.type === "over") {
+            setDragOver(true);
+          } else if (event.payload.type === "leave") {
+            setDragOver(false);
+          } else if (event.payload.type === "drop") {
+            setDragOver(false);
+            void ingestPaths(event.payload.paths);
+          }
+        })
+        .then((fn) => {
+          if (cancelled) {
+            fn();
+            return;
+          }
+          unlisten = fn;
+        })
+        .catch(() => {
+          /* not running inside Tauri webview */
+        });
+    } catch {
+      /* browser preview */
+    }
+    return () => {
+      cancelled = true;
+      setDragOver(false);
+      unlisten?.();
+    };
+  }, [open, busy, picking, ingestPaths]);
 
   async function addFiles() {
     const cat = catDef(category);
     if (!cat) return;
-    setError(null);
+    setPicking(true);
     let selected: string | string[] | null;
     try {
       selected = await openFileDialog({
+        title: cat.video ? "Videos wählen" : "Fotos wählen",
         multiple: true,
-        title: `${cat.label} wählen`,
         filters: [
           {
             name: cat.video ? "Video" : "Fotos",
@@ -185,34 +339,35 @@ export function AppendMediaDialog({
     } catch (e) {
       setError(String(e));
       return;
+    } finally {
+      setPicking(false);
     }
-    if (selected == null) return;
     const paths = Array.isArray(selected)
       ? selected
       : typeof selected === "string"
         ? [selected]
         : [];
-    const previewDefault = cat.booked(marker)
-      ? defaultPreviewForCategory(marker, category)
-      : unbookedPreviewDefault;
-    const next: DraftItem[] = [];
-    for (const path of paths) {
-      if (cat.video && !isVideoPath(path)) continue;
-      if (!cat.video && !isPhotoPath(path)) continue;
-      if (items.some((i) => i.path === path)) continue;
-      next.push({
-        path,
-        category,
-        preview: previewDefault,
-        name: basename(path),
+    await ingestPaths(paths);
+  }
+
+  async function addFolder() {
+    setPicking(true);
+    let selected: string | string[] | null;
+    try {
+      selected = await openFileDialog({
+        title: "Ordner wählen",
+        directory: true,
+        multiple: false,
       });
-    }
-    if (next.length === 0) {
-      setError("Keine passenden Dateien in der Auswahl (Typ passt nicht zur Option).");
+    } catch (e) {
+      setError(String(e));
       return;
+    } finally {
+      setPicking(false);
     }
-    setItems((prev) => [...prev, ...next]);
-    setError(null);
+    if (typeof selected === "string" && selected) {
+      await ingestPaths([selected]);
+    }
   }
 
   function removeItem(path: string) {
@@ -225,40 +380,32 @@ export function AppendMediaDialog({
     );
   }
 
+  function setGroupPreview(id: AppendCategoryId, preview: boolean) {
+    setItems((prev) =>
+      prev.map((i) => (i.category === id ? { ...i, preview } : i)),
+    );
+  }
+
   async function submit() {
     if (!entry || items.length === 0 || busy) return;
-
-    const unbookedFull = items.filter((i) => {
-      const cat = catDef(i.category);
-      return cat && !cat.booked(marker) && !i.preview;
-    });
-    if (unbookedFull.length > 0) {
-      const ok = window.confirm(
-        `${unbookedFull.length} Datei(en) gehen als volles Produkt in den bestehenden Kundenordner, obwohl die Option nicht gebucht war.\n\nFortfahren?`,
-      );
-      if (!ok) return;
-    }
-
-    const unpaidPhotos = items.filter(
-      (i) => categoryUnpaid(marker, i.category) && !catDef(i.category)?.video,
+    const notPaidPhotos = items.filter(
+      (i) => categoryNotPaid(flags, i.category) && !catDef(i.category)?.video,
     );
-    if (unpaidPhotos.length > 0 && !unpaidPhotos.some((i) => i.preview)) {
+    if (notPaidPhotos.length > 0 && !notPaidPhotos.some((i) => i.preview)) {
       setError(
         "Foto-Produkt ist nicht bezahlt — bitte mindestens ein Foto für das Wasserzeichen auswählen.",
       );
       return;
     }
-
-    const unpaidVideos = items.filter(
-      (i) => categoryUnpaid(marker, i.category) && catDef(i.category)?.video,
+    const notPaidVideos = items.filter(
+      (i) => categoryNotPaid(flags, i.category) && catDef(i.category)?.video,
     );
-    if (unpaidVideos.length > 0 && !unpaidVideos.some((i) => i.preview)) {
+    if (notPaidVideos.length > 0 && !notPaidVideos.some((i) => i.preview)) {
       setError(
         "Video-Produkt ist nicht bezahlt — bitte mindestens ein Video für die Preview auswählen.",
       );
       return;
     }
-
     setError(null);
     try {
       await onSubmit(
@@ -269,195 +416,311 @@ export function AppendMediaDialog({
     }
   }
 
-  const customer =
-    `${entry?.first_name ?? ""} ${entry?.last_name ?? ""}`.trim() ||
-    entry?.dir_name ||
-    "—";
-  const remote = entry?.remote_path.trim() || (entry ? `/${entry.dir_name}` : "");
+  const canSend = !busy && items.length > 0;
 
   return (
     <Dialog
       open={open}
       onOpenChange={(v) => {
-        if (!v && !busy) onOpenChange(false);
+        if (!v && !busy && !picking) onOpenChange(false);
       }}
     >
-      <DialogContent className="z-[55] flex max-h-[min(40rem,calc(100vh-2rem))] max-w-lg flex-col gap-3">
-        <DialogHeader>
-          <DialogTitle>Dateien nachladen</DialogTitle>
-          <DialogDescription>
-            Option wählen, dann Dateien aussuchen. Ziel: {remote || "bestehender Cloud-Ordner"}.
-            Der Download-Link bleibt; es wird keine Kunden-Nachricht gesendet.
-          </DialogDescription>
-        </DialogHeader>
-
-        <p className="text-sm text-foreground">{customer}</p>
-
-        <div className="flex flex-wrap gap-1">
-          {CATS.map((c) => {
-            const isBooked = c.booked(marker);
-            const isUnpaid = isBooked && !c.paid(marker);
-            const active = category === c.id;
-            return (
-              <button
-                key={c.id}
-                type="button"
-                disabled={busy}
-                onClick={() => setCategory(c.id)}
-                className={cn(
-                  "inline-flex h-7 items-center rounded border px-2 text-[11px] font-medium",
-                  active
-                    ? "border-primary/50 bg-primary/15 text-foreground"
-                    : "border-border/60 bg-muted/20 text-muted-foreground hover:bg-muted/40",
-                )}
-                title={
-                  !isBooked
-                    ? `${c.label} (nicht gebucht)`
-                    : isUnpaid
-                      ? `${c.label} (nicht bezahlt)`
-                      : c.label
-                }
-              >
-                {c.short}
-                {!isBooked ? (
-                  <span className="ml-1 text-[9px] opacity-70">neu</span>
-                ) : isUnpaid ? (
-                  <span className="ml-1 text-[9px] opacity-70">offen</span>
-                ) : null}
-              </button>
-            );
-          })}
-        </div>
-
-        {categoryUnbooked ? (
-          <label className="flex items-center justify-between gap-2 rounded-md border border-border/60 bg-muted/20 px-3 py-2 text-sm">
-            <span>
-              {unbookedPreviewDefault
-                ? "Neue Dateien als Preview (Wasserzeichen)"
-                : "Neue Dateien als Vollversion"}
-              <span className="mt-0.5 block text-[11px] text-muted-foreground">
-                Option war nicht gebucht — Preview ist der sichere Default.
-              </span>
-            </span>
-            <Switch
-              checked={unbookedPreviewDefault}
-              disabled={busy}
-              onCheckedChange={setUnbookedPreviewDefault}
-            />
-          </label>
-        ) : categoryUnpaidActive ? (
-          <p className="rounded-md border border-border/60 bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
-            Option ist nicht bezahlt: Originale werden hochgeladen. Pro Datei kann
-            zusätzlich eine Preview mit Wasserzeichen erzeugt werden — wie beim
-            Erstellen und bei ATS-Nachreichung.
-          </p>
-        ) : categoryBooked ? (
-          <p className="rounded-md border border-border/60 bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
-            Gebuchte und bezahlte Option — Dateien werden als Original nachgeladen.
-          </p>
-        ) : null}
-
-        <div className="flex items-center gap-2">
-          <Button
+      <DialogContent
+        hideCloseButton
+        className="relative z-[55] !flex h-[min(88vh,720px)] w-[min(1100px,96vw)] max-w-none flex-col gap-0 overflow-hidden p-0"
+      >
+        <header className="grid shrink-0 grid-cols-[minmax(5.5rem,1fr)_auto_minmax(5.5rem,1fr)] items-center border-b border-border/60 px-3 py-2">
+          <button
             type="button"
-            size="sm"
-            variant="secondary"
-            disabled={busy}
-            onClick={() => void addFiles()}
-          >
-            Dateien wählen…
-          </Button>
-          <span className="text-xs text-muted-foreground">
-            {items.length === 0
-              ? `${CATS.find((c) => c.id === category)?.label ?? "Dateien"} auswählen`
-              : `${items.length} Datei(en)`}
-          </span>
-        </div>
-
-        <div className="min-h-0 flex-1 overflow-auto rounded-md border border-border/50">
-          {items.length === 0 ? (
-            <p className="p-3 text-xs text-muted-foreground">
-              Zuerst eine Option wählen (HV / HF / OV / OF), dann die Dateien
-              dazu. Bei unbezahlten Optionen pro Datei Preview markieren; Originale
-              gehen immer mit hoch.
-            </p>
-          ) : (
-            <ul className="divide-y divide-border/40">
-              {items.map((item) => {
-                const showPreviewToggle =
-                  categoryUnpaid(marker, item.category) ||
-                  !catDef(item.category)?.booked(marker);
-                const unpaid = categoryUnpaid(marker, item.category);
-                return (
-                  <li
-                    key={item.path}
-                    className="flex items-center gap-2 px-2 py-1.5 text-xs"
-                  >
-                    <div className="min-w-0 flex-1">
-                      <div className="truncate font-medium" title={item.path}>
-                        {item.name}
-                      </div>
-                      <div className="text-muted-foreground">
-                        {catDef(item.category)?.short}
-                        {" · "}
-                        {itemModeLabel(marker, item)}
-                      </div>
-                    </div>
-                    {showPreviewToggle ? (
-                      <label
-                        className="flex shrink-0 items-center gap-1.5 text-[10px] text-muted-foreground"
-                        title={
-                          unpaid
-                            ? "Zusätzliche Preview mit Wasserzeichen"
-                            : "Als Preview statt Vollversion"
-                        }
-                      >
-                        <Checkbox
-                          checked={item.preview}
-                          disabled={busy}
-                          onCheckedChange={(v) =>
-                            toggleItemPreview(item.path, v === true)
-                          }
-                        />
-                        Preview
-                      </label>
-                    ) : null}
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="ghost"
-                      className="h-7 px-2"
-                      disabled={busy}
-                      onClick={() => removeItem(item.path)}
-                    >
-                      Entf.
-                    </Button>
-                  </li>
-                );
-              })}
-            </ul>
-          )}
-        </div>
-
-        {error ? <p className="text-xs text-destructive">{error}</p> : null}
-
-        <DialogFooter>
-          <Button
-            type="button"
-            variant="secondary"
             disabled={busy}
             onClick={() => onOpenChange(false)}
+            className="inline-flex items-center justify-self-start rounded-md py-1 pr-2 text-[15px] font-normal text-primary transition hover:brightness-110 disabled:opacity-40"
           >
             Abbrechen
-          </Button>
-          <Button
+          </button>
+          <div className="min-w-0 text-center">
+            <DialogTitle className="truncate text-[15px] font-semibold tracking-tight">
+              Nachladen
+            </DialogTitle>
+            <DialogDescription className="truncate text-[11px] leading-tight">
+              {customer}
+            </DialogDescription>
+          </div>
+          <button
             type="button"
-            disabled={busy || items.length === 0}
+            disabled={!canSend}
             onClick={() => void submit()}
+            className={cn(
+              "justify-self-end rounded-md px-1.5 py-1 text-[15px] font-semibold transition",
+              canSend
+                ? "text-primary hover:brightness-110"
+                : "cursor-not-allowed text-muted/40",
+            )}
           >
-            {busy ? "Lade nach…" : "Nachladen"}
-          </Button>
-        </DialogFooter>
+            {busy ? "Lade nach…" : "Senden"}
+          </button>
+        </header>
+
+        <div className="grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-[minmax(17.5rem,0.92fr)_minmax(0,1.08fr)]">
+          <section className="flex min-h-0 flex-col gap-3 overflow-y-auto border-b border-border/60 p-3 lg:border-b-0 lg:border-r">
+            <div>
+              <h3 className="px-1 pb-1.5 text-[11px] font-semibold tracking-[0.08em] text-muted uppercase">
+                Produkt
+              </h3>
+              <div className="space-y-3" role="radiogroup" aria-label="Produkt für Nachladen">
+                {CAT_GROUPS.map((group) => (
+                  <div key={group.id}>
+                    <p className="px-1 pb-1 text-[11px] font-semibold tracking-[0.08em] text-muted uppercase">
+                      {group.label}
+                    </p>
+                    <div className="overflow-hidden rounded-xl bg-card-elevated ring-1 ring-border/60">
+                      {CATS.filter((c) => c.group === group.id).map((c, idx, arr) => {
+                        const active = category === c.id;
+                        const status = categoryStatus(flags, c);
+                        return (
+                          <button
+                            key={c.id}
+                            type="button"
+                            role="radio"
+                            aria-checked={active}
+                            disabled={busy}
+                            onClick={() => setCategory(c.id)}
+                            className={cn(
+                              "flex w-full items-center gap-3 px-3 py-2.5 text-left transition-colors",
+                              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
+                              "disabled:cursor-not-allowed",
+                              idx < arr.length - 1 && "border-b border-border/50",
+                              active
+                                ? "bg-primary-soft"
+                                : "hover:bg-black/[0.03] dark:hover:bg-white/[0.04]",
+                            )}
+                          >
+                            <span
+                              className={cn(
+                                "flex size-8 shrink-0 items-center justify-center rounded-[9px]",
+                                active
+                                  ? "bg-primary text-primary-foreground"
+                                  : "bg-black/8 text-muted dark:bg-white/10",
+                              )}
+                              aria-hidden
+                            >
+                              {c.video ? (
+                                <Film className="size-4" />
+                              ) : (
+                                <ImageIcon className="size-4" />
+                              )}
+                            </span>
+                            <span className="min-w-0 flex-1">
+                              <span className="block text-[15px] font-medium leading-tight">
+                                {c.kindLabel}
+                              </span>
+                              <span className="mt-1 block">
+                                <CatStatusChip status={status} />
+                              </span>
+                            </span>
+                            {active ? (
+                              <Check
+                                className="size-4 shrink-0 text-primary"
+                                strokeWidth={2.5}
+                                aria-hidden
+                              />
+                            ) : null}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <p
+              className={cn(
+                "grid grid-cols-[auto_minmax(0,1fr)] items-start gap-2 rounded-xl px-3 py-2 text-xs leading-5 ring-1",
+                statusHint.className,
+              )}
+            >
+              {selectedStatus === "paid" ? (
+                <Check className="mt-0.5 size-3.5 shrink-0" strokeWidth={2.5} aria-hidden />
+              ) : (
+                <Info className="mt-0.5 size-3.5 shrink-0" aria-hidden />
+              )}
+              <span className="leading-5">{statusHint.text}</span>
+            </p>
+
+            <div
+              className={cn(
+                "relative flex min-h-[9.5rem] flex-1 flex-col justify-center overflow-hidden rounded-xl px-3 py-4 text-center transition-[border-color,background-color,box-shadow,transform] duration-200",
+                "ring-2 ring-dashed",
+                dragOver
+                  ? "scale-[1.01] bg-primary-soft ring-primary shadow-[inset_0_0_0_1px] shadow-primary/30"
+                  : "bg-card-elevated/70 ring-border hover:ring-primary/40",
+                busy && "pointer-events-none opacity-60",
+              )}
+              role="region"
+              aria-label={
+                activeCat?.video
+                  ? "Videos oder Ordner hierher ziehen"
+                  : "Fotos oder Ordner hierher ziehen"
+              }
+            >
+              <div className="relative">
+                <div className="mx-auto mb-2 flex h-10 w-10 items-center justify-center rounded-full bg-primary-soft text-primary ring-1 ring-primary/15">
+                  {dragOver ? (
+                    <Upload className="h-4 w-4 animate-pulse" aria-hidden />
+                  ) : activeCat?.video ? (
+                    <Film className="h-4 w-4" aria-hidden />
+                  ) : (
+                    <ImageIcon className="h-4 w-4" aria-hidden />
+                  )}
+                </div>
+                <p className="mb-0.5 text-[13px] font-medium leading-5 text-foreground">
+                  {dragOver
+                    ? "Loslassen zum Hinzufügen"
+                    : activeCat?.video
+                      ? "Videos oder Ordner hierher ziehen"
+                      : "Fotos oder Ordner hierher ziehen"}
+                </p>
+                <p className="mb-3 text-[11px] leading-4 text-muted">
+                  {activeCat?.video
+                    ? "Ordner rekursiv · .mp4, .mov …"
+                    : "Ordner rekursiv · .jpg, .png, .webp …"}
+                </p>
+                <div className="flex flex-wrap items-center justify-center gap-1.5">
+                  <Button
+                    type="button"
+                    size="sm"
+                    className="h-7 text-xs"
+                    disabled={busy}
+                    onClick={() => void addFiles()}
+                  >
+                    Dateien wählen…
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="secondary"
+                    className="h-7 text-xs"
+                    disabled={busy}
+                    onClick={() => void addFolder()}
+                  >
+                    <FolderOpen className="h-3.5 w-3.5" />
+                    Ordner wählen…
+                  </Button>
+                </div>
+              </div>
+            </div>
+
+            {error ? <p className="px-1 text-xs text-destructive">{error}</p> : null}
+          </section>
+
+          <section className="flex min-h-0 flex-col bg-card-elevated/40">
+            <div className="flex shrink-0 items-baseline justify-between gap-2 px-4 py-2.5">
+              <h3 className="text-[13px] font-semibold tracking-tight text-foreground">
+                Dateien
+              </h3>
+              <span className="text-[13px] tabular-nums text-muted">
+                {items.length === 0
+                  ? "Keine"
+                  : `${items.length} ${items.length === 1 ? "Datei" : "Dateien"}`}
+              </span>
+            </div>
+            <div className="min-h-0 flex-1 overflow-auto px-3 pb-3">
+              {items.length === 0 ? (
+                <div className="flex h-full min-h-[12rem] flex-col items-center justify-center px-6 text-center">
+                  <div className="mb-3 flex size-12 items-center justify-center rounded-full bg-black/6 text-muted dark:bg-white/8">
+                    {activeCat?.video ? (
+                      <Film className="size-5" aria-hidden />
+                    ) : (
+                      <ImageIcon className="size-5" aria-hidden />
+                    )}
+                  </div>
+                  <p className="text-[15px] font-medium text-foreground">Noch keine Dateien</p>
+                  <p className="mt-1 max-w-[16rem] text-[13px] leading-5 text-muted">
+                    Dateien dem gewählten Produkt zuordnen. Bei offenen oder neuen
+                    Optionen pro Datei Preview markieren.
+                  </p>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {groupedItems.map(({ cat, items: groupItems }) => {
+                    const showPreview = categoryNotPaid(flags, cat.id);
+                    const allPreview =
+                      showPreview && groupItems.every((i) => i.preview);
+                    return (
+                      <div key={cat.id}>
+                        <div className="flex items-center justify-between gap-2 px-1 pb-1">
+                          <p className="text-[11px] font-semibold tracking-[0.08em] text-muted uppercase">
+                            {cat.label}
+                            <span className="ml-1.5 tabular-nums font-medium tracking-normal text-muted/80">
+                              {groupItems.length}
+                            </span>
+                          </p>
+                          {showPreview ? (
+                            <label className="flex cursor-pointer items-center gap-1.5 text-[11px] font-medium text-muted">
+                              Preview
+                              <Switch
+                                checked={allPreview}
+                                disabled={busy}
+                                onCheckedChange={(v) => setGroupPreview(cat.id, v)}
+                              />
+                            </label>
+                          ) : null}
+                        </div>
+                        <ul className="overflow-hidden rounded-xl bg-card ring-1 ring-border/60">
+                          {groupItems.map((item, idx) => (
+                            <li
+                              key={item.path}
+                              className={cn(
+                                "flex items-center gap-3 px-3 py-2",
+                                idx < groupItems.length - 1 && "border-b border-border/50",
+                              )}
+                            >
+                              <div className="flex size-11 shrink-0 items-center justify-center rounded-[9px] bg-muted/40 text-muted">
+                                {cat.video ? (
+                                  <Film className="size-4" />
+                                ) : (
+                                  <ImageIcon className="size-4" />
+                                )}
+                              </div>
+                              <div className="min-w-0 flex-1">
+                                <div className="truncate text-[13px] font-medium" title={item.path}>
+                                  {item.name}
+                                </div>
+                                <div className="truncate text-[11px] text-muted">
+                                  {itemModeLabel(flags, item)}
+                                </div>
+                              </div>
+                              {showPreview ? (
+                                <Switch
+                                  checked={item.preview}
+                                  disabled={busy}
+                                  aria-label={`Preview für ${item.name}`}
+                                  onCheckedChange={(v) =>
+                                    toggleItemPreview(item.path, v)
+                                  }
+                                />
+                              ) : null}
+                              <button
+                                type="button"
+                                disabled={busy}
+                                className="flex size-7 shrink-0 items-center justify-center rounded-full text-muted transition hover:bg-black/6 hover:text-foreground disabled:opacity-40 dark:hover:bg-white/8"
+                                aria-label={`${item.name} entfernen`}
+                                onClick={() => removeItem(item.path)}
+                              >
+                                <X className="size-3.5" strokeWidth={2.25} />
+                              </button>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </section>
+        </div>
       </DialogContent>
     </Dialog>
   );

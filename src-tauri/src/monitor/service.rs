@@ -21,8 +21,8 @@ use crate::model::handoff::{
 };
 use crate::model::kunde::Kunde;
 use crate::model::marker::{
-    claim_fertig_marker, discard_stale_fertig_marker, load_marker_data, marker_paths,
-    parse_api_marker_data, read_marker_file, read_marker_raw, resolve_kunde_from_marker,
+    apply_media_flags_if_present, claim_fertig_marker, discard_stale_fertig_marker, load_marker_data,
+    marker_paths, parse_api_marker_data, read_marker_file, read_marker_raw, resolve_kunde_from_marker,
     should_use_dropbox_client_for_marker, ApiMarkerQuery, LookupMode, MarkerError,
 };
 use crate::monitor::stability::{
@@ -1114,27 +1114,29 @@ async fn lookup_kunde_from_api_marker(
 ) -> Result<Kunde, String> {
     let data = load_marker_data(marker_raw).map_err(|e| e.to_string())?;
     let (query, mode) = parse_api_marker_data(&data).map_err(|e| e.to_string())?;
-    if let Some(lookup) = ctx.customer_lookup {
-        return lookup(&query, mode);
-    }
-    fetch_customer_as_kunde(&query, mode).await
+    let mut kunde = if let Some(lookup) = ctx.customer_lookup {
+        lookup(&query, mode)?
+    } else {
+        fetch_customer_as_kunde(&query, mode).await?
+    };
+    apply_media_flags_if_present(&mut kunde, &data);
+    Ok(kunde)
 }
 
 fn emit_marker_history(dir_name: &str, marker_raw: &str, kunde: &Kunde) {
-    crate::events::emit(
-        crate::events::UPLOAD_HISTORY_UPDATE,
-        serde_json::json!({
-            "dir_name": dir_name,
-            "marker_raw": marker_raw,
-            "first_name": kunde.first_name.clone().unwrap_or_default(),
-            "last_name": kunde.last_name.clone().unwrap_or_default(),
-            "email": kunde.email.clone().unwrap_or_default(),
-            "phone": kunde.phone.clone().unwrap_or_default(),
-            "customer_number": kunde.customer_number.clone().unwrap_or_default(),
-            "booking_number": kunde.booking_number.clone().unwrap_or_default(),
-            "type": kunde.customer_type.clone().unwrap_or_default(),
-        }),
-    );
+    let mut payload = serde_json::json!({
+        "dir_name": dir_name,
+        "marker_raw": marker_raw,
+        "first_name": kunde.first_name.clone().unwrap_or_default(),
+        "last_name": kunde.last_name.clone().unwrap_or_default(),
+        "email": kunde.email.clone().unwrap_or_default(),
+        "phone": kunde.phone.clone().unwrap_or_default(),
+        "customer_number": kunde.customer_number.clone().unwrap_or_default(),
+        "booking_number": kunde.booking_number.clone().unwrap_or_default(),
+        "type": kunde.customer_type.clone().unwrap_or_default(),
+    });
+    crate::model::marker::merge_kunde_media_flags(&mut payload, kunde);
+    crate::events::emit(crate::events::UPLOAD_HISTORY_UPDATE, payload);
 }
 
 fn kunde_label(kunde: &Kunde) -> String {

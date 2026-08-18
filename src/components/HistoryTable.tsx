@@ -16,6 +16,7 @@ import {
   X,
 } from "lucide-react";
 import { AppendMediaDialog } from "./AppendMediaDialog";
+import { ProductStatusChip } from "./BookingChips";
 import { ResendNotificationsDialog } from "./ResendNotificationsDialog";
 import { HistoryStatusChips, StatusChip } from "./StatusChip";
 import { VirtualList } from "./VirtualList";
@@ -34,7 +35,9 @@ import {
   historyAppendEvents,
   formatManualStatusSummary,
   formatResendHistorySummary,
+  historyBookingFlags,
   historyDisplayName,
+  historyProductBadges,
   overallStatusTone,
 } from "@/lib/utils";
 import type { AppendFileItem, HistoryAppendEvent, HistoryEntry } from "@/lib/tauri";
@@ -44,6 +47,7 @@ import {
   getManualStatusWarnings,
   getSandboxWarnings,
   resendHistoryNotifications,
+  resolveHistoryBookingFlags,
   retryUpload,
   saveHistoryContact,
   setManualStatus,
@@ -254,6 +258,21 @@ export function HistoryTable() {
     () => (selected ? historyAppendEvents(selected) : []),
     [selected],
   );
+  const selectedBookingBadges = useMemo(
+    () => (selected ? historyProductBadges(historyBookingFlags(selected)) : []),
+    [selected],
+  );
+  const bookingResolveAttempted = useRef(new Set<string>());
+
+  useEffect(() => {
+    if (!selected) return;
+    if (selectedBookingBadges.length > 0) return;
+    if (bookingResolveAttempted.current.has(selected.id)) return;
+    bookingResolveAttempted.current.add(selected.id);
+    void resolveHistoryBookingFlags(selected.id)
+      .then(() => useHistoryStore.getState().load({ maintainPage: true }))
+      .catch(() => {});
+  }, [selected?.id, selectedBookingBadges.length]);
 
   useEffect(() => {
     setEditingField(null);
@@ -672,6 +691,23 @@ export function HistoryTable() {
     );
   }
 
+  function renderBookingOptions() {
+    return (
+      <div className="grid grid-cols-[7.5rem_1fr] gap-2 border-b border-border/40 py-1.5 lg:grid-cols-[9.5rem_1fr]">
+        <span className="text-xs font-medium text-muted">Optionen</span>
+        {selectedBookingBadges.length === 0 ? (
+          <span className="text-foreground">—</span>
+        ) : (
+          <span className="flex min-w-0 flex-wrap gap-1">
+            {selectedBookingBadges.map((badge) => (
+              <ProductStatusChip key={badge.key} badge={badge} />
+            ))}
+          </span>
+        )}
+      </div>
+    );
+  }
+
   function renderDetailRows(rows: typeof DETAIL_ROWS) {
     const error = historyErrorDetail(selected!);
     const errorRow = (
@@ -1038,6 +1074,7 @@ export function HistoryTable() {
                 </h3>
                 <HistoryStatusChips entry={selected} className="min-w-0 max-w-full" />
               </div>
+              {renderBookingOptions()}
               {renderDetailRows(DETAIL_ROWS)}
               {renderAppendTimeline(selectedAppendEvents)}
             </div>
@@ -1056,6 +1093,7 @@ export function HistoryTable() {
           </h3>
           <HistoryStatusChips entry={selected} className="mb-3 min-w-0 max-w-full" />
           <div className="grid min-w-0 gap-2 text-sm">
+            {renderBookingOptions()}
             {renderDetailRows(DETAIL_ROWS)}
           </div>
           {renderAppendTimeline(selectedAppendEvents)}

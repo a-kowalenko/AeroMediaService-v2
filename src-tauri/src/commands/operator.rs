@@ -16,8 +16,10 @@ use crate::notify::resend::{
 };
 use crate::notify::sms_sync;
 use crate::storage::history::{HistoryEntry, HistoryState};
+use crate::model::marker::{history_has_booked_option, merge_kunde_media_flags};
+use crate::model::kunde::Kunde;
 use crate::upload::append::{append_media_from_files, append_media_from_history, AppendFileItem};
-use crate::upload::retry::retry_upload_from_history;
+use crate::upload::retry::{resolve_kunde_from_history_entry, retry_upload_from_history};
 use crate::upload::UploadState;
 
 fn load_entry_json(
@@ -120,6 +122,61 @@ pub async fn append_history_files(
         "{count}× nachgeladen nach {remote} ({} Datei(en)). Der bestehende Download-Link bleibt gültig.",
         items.len()
     ))
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct HistoryBookingFlags {
+    pub handcam_foto: bool,
+    pub handcam_video: bool,
+    pub outside_foto: bool,
+    pub outside_video: bool,
+    pub ist_bezahlt_handcam_foto: bool,
+    pub ist_bezahlt_handcam_video: bool,
+    pub ist_bezahlt_outside_foto: bool,
+    pub ist_bezahlt_outside_video: bool,
+}
+
+impl From<&Kunde> for HistoryBookingFlags {
+    fn from(k: &Kunde) -> Self {
+        Self {
+            handcam_foto: k.handcam_foto,
+            handcam_video: k.handcam_video,
+            outside_foto: k.outside_foto,
+            outside_video: k.outside_video,
+            ist_bezahlt_handcam_foto: k.ist_bezahlt_handcam_foto,
+            ist_bezahlt_handcam_video: k.ist_bezahlt_handcam_video,
+            ist_bezahlt_outside_foto: k.ist_bezahlt_outside_foto,
+            ist_bezahlt_outside_video: k.ist_bezahlt_outside_video,
+        }
+    }
+}
+
+#[tauri::command]
+pub async fn resolve_history_booking_flags(
+    history: State<'_, HistoryState>,
+    id: String,
+) -> Result<HistoryBookingFlags, String> {
+    let (_entry, json) = load_entry_json(&history, &id)?;
+    let kunde = resolve_kunde_from_history_entry(&json).await?;
+    if !history_has_booked_option(&json) {
+        let dir_name = json
+            .get("dir_name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim();
+        if !dir_name.is_empty() {
+            let mut patch = serde_json::json!({ "dir_name": dir_name });
+            merge_kunde_media_flags(&mut patch, &kunde);
+            history.add_or_update_from_value(&patch)?;
+            events::emit(events::UPLOAD_HISTORY_UPDATE, &patch);
+        }
+    }
+    Ok(HistoryBookingFlags::from(&kunde))
+}
+
+#[tauri::command]
+pub fn expand_append_media_paths(paths: Vec<String>) -> Result<Vec<String>, String> {
+    crate::upload::append::expand_append_media_paths(&paths)
 }
 
 #[derive(Debug, Clone, Serialize)]

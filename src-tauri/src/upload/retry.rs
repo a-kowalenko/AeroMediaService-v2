@@ -11,8 +11,10 @@ use crate::events;
 use crate::model::handoff::peek_correlation_id;
 use crate::model::kunde::{normalize_phone, Kunde};
 use crate::model::marker::{
-    load_marker_data, parse_api_marker_data, resolve_kunde_from_marker,
-    should_use_dropbox_client_for_marker, write_processing_marker, MarkerError, MARKER_PROCESSING,
+    apply_media_flags_from_json, apply_media_flags_if_present, history_has_booked_option,
+    load_marker_data, merge_kunde_media_flags, parse_api_marker_data,
+    resolve_kunde_from_marker, should_use_dropbox_client_for_marker,
+    write_processing_marker, MarkerError, MARKER_PROCESSING,
 };
 use crate::monitor::stability::has_uploadable_files;
 use crate::storage::logging;
@@ -44,7 +46,7 @@ pub fn kunde_from_history_fields(entry: &Value) -> Option<Kunde> {
     if first.is_empty() || last.is_empty() || email.is_empty() {
         return None;
     }
-    Some(Kunde {
+    let mut kunde = Kunde {
         first_name: Some(first.to_string()),
         last_name: Some(last.to_string()),
         email: Some(email.to_string()),
@@ -53,7 +55,9 @@ pub fn kunde_from_history_fields(entry: &Value) -> Option<Kunde> {
         booking_number: nonempty(json_str(entry, "booking_number")),
         customer_type: nonempty(json_str(entry, "type")),
         ..Kunde::default()
-    })
+    };
+    apply_media_flags_from_json(&mut kunde, entry);
+    Some(kunde)
 }
 
 fn nonempty(value: &str) -> Option<String> {
@@ -66,39 +70,99 @@ fn nonempty(value: &str) -> Option<String> {
 }
 
 pub async fn resolve_kunde_from_history_entry(entry: &Value) -> Result<Kunde, String> {
-    if let Some(cached) = kunde_from_history_fields(entry) {
-        return Ok(cached);
+    let cached = kunde_from_history_fields(entry);
+    if let Some(cached) = cached.as_ref() {
+        if history_has_booked_option(entry) {
+            return Ok(cached.clone());
+        }
     }
 
     let marker_raw = json_str(entry, "marker_raw").trim();
     if marker_raw.is_empty() {
-        return Err(
+        return cached.ok_or_else(|| {
             "Weder Marker (marker_raw) noch vollständige Kundendaten in der Historie. \
              Erneuter Upload ist nicht möglich."
-                .into(),
-        );
+                .to_string()
+        });
     }
 
-    match resolve_kunde_from_marker(marker_raw) {
+    let resolved = match resolve_kunde_from_marker(marker_raw) {
         Ok(kunde) => Ok(kunde),
-        Err(MarkerError::ApiLookupRequired) => {
-            let data = load_marker_data(marker_raw).map_err(|e| e.to_string())?;
-            let (query, mode) = parse_api_marker_data(&data).map_err(|e| e.to_string())?;
-            fetch_customer_as_kunde(&query, mode).await.map_err(|exc| {
-                if exc.contains("Customer-Lookup fehlgeschlagen") {
-                    format!(
-                        "Kundendaten konnten nicht von der API geladen werden:\n{exc}\n\n\
-                         Bitte Marker-IDs prüfen oder den API-Fehler beheben. \
-                         Nach einem erfolgreichen Kunden-Lookup werden Name und E-Mail \
-                         in der Historie gespeichert und beim Retry ohne API verwendet."
-                    )
-                } else {
-                    format!("Kundendaten konnten nicht ermittelt werden: {exc}")
-                }
-            })
-        }
+        Err(MarkerError::ApiLookupRequired) => resolve_api_marker_kunde(marker_raw, cached.as_ref()).await,
         Err(e) => Err(e.to_string()),
+    };
+
+    match resolved {
+        Ok(kunde) => {
+            persist_history_media_flags(entry, &kunde);
+            Ok(kunde)
+        }
+        Err(err) => {
+            if let Some(mut cached) = cached {
+                if let Ok(data) = load_marker_data(marker_raw) {
+                    apply_media_flags_if_present(&mut cached, &data);
+                }
+                logging::log_warn(&format!(
+                    "Buchungsstatus nicht nachgeladen, nutze Historiendaten: {err}"
+                ));
+                persist_history_media_flags(entry, &cached);
+                Ok(cached)
+            } else {
+                Err(lookup_error_message(&err))
+            }
+        }
     }
+}
+
+fn lookup_error_message(exc: &str) -> String {
+    if exc.contains("Customer-Lookup fehlgeschlagen") {
+        format!(
+            "Kundendaten konnten nicht von der API geladen werden:\n{exc}\n\n\
+             Bitte Marker-IDs prüfen oder den API-Fehler beheben. \
+             Nach einem erfolgreichen Kunden-Lookup werden Name, E-Mail \
+             und Buchungsstatus in der Historie gespeichert und ohne API verwendet."
+        )
+    } else {
+        format!("Kundendaten konnten nicht ermittelt werden: {exc}")
+    }
+}
+
+async fn resolve_api_marker_kunde(
+    marker_raw: &str,
+    cached: Option<&Kunde>,
+) -> Result<Kunde, String> {
+    let data = load_marker_data(marker_raw).map_err(|e| e.to_string())?;
+    let (query, mode) = parse_api_marker_data(&data).map_err(|e| e.to_string())?;
+    let mut kunde = match fetch_customer_as_kunde(&query, mode).await {
+        Ok(k) => k,
+        Err(exc) => {
+            let mut from_marker = cached.cloned().unwrap_or_default();
+            apply_media_flags_if_present(&mut from_marker, &data);
+            if from_marker.handcam_foto
+                || from_marker.handcam_video
+                || from_marker.outside_foto
+                || from_marker.outside_video
+            {
+                return Ok(from_marker);
+            }
+            return Err(lookup_error_message(&exc));
+        }
+    };
+    apply_media_flags_if_present(&mut kunde, &data);
+    Ok(kunde)
+}
+
+fn persist_history_media_flags(entry: &Value, kunde: &Kunde) {
+    if history_has_booked_option(entry) {
+        return;
+    }
+    let dir_name = json_str(entry, "dir_name").trim();
+    if dir_name.is_empty() {
+        return;
+    }
+    let mut payload = json!({ "dir_name": dir_name });
+    merge_kunde_media_flags(&mut payload, kunde);
+    events::emit(events::UPLOAD_HISTORY_UPDATE, payload);
 }
 
 /// Restore an archived job into the monitor folder and enqueue it.
@@ -229,6 +293,14 @@ pub async fn retry_upload_from_history(
             "customer_number": kunde.customer_number.unwrap_or_default(),
             "booking_number": kunde.booking_number.unwrap_or_default(),
             "type": kunde.customer_type.unwrap_or_default(),
+            "handcam_foto": kunde.handcam_foto,
+            "handcam_video": kunde.handcam_video,
+            "outside_foto": kunde.outside_foto,
+            "outside_video": kunde.outside_video,
+            "ist_bezahlt_handcam_foto": kunde.ist_bezahlt_handcam_foto,
+            "ist_bezahlt_handcam_video": kunde.ist_bezahlt_handcam_video,
+            "ist_bezahlt_outside_foto": kunde.ist_bezahlt_outside_foto,
+            "ist_bezahlt_outside_video": kunde.ist_bezahlt_outside_video,
         }),
     );
     events::emit_status(format!("Erneut eingereiht: {dir_name}"));
@@ -272,6 +344,71 @@ mod tests {
             "last_name": "Lovelace",
         }))
         .is_none());
+    }
+
+    #[test]
+    fn kunde_from_history_applies_media_flags() {
+        let k = kunde_from_history_fields(&json!({
+            "first_name": "Ada",
+            "last_name": "Lovelace",
+            "email": "ada@example.de",
+            "handcam_video": true,
+            "ist_bezahlt_handcam_video": true,
+            "outside_foto": "JA",
+        }))
+        .unwrap();
+        assert!(k.handcam_video);
+        assert!(k.ist_bezahlt_handcam_video);
+        assert!(k.outside_foto);
+        assert!(!k.handcam_foto);
+    }
+
+    #[tokio::test]
+    async fn resolve_uses_persisted_flags_without_marker() {
+        let k = resolve_kunde_from_history_entry(&json!({
+            "first_name": "Ada",
+            "last_name": "Lovelace",
+            "email": "ada@example.de",
+            "handcam_video": true,
+            "ist_bezahlt_handcam_video": true,
+            "marker_raw": "{\"type\":\"Handcam\",\"kunden_id_hash\":\"a\",\"booking_id_hash\":\"b\"}",
+        }))
+        .await
+        .unwrap();
+        assert!(k.handcam_video);
+        assert!(k.ist_bezahlt_handcam_video);
+        assert!(!k.outside_foto);
+    }
+
+    #[tokio::test]
+    async fn resolve_reads_contact_marker_flags_when_history_lacks_them() {
+        let k = resolve_kunde_from_history_entry(&json!({
+            "dir_name": "Flug_1",
+            "first_name": "Ada",
+            "last_name": "Lovelace",
+            "email": "ada@example.de",
+            "marker_raw": "{\"vorname\":\"Ada\",\"nachname\":\"Lovelace\",\"email\":\"ada@example.de\",\"outside_foto\":true,\"ist_bezahlt_outside_foto\":false}",
+        }))
+        .await
+        .unwrap();
+        assert!(k.outside_foto);
+        assert!(!k.ist_bezahlt_outside_foto);
+    }
+
+    #[tokio::test]
+    async fn resolve_applies_flags_from_api_marker_when_lookup_fails() {
+        let k = resolve_kunde_from_history_entry(&json!({
+            "dir_name": "Flug_1",
+            "first_name": "Ada",
+            "last_name": "Lovelace",
+            "email": "ada@example.de",
+            "marker_raw": "{\"type\":\"Handcam\",\"kunden_id_hash\":\"a\",\"booking_id_hash\":\"b\",\"handcam_video\":true,\"ist_bezahlt_handcam_video\":true}",
+        }))
+        .await
+        .unwrap();
+        assert!(k.handcam_video);
+        assert!(k.ist_bezahlt_handcam_video);
+        assert!(!k.handcam_foto);
     }
 
     #[tokio::test]

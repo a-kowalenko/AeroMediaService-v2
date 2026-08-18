@@ -26,7 +26,8 @@ pub use monitor::{
 pub use operator::{
     append_history_files, append_history_media, channels_delivered, get_manual_status_warnings,
     get_sandbox_warnings,
-    lookup_share_link, resend_history_notifications, retry_upload, save_history_contact,
+    lookup_share_link, resend_history_notifications, resolve_history_booking_flags,
+    expand_append_media_paths, retry_upload, save_history_contact,
     set_manual_status, sync_sms_journal,
 };
 pub use settings::{

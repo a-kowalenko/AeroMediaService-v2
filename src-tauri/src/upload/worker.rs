@@ -544,14 +544,16 @@ async fn sleep_cancellable(control: &UploadControl, secs: u64) -> Result<(), Upl
 }
 
 fn kunde_history(dir_name: &str, status: &str, kunde: &Kunde) -> serde_json::Value {
-    serde_json::json!({
+    let mut history = serde_json::json!({
         "dir_name": dir_name,
         "status": status,
         "first_name": kunde.first_name.clone().unwrap_or_default(),
         "last_name": kunde.last_name.clone().unwrap_or_default(),
         "email": kunde.email.clone().unwrap_or_default(),
         "phone": kunde.phone.clone().unwrap_or_default(),
-    })
+    });
+    crate::model::marker::merge_kunde_media_flags(&mut history, kunde);
+    history
 }
 
 fn success_history(

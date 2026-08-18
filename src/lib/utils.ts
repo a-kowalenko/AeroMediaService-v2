@@ -179,7 +179,7 @@ export function extraBool(entry: { extra?: Record<string, unknown> }, key: strin
   if (typeof value === "number") return value !== 0;
   if (typeof value === "string") {
     const lower = value.trim().toLowerCase();
-    return lower === "1" || lower === "true" || lower === "yes";
+    return lower === "1" || lower === "true" || lower === "yes" || lower === "ja";
   }
   return false;
 }
@@ -210,4 +210,101 @@ export function formatManualStatusSummary(entry: {
   const atDisplay = atRaw ? atRaw.replace("T", " ").slice(0, 16) : "—";
   const note = extraString(entry, "manual_status_note").trim();
   return note ? `${action} (${atDisplay}) — ${note}` : `${action} (${atDisplay})`;
+}
+
+export type HistoryBookingFlags = {
+  handcam_foto: boolean;
+  handcam_video: boolean;
+  outside_foto: boolean;
+  outside_video: boolean;
+  ist_bezahlt_handcam_foto: boolean;
+  ist_bezahlt_handcam_video: boolean;
+  ist_bezahlt_outside_foto: boolean;
+  ist_bezahlt_outside_video: boolean;
+};
+
+export type ProductBadge = { key: string; label: string; paid: boolean };
+
+const BOOKING_FLAG_KEYS: (keyof HistoryBookingFlags)[] = [
+  "handcam_foto",
+  "handcam_video",
+  "outside_foto",
+  "outside_video",
+  "ist_bezahlt_handcam_foto",
+  "ist_bezahlt_handcam_video",
+  "ist_bezahlt_outside_foto",
+  "ist_bezahlt_outside_video",
+];
+
+function truthyFlag(v: unknown): boolean {
+  if (v === true || v === 1) return true;
+  if (typeof v === "number") return v !== 0;
+  if (typeof v !== "string") return false;
+  const s = v.trim().toLowerCase();
+  return s === "true" || s === "1" || s === "yes" || s === "ja";
+}
+
+function markerObject(markerRaw: string | undefined): Record<string, unknown> {
+  try {
+    const parsed = JSON.parse(markerRaw || "{}") as unknown;
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>;
+    }
+  } catch {
+    /* ignore */
+  }
+  return {};
+}
+
+export function historyBookingFlags(entry: {
+  extra?: Record<string, unknown>;
+  marker_raw?: string;
+}): HistoryBookingFlags {
+  const marker = markerObject(entry.marker_raw);
+  const extra = entry.extra ?? {};
+  const read = (key: keyof HistoryBookingFlags): boolean => {
+    if (key in extra) return truthyFlag(extra[key]);
+    return truthyFlag(marker[key]);
+  };
+  return {
+    handcam_foto: read("handcam_foto"),
+    handcam_video: read("handcam_video"),
+    outside_foto: read("outside_foto"),
+    outside_video: read("outside_video"),
+    ist_bezahlt_handcam_foto: read("ist_bezahlt_handcam_foto"),
+    ist_bezahlt_handcam_video: read("ist_bezahlt_handcam_video"),
+    ist_bezahlt_outside_foto: read("ist_bezahlt_outside_foto"),
+    ist_bezahlt_outside_video: read("ist_bezahlt_outside_video"),
+  };
+}
+
+export function overlayBookingFlags(
+  base: HistoryBookingFlags,
+  patch?: Partial<HistoryBookingFlags> | Record<string, unknown>,
+): HistoryBookingFlags {
+  if (!patch) return base;
+  const next = { ...base };
+  for (const key of BOOKING_FLAG_KEYS) {
+    if (key in patch) {
+      next[key] = truthyFlag(patch[key]);
+    }
+  }
+  return next;
+}
+
+export function historyProductBadges(flags: HistoryBookingFlags): ProductBadge[] {
+  const badges: ProductBadge[] = [];
+  if (flags.handcam_video) {
+    badges.push({ key: "hv", label: "HV", paid: flags.ist_bezahlt_handcam_video });
+  }
+  if (flags.handcam_foto) {
+    badges.push({ key: "hf", label: "HF", paid: flags.ist_bezahlt_handcam_foto });
+  }
+  if (flags.outside_video) {
+    badges.push({ key: "ov", label: "OV", paid: flags.ist_bezahlt_outside_video });
+  }
+  if (flags.outside_foto) {
+    badges.push({ key: "of", label: "OF", paid: flags.ist_bezahlt_outside_foto });
+  }
+  return badges;
 }

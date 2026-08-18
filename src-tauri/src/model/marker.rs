@@ -20,7 +20,7 @@ pub const MARKER_FERTIG: &str = "_fertig.txt";
 pub const MARKER_PROCESSING: &str = "_in_verarbeitung.txt";
 
 const PURE_CONTACT_MARKER_KEYS: [&str; 4] = ["vorname", "nachname", "email", "telefon"];
-const MEDIA_FLAG_KEYS: [&str; 8] = [
+pub const MEDIA_FLAG_KEYS: [&str; 8] = [
     "handcam_foto",
     "handcam_video",
     "outside_foto",
@@ -355,6 +355,63 @@ fn apply_media_flags(kunde: &mut Kunde, flags: [bool; 8]) {
     kunde.ist_bezahlt_handcam_video = flags[5];
     kunde.ist_bezahlt_outside_foto = flags[6];
     kunde.ist_bezahlt_outside_video = flags[7];
+}
+
+/// True when at least one booked/paid flag key is present (even if false).
+pub fn history_has_media_flags(data: &Value) -> bool {
+    let Some(obj) = data.as_object() else {
+        return false;
+    };
+    MEDIA_FLAG_KEYS.iter().any(|key| obj.contains_key(*key))
+}
+
+/// True when at least one of the four products is booked.
+pub fn history_has_booked_option(data: &Value) -> bool {
+    let Some(obj) = data.as_object() else {
+        return false;
+    };
+    ["handcam_foto", "handcam_video", "outside_foto", "outside_video"]
+        .iter()
+        .any(|key| parse_marker_bool(obj, key, false))
+}
+
+pub fn apply_media_flags_from_json(kunde: &mut Kunde, data: &Value) {
+    if let Some(obj) = data.as_object() {
+        apply_media_flags(kunde, media_flags(obj));
+    }
+}
+
+/// Overlay marker/API flags only when the payload actually contains those keys.
+pub fn apply_media_flags_if_present(kunde: &mut Kunde, data: &Value) {
+    if history_has_media_flags(data) {
+        apply_media_flags_from_json(kunde, data);
+    }
+}
+
+pub fn merge_kunde_media_flags(target: &mut Value, kunde: &Kunde) {
+    let Value::Object(map) = target else {
+        return;
+    };
+    map.insert("handcam_foto".into(), Value::Bool(kunde.handcam_foto));
+    map.insert("handcam_video".into(), Value::Bool(kunde.handcam_video));
+    map.insert("outside_foto".into(), Value::Bool(kunde.outside_foto));
+    map.insert("outside_video".into(), Value::Bool(kunde.outside_video));
+    map.insert(
+        "ist_bezahlt_handcam_foto".into(),
+        Value::Bool(kunde.ist_bezahlt_handcam_foto),
+    );
+    map.insert(
+        "ist_bezahlt_handcam_video".into(),
+        Value::Bool(kunde.ist_bezahlt_handcam_video),
+    );
+    map.insert(
+        "ist_bezahlt_outside_foto".into(),
+        Value::Bool(kunde.ist_bezahlt_outside_foto),
+    );
+    map.insert(
+        "ist_bezahlt_outside_video".into(),
+        Value::Bool(kunde.ist_bezahlt_outside_video),
+    );
 }
 
 fn json_to_python_str(value: &Value) -> String {
@@ -735,6 +792,43 @@ mod tests {
         assert!(!k.outside_video);
         assert!(k.ist_bezahlt_handcam_foto);
         assert!(!k.ist_bezahlt_handcam_video);
+    }
+
+    #[test]
+    fn history_media_flags_detect_presence_and_apply() {
+        assert!(!history_has_media_flags(&json!({
+            "first_name": "Ada",
+            "marker_raw": "{}",
+        })));
+        let data = json!({
+            "handcam_video": true,
+            "ist_bezahlt_handcam_video": false,
+        });
+        assert!(history_has_media_flags(&data));
+        let mut k = Kunde::default();
+        apply_media_flags_from_json(&mut k, &data);
+        assert!(k.handcam_video);
+        assert!(!k.ist_bezahlt_handcam_video);
+
+        let mut payload = json!({ "dir_name": "Flug" });
+        k.outside_foto = true;
+        k.ist_bezahlt_outside_foto = true;
+        merge_kunde_media_flags(&mut payload, &k);
+        assert_eq!(payload["outside_foto"], true);
+        assert_eq!(payload["ist_bezahlt_outside_foto"], true);
+        assert_eq!(payload["handcam_video"], true);
+    }
+
+    #[test]
+    fn history_has_booked_option_ignores_all_false_keys() {
+        assert!(!history_has_booked_option(&json!({
+            "handcam_foto": false,
+            "handcam_video": false,
+        })));
+        assert!(history_has_booked_option(&json!({
+            "outside_foto": true,
+            "ist_bezahlt_outside_foto": false,
+        })));
     }
 
     #[test]
