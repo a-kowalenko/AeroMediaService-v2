@@ -693,6 +693,7 @@ Setup: `setup_completed`, Theme: `ui_theme` (`dark` \| `light`).
 - [x] Upload in gespeicherten `remote_path`; bestehender Share-Link; keine Kunden-Benachrichtigung
 - [x] Custom API: `existing_order_id` + Root-Pfad aus `remote_path`
 - [x] Cloud: Order-Lookup (id / Pfad / customer+booking), Status- und Manifest-Merge
+- [x] Buchungsoptionen: Customer-API ist Source of Truth; Detail/Refresh/Nachreichen laden Flags neu; Historie speichert Last-Known
 
 ---
 

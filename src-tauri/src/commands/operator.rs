@@ -16,10 +16,11 @@ use crate::notify::resend::{
 };
 use crate::notify::sms_sync;
 use crate::storage::history::{HistoryEntry, HistoryState};
-use crate::model::marker::{history_has_booked_option, merge_kunde_media_flags};
-use crate::model::kunde::Kunde;
 use crate::upload::append::{append_media_from_files, append_media_from_history, AppendFileItem};
-use crate::upload::retry::{resolve_kunde_from_history_entry, retry_upload_from_history};
+use crate::upload::booking_flags::{
+    with_booking_flags_lock, BookingFlagsPolicy, BookingFlagsResolve,
+};
+use crate::upload::retry::retry_upload_from_history;
 use crate::upload::UploadState;
 
 fn load_entry_json(
@@ -134,10 +135,14 @@ pub struct HistoryBookingFlags {
     pub ist_bezahlt_handcam_video: bool,
     pub ist_bezahlt_outside_foto: bool,
     pub ist_bezahlt_outside_video: bool,
+    pub lookup: String,
+    pub updated_at: Option<String>,
+    pub can_refresh: bool,
 }
 
-impl From<&Kunde> for HistoryBookingFlags {
-    fn from(k: &Kunde) -> Self {
+impl HistoryBookingFlags {
+    fn from_resolve(resolved: &BookingFlagsResolve) -> Self {
+        let k = &resolved.kunde;
         Self {
             handcam_foto: k.handcam_foto,
             handcam_video: k.handcam_video,
@@ -147,6 +152,9 @@ impl From<&Kunde> for HistoryBookingFlags {
             ist_bezahlt_handcam_video: k.ist_bezahlt_handcam_video,
             ist_bezahlt_outside_foto: k.ist_bezahlt_outside_foto,
             ist_bezahlt_outside_video: k.ist_bezahlt_outside_video,
+            lookup: resolved.lookup.to_string(),
+            updated_at: resolved.updated_at.clone(),
+            can_refresh: resolved.can_refresh,
         }
     }
 }
@@ -155,23 +163,31 @@ impl From<&Kunde> for HistoryBookingFlags {
 pub async fn resolve_history_booking_flags(
     history: State<'_, HistoryState>,
     id: String,
+    policy: Option<String>,
 ) -> Result<HistoryBookingFlags, String> {
-    let (_entry, json) = load_entry_json(&history, &id)?;
-    let kunde = resolve_kunde_from_history_entry(&json).await?;
-    if !history_has_booked_option(&json) {
-        let dir_name = json
-            .get("dir_name")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .trim();
-        if !dir_name.is_empty() {
-            let mut patch = serde_json::json!({ "dir_name": dir_name });
-            merge_kunde_media_flags(&mut patch, &kunde);
-            history.add_or_update_from_value(&patch)?;
-            events::emit(events::UPLOAD_HISTORY_UPDATE, &patch);
+    let policy = BookingFlagsPolicy::parse(policy.as_deref());
+    with_booking_flags_lock(&id, || async {
+        let (_entry, json) = load_entry_json(&history, &id)?;
+        let resolved = crate::upload::booking_flags::resolve_booking_flags_unlocked(&json, policy).await?;
+        if resolved.lookup == "api" {
+            let dir_name = json
+                .get("dir_name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim();
+            if !dir_name.is_empty() {
+                let mut patch = serde_json::json!({ "dir_name": dir_name });
+                crate::model::marker::merge_kunde_media_flags(&mut patch, &resolved.kunde);
+                if let Some(at) = resolved.updated_at.as_ref() {
+                    patch[crate::upload::booking_flags::BOOKING_FLAGS_UPDATED_AT] =
+                        serde_json::Value::String(at.clone());
+                }
+                history.add_or_update_from_value(&patch)?;
+            }
         }
-    }
-    Ok(HistoryBookingFlags::from(&kunde))
+        Ok(HistoryBookingFlags::from_resolve(&resolved))
+    })
+    .await
 }
 
 #[tauri::command]

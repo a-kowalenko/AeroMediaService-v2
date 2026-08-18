@@ -242,10 +242,22 @@ export type HistoryBookingFlags = {
   ist_bezahlt_outside_video: boolean;
 };
 
+export type BookingFlagsPolicy = "cache" | "auto" | "force";
+
+export type HistoryBookingFlagsResult = HistoryBookingFlags & {
+  lookup: "cache" | "api" | "skipped" | string;
+  updated_at: string | null;
+  can_refresh: boolean;
+};
+
 export function resolveHistoryBookingFlags(
   id: string,
-): Promise<HistoryBookingFlags> {
-  return invoke<HistoryBookingFlags>("resolve_history_booking_flags", { id });
+  policy: BookingFlagsPolicy = "auto",
+): Promise<HistoryBookingFlagsResult> {
+  return invoke<HistoryBookingFlagsResult>("resolve_history_booking_flags", {
+    id,
+    policy,
+  });
 }
 
 export function expandAppendMediaPaths(paths: string[]): Promise<string[]> {

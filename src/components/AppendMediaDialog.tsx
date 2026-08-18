@@ -196,15 +196,15 @@ export function AppendMediaDialog({
     const id = entry?.id;
     if (!id) return;
     let cancelled = false;
-    void resolveHistoryBookingFlags(id)
+    void resolveHistoryBookingFlags(id, "force")
       .then((resolved) => {
         if (cancelled) return;
-        const merged = overlayBookingFlags(initial, resolved);
-        setFlags(merged);
+        const fromApi = overlayBookingFlags(emptyFlags(), resolved);
+        setFlags(fromApi);
         if (!CATS.some((c) => c.booked(initial))) {
           const booked =
-            CATS.find((c) => c.id === "handcam_video" && c.booked(merged)) ??
-            CATS.find((c) => c.booked(merged));
+            CATS.find((c) => c.id === "handcam_video" && c.booked(fromApi)) ??
+            CATS.find((c) => c.booked(fromApi));
           setCategory(booked?.id ?? "handcam_video");
         }
       })

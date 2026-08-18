@@ -6,16 +6,12 @@ use std::path::{Path, PathBuf};
 use serde_json::{json, Value};
 use tokio::sync::mpsc::UnboundedSender;
 
-use crate::cloud::custom_api::fetch_customer_as_kunde;
 use crate::events;
 use crate::model::handoff::peek_correlation_id;
-use crate::model::kunde::{normalize_phone, Kunde};
 use crate::model::marker::{
-    apply_media_flags_from_json, apply_media_flags_if_present, history_has_booked_option,
-    load_marker_data, merge_kunde_media_flags, parse_api_marker_data,
-    resolve_kunde_from_marker, should_use_dropbox_client_for_marker,
-    write_processing_marker, MarkerError, MARKER_PROCESSING,
+    should_use_dropbox_client_for_marker, write_processing_marker, MARKER_PROCESSING,
 };
+use crate::upload::booking_flags::{self, BookingFlagsPolicy};
 use crate::monitor::stability::has_uploadable_files;
 use crate::storage::logging;
 use crate::upload::registry::{UploadJob, UploadQueueRegistry};
@@ -39,130 +35,24 @@ pub fn is_retryable_status(status: &str) -> bool {
     RETRYABLE_STATUSES.contains(&status.trim())
 }
 
-pub fn kunde_from_history_fields(entry: &Value) -> Option<Kunde> {
-    let first = json_str(entry, "first_name").trim();
-    let last = json_str(entry, "last_name").trim();
-    let email = json_str(entry, "email").trim();
-    if first.is_empty() || last.is_empty() || email.is_empty() {
-        return None;
-    }
-    let mut kunde = Kunde {
-        first_name: Some(first.to_string()),
-        last_name: Some(last.to_string()),
-        email: Some(email.to_string()),
-        phone: normalize_phone(Some(json_str(entry, "phone"))),
-        customer_number: nonempty(json_str(entry, "customer_number")),
-        booking_number: nonempty(json_str(entry, "booking_number")),
-        customer_type: nonempty(json_str(entry, "type")),
-        ..Kunde::default()
-    };
-    apply_media_flags_from_json(&mut kunde, entry);
-    Some(kunde)
-}
-
-fn nonempty(value: &str) -> Option<String> {
-    let trimmed = value.trim();
-    if trimmed.is_empty() {
-        None
-    } else {
-        Some(trimmed.to_string())
-    }
-}
-
-pub async fn resolve_kunde_from_history_entry(entry: &Value) -> Result<Kunde, String> {
-    let cached = kunde_from_history_fields(entry);
-    if let Some(cached) = cached.as_ref() {
-        if history_has_booked_option(entry) {
-            return Ok(cached.clone());
-        }
-    }
-
-    let marker_raw = json_str(entry, "marker_raw").trim();
-    if marker_raw.is_empty() {
-        return cached.ok_or_else(|| {
+pub async fn resolve_kunde_from_history_entry(entry: &Value) -> Result<crate::model::kunde::Kunde, String> {
+    let resolved = booking_flags::resolve_booking_flags(entry, BookingFlagsPolicy::Auto).await?;
+    let k = &resolved.kunde;
+    let has_contact = nonempty_opt(k.first_name.as_deref())
+        && nonempty_opt(k.last_name.as_deref())
+        && nonempty_opt(k.email.as_deref());
+    if !has_contact {
+        return Err(
             "Weder Marker (marker_raw) noch vollständige Kundendaten in der Historie. \
              Erneuter Upload ist nicht möglich."
-                .to_string()
-        });
+                .into(),
+        );
     }
-
-    let resolved = match resolve_kunde_from_marker(marker_raw) {
-        Ok(kunde) => Ok(kunde),
-        Err(MarkerError::ApiLookupRequired) => resolve_api_marker_kunde(marker_raw, cached.as_ref()).await,
-        Err(e) => Err(e.to_string()),
-    };
-
-    match resolved {
-        Ok(kunde) => {
-            persist_history_media_flags(entry, &kunde);
-            Ok(kunde)
-        }
-        Err(err) => {
-            if let Some(mut cached) = cached {
-                if let Ok(data) = load_marker_data(marker_raw) {
-                    apply_media_flags_if_present(&mut cached, &data);
-                }
-                logging::log_warn(&format!(
-                    "Buchungsstatus nicht nachgeladen, nutze Historiendaten: {err}"
-                ));
-                persist_history_media_flags(entry, &cached);
-                Ok(cached)
-            } else {
-                Err(lookup_error_message(&err))
-            }
-        }
-    }
+    Ok(resolved.kunde)
 }
 
-fn lookup_error_message(exc: &str) -> String {
-    if exc.contains("Customer-Lookup fehlgeschlagen") {
-        format!(
-            "Kundendaten konnten nicht von der API geladen werden:\n{exc}\n\n\
-             Bitte Marker-IDs prüfen oder den API-Fehler beheben. \
-             Nach einem erfolgreichen Kunden-Lookup werden Name, E-Mail \
-             und Buchungsstatus in der Historie gespeichert und ohne API verwendet."
-        )
-    } else {
-        format!("Kundendaten konnten nicht ermittelt werden: {exc}")
-    }
-}
-
-async fn resolve_api_marker_kunde(
-    marker_raw: &str,
-    cached: Option<&Kunde>,
-) -> Result<Kunde, String> {
-    let data = load_marker_data(marker_raw).map_err(|e| e.to_string())?;
-    let (query, mode) = parse_api_marker_data(&data).map_err(|e| e.to_string())?;
-    let mut kunde = match fetch_customer_as_kunde(&query, mode).await {
-        Ok(k) => k,
-        Err(exc) => {
-            let mut from_marker = cached.cloned().unwrap_or_default();
-            apply_media_flags_if_present(&mut from_marker, &data);
-            if from_marker.handcam_foto
-                || from_marker.handcam_video
-                || from_marker.outside_foto
-                || from_marker.outside_video
-            {
-                return Ok(from_marker);
-            }
-            return Err(lookup_error_message(&exc));
-        }
-    };
-    apply_media_flags_if_present(&mut kunde, &data);
-    Ok(kunde)
-}
-
-fn persist_history_media_flags(entry: &Value, kunde: &Kunde) {
-    if history_has_booked_option(entry) {
-        return;
-    }
-    let dir_name = json_str(entry, "dir_name").trim();
-    if dir_name.is_empty() {
-        return;
-    }
-    let mut payload = json!({ "dir_name": dir_name });
-    merge_kunde_media_flags(&mut payload, kunde);
-    events::emit(events::UPLOAD_HISTORY_UPDATE, payload);
+fn nonempty_opt(value: Option<&str>) -> bool {
+    value.map(|s| !s.trim().is_empty()).unwrap_or(false)
 }
 
 /// Restore an archived job into the monitor folder and enqueue it.
@@ -313,6 +203,7 @@ pub async fn retry_upload_from_history(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::upload::booking_flags::kunde_from_history_fields;
     use serde_json::json;
     use std::fs;
     use tempfile::tempdir;

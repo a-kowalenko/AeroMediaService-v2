@@ -308,3 +308,28 @@ export function historyProductBadges(flags: HistoryBookingFlags): ProductBadge[]
   }
   return badges;
 }
+
+export function historyCanRefreshBookingFlags(entry: {
+  extra?: Record<string, unknown>;
+  marker_raw?: string;
+  customer_number?: string;
+  booking_number?: string;
+  type?: string;
+}): boolean {
+  const marker = markerObject(entry.marker_raw);
+  const hasHash =
+    typeof marker.kunden_id_hash === "string" &&
+    marker.kunden_id_hash.trim() !== "" &&
+    typeof marker.booking_id_hash === "string" &&
+    marker.booking_id_hash.trim() !== "";
+  const hasId =
+    typeof marker.kunden_id === "string" &&
+    marker.kunden_id.trim() !== "" &&
+    typeof marker.booking_id === "string" &&
+    marker.booking_id.trim() !== "";
+  if (hasHash || hasId) return true;
+  const customer = (entry.customer_number ?? "").trim();
+  const booking = (entry.booking_number ?? "").trim();
+  const type = (entry.type ?? "").trim();
+  return Boolean(customer && booking && type);
+}

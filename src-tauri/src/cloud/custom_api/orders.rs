@@ -11,7 +11,9 @@ use super::{
 use crate::cloud::traits::CloudError;
 use crate::events;
 use crate::model::kunde::Kunde;
-use crate::model::marker::{build_kunde_from_customer, ApiMarkerQuery, LookupMode};
+use crate::model::marker::{
+    build_kunde_from_customer, describe_customer_media_shape, ApiMarkerQuery, LookupMode,
+};
 use crate::storage::logging;
 use crate::storage::secrets;
 use crate::upload::control::UploadControl;
@@ -42,11 +44,40 @@ pub async fn fetch_customer_as_kunde(
     mode: LookupMode,
 ) -> Result<Kunde, String> {
     let payload = fetch_customer_payload(query, mode).await?;
-    let customer = payload
+    let customer = customer_object_from_payload(&payload)?;
+    let kunde = build_kunde_from_customer(&customer).map_err(|e| e.to_string())?;
+    if !(kunde.handcam_foto
+        || kunde.handcam_video
+        || kunde.outside_foto
+        || kunde.outside_video)
+    {
+        logging::log_info(&format!(
+            "Customer-API ohne Medienflags — {}",
+            describe_customer_media_shape(&customer)
+        ));
+    }
+    Ok(kunde)
+}
+
+fn customer_object_from_payload(payload: &Value) -> Result<Value, String> {
+    let mut customer = payload
         .get("customer")
         .cloned()
         .ok_or_else(|| "Customer-Lookup lieferte kein 'customer'-Objekt.".to_string())?;
-    build_kunde_from_customer(&customer).map_err(|e| e.to_string())
+    if let Some(obj) = customer.as_object_mut() {
+        for key in ["media", "foto", "video", "bezahlt", "typ", "type"] {
+            if map_missing(obj, key) {
+                if let Some(value) = payload.get(key) {
+                    obj.insert(key.to_string(), value.clone());
+                }
+            }
+        }
+    }
+    Ok(customer)
+}
+
+fn map_missing(obj: &serde_json::Map<String, Value>, key: &str) -> bool {
+    !obj.keys().any(|k| k.eq_ignore_ascii_case(key))
 }
 
 pub async fn fetch_customer_payload(

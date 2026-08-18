@@ -36,9 +36,12 @@ import {
   formatManualStatusSummary,
   formatResendHistorySummary,
   historyBookingFlags,
+  historyCanRefreshBookingFlags,
   historyDisplayName,
   historyProductBadges,
+  overlayBookingFlags,
   overallStatusTone,
+  type HistoryBookingFlags,
 } from "@/lib/utils";
 import type { AppendFileItem, HistoryAppendEvent, HistoryEntry } from "@/lib/tauri";
 import {
@@ -258,21 +261,41 @@ export function HistoryTable() {
     () => (selected ? historyAppendEvents(selected) : []),
     [selected],
   );
-  const selectedBookingBadges = useMemo(
-    () => (selected ? historyProductBadges(historyBookingFlags(selected)) : []),
-    [selected],
+  const [flagOverlay, setFlagOverlay] = useState<Partial<HistoryBookingFlags> | null>(null);
+  const [flagsRefreshing, setFlagsRefreshing] = useState(false);
+  const selectedBookingBadges = useMemo(() => {
+    if (!selected) return [];
+    const flags = overlayBookingFlags(historyBookingFlags(selected), flagOverlay ?? undefined);
+    return historyProductBadges(flags);
+  }, [selected, flagOverlay]);
+  const canRefreshBookingFlags = Boolean(
+    selected && historyCanRefreshBookingFlags(selected),
   );
-  const bookingResolveAttempted = useRef(new Set<string>());
 
   useEffect(() => {
-    if (!selected) return;
-    if (selectedBookingBadges.length > 0) return;
-    if (bookingResolveAttempted.current.has(selected.id)) return;
-    bookingResolveAttempted.current.add(selected.id);
-    void resolveHistoryBookingFlags(selected.id)
-      .then(() => useHistoryStore.getState().load({ maintainPage: true }))
-      .catch(() => {});
-  }, [selected?.id, selectedBookingBadges.length]);
+    setFlagOverlay(null);
+    if (!selected) {
+      setFlagsRefreshing(false);
+      return;
+    }
+    const id = selected.id;
+    let cancelled = false;
+    setFlagsRefreshing(true);
+    void resolveHistoryBookingFlags(id, "force")
+      .then((resolved) => {
+        if (cancelled) return;
+        setFlagOverlay(resolved);
+      })
+      .catch((err) => {
+        if (!cancelled) showError(String(err), "Buchungsoptionen");
+      })
+      .finally(() => {
+        if (!cancelled) setFlagsRefreshing(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selected?.id]);
 
   useEffect(() => {
     setEditingField(null);
@@ -392,6 +415,19 @@ export function HistoryTable() {
       showError(String(err), "Upload erneut");
     } finally {
       setActionBusy(false);
+    }
+  }
+
+  async function onRefreshBookingFlags() {
+    if (!selected) return;
+    setFlagsRefreshing(true);
+    try {
+      const resolved = await resolveHistoryBookingFlags(selected.id, "force");
+      setFlagOverlay(resolved);
+    } catch (err) {
+      showError(String(err), "Buchungsoptionen");
+    } finally {
+      setFlagsRefreshing(false);
     }
   }
 
@@ -695,15 +731,35 @@ export function HistoryTable() {
     return (
       <div className="grid grid-cols-[7.5rem_1fr] gap-2 border-b border-border/40 py-1.5 lg:grid-cols-[9.5rem_1fr]">
         <span className="text-xs font-medium text-muted">Optionen</span>
-        {selectedBookingBadges.length === 0 ? (
-          <span className="text-foreground">—</span>
-        ) : (
-          <span className="flex min-w-0 flex-wrap gap-1">
-            {selectedBookingBadges.map((badge) => (
-              <ProductStatusChip key={badge.key} badge={badge} />
-            ))}
-          </span>
-        )}
+        <span className="flex min-w-0 items-start justify-between gap-2">
+          {selectedBookingBadges.length === 0 ? (
+            <span className="text-foreground">—</span>
+          ) : (
+            <span className="flex min-w-0 flex-wrap gap-1">
+              {selectedBookingBadges.map((badge) => (
+                <ProductStatusChip key={badge.key} badge={badge} />
+              ))}
+            </span>
+          )}
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            className="h-7 w-7 shrink-0"
+            disabled={!canRefreshBookingFlags || flagsRefreshing || actionBusy}
+            title={
+              canRefreshBookingFlags
+                ? "Buchungsoptionen aktualisieren"
+                : "Kein API-Lookup möglich"
+            }
+            aria-label="Buchungsoptionen aktualisieren"
+            onClick={() => void onRefreshBookingFlags()}
+          >
+            <RefreshCw
+              className={cn("h-3.5 w-3.5", flagsRefreshing && "animate-spin")}
+            />
+          </Button>
+        </span>
       </div>
     );
   }

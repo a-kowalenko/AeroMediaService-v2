@@ -357,6 +357,472 @@ fn apply_media_flags(kunde: &mut Kunde, flags: [bool; 8]) {
     kunde.ist_bezahlt_outside_video = flags[7];
 }
 
+const MEDIA_FLAG_ALIASES: [&[&str]; 8] = [
+    &["handcam_foto", "handcamFoto", "handcam_photo", "handcamPhoto"],
+    &["handcam_video", "handcamVideo"],
+    &["outside_foto", "outsideFoto", "outside_photo", "outsidePhoto"],
+    &["outside_video", "outsideVideo"],
+    &[
+        "ist_bezahlt_handcam_foto",
+        "istBezahltHandcamFoto",
+        "paid_handcam_foto",
+        "paidHandcamFoto",
+    ],
+    &[
+        "ist_bezahlt_handcam_video",
+        "istBezahltHandcamVideo",
+        "paid_handcam_video",
+        "paidHandcamVideo",
+    ],
+    &[
+        "ist_bezahlt_outside_foto",
+        "istBezahltOutsideFoto",
+        "paid_outside_foto",
+        "paidOutsideFoto",
+    ],
+    &[
+        "ist_bezahlt_outside_video",
+        "istBezahltOutsideVideo",
+        "paid_outside_video",
+        "paidOutsideVideo",
+    ],
+];
+
+/// QR-/API-`media`-Codes (ATS `media_flags_from_code`).
+fn media_flags_from_code(code: &str) -> Option<(bool, bool, bool, bool)> {
+    match code.trim().to_ascii_lowercase().as_str() {
+        "none" | "" => Some((false, false, false, false)),
+        "hc_f" => Some((true, false, false, false)),
+        "hc_v" => Some((false, true, false, false)),
+        "hc_fv" | "hc_vf" => Some((true, true, false, false)),
+        "ou_f" => Some((false, false, true, false)),
+        "ou_v" => Some((false, false, false, true)),
+        "ou_fv" | "ou_vf" => Some((false, false, true, true)),
+        _ => None,
+    }
+}
+
+fn map_get_ci<'a>(obj: &'a Map<String, Value>, key: &str) -> Option<&'a Value> {
+    if let Some(value) = obj.get(key) {
+        return Some(value);
+    }
+    obj.iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case(key))
+        .map(|(_, v)| v)
+}
+
+fn parse_bool_value(value: &Value, default: bool) -> bool {
+    match value {
+        Value::Bool(b) => *b,
+        Value::String(s) => matches!(
+            s.trim().to_ascii_lowercase().as_str(),
+            "true" | "1" | "yes" | "ja"
+        ),
+        Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                i != 0
+            } else if let Some(u) = n.as_u64() {
+                u != 0
+            } else if let Some(f) = n.as_f64() {
+                f != 0.0
+            } else {
+                default
+            }
+        }
+        _ => default,
+    }
+}
+
+/// `media.bezahlt` is often a payment method (`Bar`, `Online`), not a boolean.
+fn parse_paid_value(value: &Value) -> Option<bool> {
+    match value {
+        Value::Null => None,
+        Value::Bool(b) => Some(*b),
+        Value::Number(n) => Some(
+            n.as_i64()
+                .map(|i| i != 0)
+                .or_else(|| n.as_u64().map(|u| u != 0))
+                .or_else(|| n.as_f64().map(|f| f != 0.0))
+                .unwrap_or(false),
+        ),
+        Value::String(s) => {
+            let trimmed = s.trim();
+            if trimmed.is_empty() {
+                return Some(false);
+            }
+            match trimmed.to_ascii_lowercase().as_str() {
+                "false" | "0" | "no" | "nein" | "none" | "null" | "offen" | "unpaid"
+                | "unbezahlt" => Some(false),
+                "true" | "1" | "yes" | "ja" | "paid" | "bezahlt" => Some(true),
+                _ => Some(true),
+            }
+        }
+        Value::Object(obj) => map_get_ci(obj, "bezahlt")
+            .or_else(|| map_get_ci(obj, "paid"))
+            .or_else(|| map_get_ci(obj, "ist_bezahlt"))
+            .and_then(parse_paid_value),
+        _ => None,
+    }
+}
+
+fn parse_booked_product(value: Option<&Value>) -> bool {
+    let Some(value) = value else {
+        return false;
+    };
+    match value {
+        Value::Null => false,
+        Value::Bool(_) | Value::Number(_) | Value::String(_) => parse_bool_value(value, false),
+        Value::Object(obj) => {
+            if let Some(booked) = map_get_ci(obj, "gebucht")
+                .or_else(|| map_get_ci(obj, "booked"))
+                .or_else(|| map_get_ci(obj, "aktiv"))
+            {
+                return parse_bool_value(booked, true);
+            }
+            true
+        }
+        _ => false,
+    }
+}
+
+struct FotoVideoPaid {
+    foto: bool,
+    video: bool,
+    paid_foto: Option<bool>,
+    paid_video: Option<bool>,
+}
+
+fn art_to_foto_video(art: &str) -> Option<(bool, bool)> {
+    match art.trim().to_ascii_lowercase().as_str() {
+        "foto" | "photo" | "f" => Some((true, false)),
+        "video" | "v" => Some((false, true)),
+        "foto_video" | "video_foto" | "foto+video" | "foto-video" | "foto video" | "fv" | "vf"
+        | "both" => Some((true, true)),
+        other => media_flags_from_code(other).map(|(hf, hv, of, ov)| (hf || of, hv || ov)),
+    }
+}
+
+fn extract_foto_video_paid(data: &Value) -> FotoVideoPaid {
+    let mut result = FotoVideoPaid {
+        foto: false,
+        video: false,
+        paid_foto: None,
+        paid_video: None,
+    };
+    let Some(obj) = data.as_object() else {
+        return result;
+    };
+    let mut global_paid = None;
+
+    if let Some(art) = ["art", "media_option", "mediaOption", "media_code", "mediaCode", "code"]
+        .into_iter()
+        .find_map(|key| map_get_ci(obj, key).and_then(value_as_option_code))
+    {
+        if let Some((foto, video)) = art_to_foto_video(&art) {
+            result.foto |= foto;
+            result.video |= video;
+        }
+    }
+
+    result.foto |= parse_booked_product(map_get_ci(obj, "foto").or_else(|| map_get_ci(obj, "photo")));
+    result.video |= parse_booked_product(map_get_ci(obj, "video"));
+
+    if let Some(foto_obj) = map_get_ci(obj, "foto")
+        .or_else(|| map_get_ci(obj, "photo"))
+        .filter(|v| v.is_object())
+    {
+        result.paid_foto = parse_paid_value(foto_obj);
+    }
+    if let Some(video_obj) = map_get_ci(obj, "video").filter(|v| v.is_object()) {
+        result.paid_video = parse_paid_value(video_obj);
+    }
+
+    if let Some(bezahlt) = map_get_ci(obj, "bezahlt") {
+        if let Some(paid_obj) = bezahlt.as_object() {
+            if let Some(foto_val) =
+                map_get_ci(paid_obj, "foto").or_else(|| map_get_ci(paid_obj, "photo"))
+            {
+                result.foto |= parse_booked_product(Some(foto_val))
+                    || parse_paid_value(foto_val) == Some(true);
+                result.paid_foto = parse_paid_value(foto_val).or(result.paid_foto);
+            }
+            if let Some(video_val) = map_get_ci(paid_obj, "video") {
+                result.video |= parse_booked_product(Some(video_val))
+                    || parse_paid_value(video_val) == Some(true);
+                result.paid_video = parse_paid_value(video_val).or(result.paid_video);
+            }
+        } else {
+            global_paid = parse_paid_value(bezahlt);
+        }
+    }
+    if global_paid.is_none() {
+        global_paid = map_get_ci(obj, "paid")
+            .filter(|v| !v.is_object())
+            .and_then(parse_paid_value);
+    }
+
+    if let Some(foto_paid) = ["foto_paid", "fotoPaid", "bezahlt_foto", "bezahltFoto", "photo_paid"]
+        .into_iter()
+        .find_map(|key| map_get_ci(obj, key).and_then(parse_paid_value))
+    {
+        result.paid_foto = Some(foto_paid);
+        if foto_paid {
+            result.foto = true;
+        }
+    }
+    if let Some(video_paid) = ["video_paid", "videoPaid", "bezahlt_video", "bezahltVideo"]
+        .into_iter()
+        .find_map(|key| map_get_ci(obj, key).and_then(parse_paid_value))
+    {
+        result.paid_video = Some(video_paid);
+        if video_paid {
+            result.video = true;
+        }
+    }
+    if result.foto {
+        result.paid_foto = result.paid_foto.or(global_paid);
+    }
+    if result.video {
+        result.paid_video = result.paid_video.or(global_paid);
+    }
+    result
+}
+
+fn value_as_option_code(value: &Value) -> Option<String> {
+    match value {
+        Value::String(s) => {
+            let trimmed = s.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        }
+        Value::Number(n) => Some(n.to_string()),
+        _ => None,
+    }
+}
+
+fn family_from_typ(typ: &str) -> Option<&'static str> {
+    let normalized = normalize_marker_type(Some(typ)).to_ascii_lowercase();
+    if normalized == "outside" {
+        Some("outside")
+    } else if normalized == "handycam" || normalized == "handcam" {
+        Some("handcam")
+    } else {
+        None
+    }
+}
+
+fn family_from_media_toggles(data: &Value) -> Option<&'static str> {
+    let obj = data.as_object()?;
+    let as_toggle = |key: &str| {
+        map_get_ci(obj, key)
+            .filter(|v| !v.is_object() && !v.is_array())
+            .map(|v| parse_bool_value(v, false))
+    };
+    let outside = as_toggle("outside");
+    let handcam = as_toggle("handycam").or_else(|| as_toggle("handcam"));
+    match (outside, handcam) {
+        (Some(true), Some(false)) | (Some(true), None) => Some("outside"),
+        (Some(false), Some(true)) | (None, Some(true)) => Some("handcam"),
+        _ => None,
+    }
+}
+
+fn apply_family_flags(flags: &mut [bool; 8], family: &str, fv: &FotoVideoPaid) {
+    let (foto_i, video_i, paid_foto_i, paid_video_i) = match family {
+        "handcam" => (0, 1, 4, 5),
+        "outside" => (2, 3, 6, 7),
+        _ => return,
+    };
+    if fv.foto {
+        flags[foto_i] = true;
+        if let Some(paid) = fv.paid_foto {
+            flags[paid_foto_i] = paid;
+        }
+    }
+    if fv.video {
+        flags[video_i] = true;
+        if let Some(paid) = fv.paid_video {
+            flags[paid_video_i] = paid;
+        }
+    }
+}
+
+fn api_media_sources(customer: &Value) -> Vec<&Value> {
+    let mut sources = vec![customer];
+    if let Some(obj) = customer.as_object() {
+        for key in [
+            "media",
+            "booking",
+            "handycam",
+            "handcam",
+            "outside",
+            "produkte",
+            "products",
+            "extras",
+            "optionen",
+            "options",
+            "flags",
+        ] {
+            if let Some(nested) = map_get_ci(obj, key).filter(|v| v.is_object()) {
+                sources.push(nested);
+            }
+        }
+    }
+    sources
+}
+
+fn apply_code_flags(flags: &mut [bool; 8], code: &str, paid: Option<bool>) -> bool {
+    let Some((hf, hv, of, ov)) = media_flags_from_code(code) else {
+        return false;
+    };
+    flags[0] |= hf;
+    flags[1] |= hv;
+    flags[2] |= of;
+    flags[3] |= ov;
+    let paid = paid.unwrap_or(true);
+    flags[4] |= hf && paid;
+    flags[5] |= hv && paid;
+    flags[6] |= of && paid;
+    flags[7] |= ov && paid;
+    true
+}
+
+/// Live `/aero-media-customer` payload: nested `media` + `typ`, QR-Codes, or eight booleans.
+fn apply_api_customer_media_flags(kunde: &mut Kunde, customer: &Value) {
+    let mut flags = [false; 8];
+    let sources = api_media_sources(customer);
+
+    for source in &sources {
+        if let Some(code) = source.as_str() {
+            apply_code_flags(&mut flags, code, None);
+            continue;
+        }
+        let Some(obj) = source.as_object() else {
+            continue;
+        };
+        if let Some(code) = [
+            "media",
+            "media_option",
+            "mediaOption",
+            "code",
+            "art",
+            "media_code",
+            "mediaCode",
+        ]
+        .into_iter()
+        .find_map(|key| {
+            map_get_ci(obj, key)
+                .and_then(value_as_option_code)
+                .filter(|s| media_flags_from_code(s).is_some())
+        })
+        {
+            let paid = map_get_ci(obj, "bezahlt")
+                .or_else(|| map_get_ci(obj, "paid"))
+                .and_then(parse_paid_value);
+            apply_code_flags(&mut flags, &code, paid);
+        }
+    }
+
+    let typ = customer
+        .as_object()
+        .and_then(|obj| {
+            map_get_ci(obj, "typ")
+                .or_else(|| map_get_ci(obj, "type"))
+                .map(json_to_python_str)
+        })
+        .unwrap_or_default();
+    let family = family_from_typ(&typ).or_else(|| {
+        sources
+            .iter()
+            .find_map(|source| family_from_media_toggles(source))
+    });
+
+    for source in &sources {
+        let fv = extract_foto_video_paid(source);
+        if !(fv.foto || fv.video) {
+            continue;
+        }
+        if let Some(family) = family {
+            apply_family_flags(&mut flags, family, &fv);
+        }
+    }
+
+    if let Some(obj) = customer.as_object() {
+        for (key, family) in [
+            ("handycam", "handcam"),
+            ("handcam", "handcam"),
+            ("outside", "outside"),
+        ] {
+            if let Some(nested) = map_get_ci(obj, key) {
+                apply_family_flags(&mut flags, family, &extract_foto_video_paid(nested));
+            }
+            if let Some(media) = map_get_ci(obj, "media").and_then(Value::as_object) {
+                if let Some(nested) = map_get_ci(media, key) {
+                    apply_family_flags(&mut flags, family, &extract_foto_video_paid(nested));
+                }
+            }
+        }
+    }
+
+    for source in &sources {
+        let Some(obj) = source.as_object() else {
+            continue;
+        };
+        for (i, aliases) in MEDIA_FLAG_ALIASES.iter().enumerate() {
+            for alias in *aliases {
+                if let Some(value) = map_get_ci(obj, alias) {
+                    flags[i] = if i >= 4 {
+                        parse_paid_value(value).unwrap_or(false)
+                    } else {
+                        parse_bool_value(value, false)
+                    };
+                    break;
+                }
+            }
+        }
+    }
+
+    apply_media_flags(kunde, flags);
+}
+
+/// Compact shape of the customer payload for logs (no names/emails).
+pub fn describe_customer_media_shape(customer: &Value) -> String {
+    let Some(obj) = customer.as_object() else {
+        return "customer=kein Objekt".into();
+    };
+    let keys: Vec<&str> = obj.keys().map(String::as_str).collect();
+    let typ = map_get_ci(obj, "typ")
+        .or_else(|| map_get_ci(obj, "type"))
+        .map(json_to_python_str)
+        .unwrap_or_default();
+    let media = match obj.get("media") {
+        None => "media=fehlt".into(),
+        Some(Value::String(s)) => format!("media=\"{s}\""),
+        Some(Value::Object(m)) => {
+            let nested: Vec<&str> = m.keys().map(String::as_str).collect();
+            format!("media.keys=[{}]", nested.join(","))
+        }
+        Some(Value::Bool(b)) => format!("media={b}"),
+        Some(Value::Number(n)) => format!("media={n}"),
+        Some(Value::Array(a)) => format!("media=array({})", a.len()),
+        Some(Value::Null) => "media=null".into(),
+    };
+    let media_option = map_get_ci(obj, "media_option")
+        .or_else(|| map_get_ci(obj, "mediaOption"))
+        .and_then(value_as_option_code)
+        .unwrap_or_default();
+    let foto_paid = map_get_ci(obj, "foto_paid").map(json_to_python_str);
+    let video_paid = map_get_ci(obj, "video_paid").map(json_to_python_str);
+    let paid = map_get_ci(obj, "paid").map(json_to_python_str);
+    format!(
+        "typ={typ:?} media_option={media_option:?} foto_paid={foto_paid:?} video_paid={video_paid:?} paid={paid:?} keys=[{}] {media}",
+        keys.join(",")
+    )
+}
+
 /// True when at least one booked/paid flag key is present (even if false).
 pub fn history_has_media_flags(data: &Value) -> bool {
     let Some(obj) = data.as_object() else {
@@ -485,7 +951,7 @@ pub fn build_kunde_from_customer(customer: &Value) -> Result<Kunde, MarkerError>
         customer_type: nonempty_or_none(json_field_str(obj, "typ")),
         ..Kunde::default()
     };
-    apply_media_flags(&mut kunde, media_flags(obj));
+    apply_api_customer_media_flags(&mut kunde, customer);
     Ok(kunde)
 }
 
@@ -829,6 +1295,169 @@ mod tests {
             "outside_foto": true,
             "ist_bezahlt_outside_foto": false,
         })));
+    }
+
+    #[test]
+    fn customer_api_nested_media_outside_paid() {
+        let customer = json!({
+            "customer_id": "1",
+            "booking_id": "2",
+            "vorname": "Anna",
+            "nachname": "Muster",
+            "email": "a@b.de",
+            "typ": "Outside",
+            "media": {
+                "foto": true,
+                "video": true,
+                "bezahlt": "Bar",
+                "url": "https://example.com/order"
+            }
+        });
+        let k = build_kunde_from_customer(&customer).unwrap();
+        assert!(!k.handcam_foto && !k.handcam_video);
+        assert!(k.outside_foto && k.outside_video);
+        assert!(k.ist_bezahlt_outside_foto && k.ist_bezahlt_outside_video);
+    }
+
+    #[test]
+    fn customer_api_media_code_ou_fv() {
+        let customer = json!({
+            "customer_id": "1",
+            "booking_id": "2",
+            "vorname": "Anna",
+            "nachname": "Muster",
+            "email": "a@b.de",
+            "typ": "Outside",
+            "media": "ou_fv"
+        });
+        let k = build_kunde_from_customer(&customer).unwrap();
+        assert!(k.outside_foto && k.outside_video);
+        assert!(k.ist_bezahlt_outside_foto && k.ist_bezahlt_outside_video);
+        assert!(!k.handcam_foto && !k.handcam_video);
+    }
+
+    #[test]
+    fn customer_api_nested_foto_objects_unpaid_video() {
+        let customer = json!({
+            "customer_id": "1",
+            "booking_id": "2",
+            "vorname": "Anna",
+            "nachname": "Muster",
+            "email": "a@b.de",
+            "typ": "Handycam",
+            "media": {
+                "foto": { "bezahlt": true },
+                "video": { "bezahlt": false }
+            }
+        });
+        let k = build_kunde_from_customer(&customer).unwrap();
+        assert!(k.handcam_foto && k.handcam_video);
+        assert!(k.ist_bezahlt_handcam_foto);
+        assert!(!k.ist_bezahlt_handcam_video);
+        assert!(!k.outside_foto && !k.outside_video);
+    }
+
+    #[test]
+    fn customer_api_explicit_booleans_still_win() {
+        let customer = json!({
+            "customer_id": "1",
+            "booking_id": "2",
+            "vorname": "Anna",
+            "nachname": "Muster",
+            "email": "a@b.de",
+            "typ": "Outside",
+            "media": { "foto": true, "video": true, "bezahlt": true },
+            "outside_foto": true,
+            "outside_video": true,
+            "ist_bezahlt_outside_foto": true,
+            "ist_bezahlt_outside_video": false,
+        });
+        let k = build_kunde_from_customer(&customer).unwrap();
+        assert!(k.outside_foto && k.outside_video);
+        assert!(k.ist_bezahlt_outside_foto);
+        assert!(!k.ist_bezahlt_outside_video);
+    }
+
+    #[test]
+    fn customer_api_media_toggles_without_typ() {
+        let customer = json!({
+            "customer_id": "1",
+            "booking_id": "2",
+            "vorname": "Anna",
+            "nachname": "Muster",
+            "email": "a@b.de",
+            "media": {
+                "outside": true,
+                "handycam": false,
+                "foto": true,
+                "video": true,
+                "bezahlt": true
+            }
+        });
+        let k = build_kunde_from_customer(&customer).unwrap();
+        assert!(k.outside_foto && k.outside_video);
+        assert!(k.ist_bezahlt_outside_foto && k.ist_bezahlt_outside_video);
+        assert!(!k.handcam_foto && !k.handcam_video);
+    }
+
+    #[test]
+    fn customer_api_foto_paid_video_paid_outside() {
+        let customer = json!({
+            "Created_at": "2026-08-18",
+            "booking_id": "2",
+            "customer_id": "1",
+            "email": "a@b.de",
+            "foto_paid": true,
+            "media_option": "ou_fv",
+            "nachname": "Muster",
+            "paid": false,
+            "telefon": "0123",
+            "typ": "outside",
+            "video_paid": true,
+            "vorname": "Anna",
+        });
+        let k = build_kunde_from_customer(&customer).unwrap();
+        assert!(k.outside_foto && k.outside_video);
+        assert!(k.ist_bezahlt_outside_foto && k.ist_bezahlt_outside_video);
+        assert!(!k.handcam_foto && !k.handcam_video);
+        assert!(!k.ist_bezahlt_handcam_foto && !k.ist_bezahlt_handcam_video);
+    }
+
+    #[test]
+    fn customer_api_paid_flags_without_media_option() {
+        let customer = json!({
+            "booking_id": "2",
+            "customer_id": "1",
+            "email": "a@b.de",
+            "foto_paid": true,
+            "nachname": "Muster",
+            "paid": false,
+            "typ": "outside",
+            "video_paid": true,
+            "vorname": "Anna",
+        });
+        let k = build_kunde_from_customer(&customer).unwrap();
+        assert!(k.outside_foto && k.outside_video);
+        assert!(k.ist_bezahlt_outside_foto && k.ist_bezahlt_outside_video);
+    }
+
+    #[test]
+    fn customer_api_media_option_unpaid_foto() {
+        let customer = json!({
+            "booking_id": "2",
+            "customer_id": "1",
+            "email": "a@b.de",
+            "foto_paid": false,
+            "media_option": "ou_fv",
+            "nachname": "Muster",
+            "typ": "outside",
+            "video_paid": true,
+            "vorname": "Anna",
+        });
+        let k = build_kunde_from_customer(&customer).unwrap();
+        assert!(k.outside_foto && k.outside_video);
+        assert!(!k.ist_bezahlt_outside_foto);
+        assert!(k.ist_bezahlt_outside_video);
     }
 
     #[test]
