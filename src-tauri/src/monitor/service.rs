@@ -16,7 +16,8 @@ use crate::events;
 use crate::model::handoff::{
     evaluate_manifest_gate, is_handoff_scan_dir, manifest_path, peek_correlation_id,
     write_job_outbox, GateDecision, OutboxError, OutboxState, CODE_CUSTOMER_LOOKUP_FAILED,
-    CODE_MANIFEST_MISSING_LEGACY, CODE_MARKER_INVALID,
+    CODE_HANDOFF_FOLDER_MISSING, CODE_HANDOFF_NO_FERTIG, CODE_HANDOFF_NO_MEDIA,
+    CODE_HANDOFF_TIMEOUT, CODE_MANIFEST_MISSING_LEGACY, CODE_MARKER_INVALID,
 };
 use crate::model::kunde::Kunde;
 use crate::model::marker::{
@@ -26,17 +27,27 @@ use crate::model::marker::{
 };
 use crate::monitor::stability::{
     folder_key, has_uploadable_files, FolderStabilityTracker, ObserveResult, StabilityPendingItem,
-    PENDING_KIND_HANDOFF,
+    HANDOFF_PHASE_REJECTED, HANDOFF_PHASE_SIGNALED, HANDOFF_PHASE_WAITING_FERTIG,
+    HANDOFF_PHASE_WAITING_FOLDER, HANDOFF_PHASE_WAITING_MEDIA, PENDING_KIND_HANDOFF,
 };
 use crate::storage::logging;
-use crate::upload::registry::{UploadJob, UploadQueueRegistry};
+use crate::upload::append::{
+    build_append_parent_history_update, resolve_claimed_append_target, APPEND_EVENT_QUEUED,
+};
+use crate::upload::registry::{AppendTarget, UploadJob, UploadQueueRegistry};
 use crate::util::archive::{self, handle_customer_lookup_failure, is_marker_format_failure};
 
 const MISSING_PATH_WAIT_SECS: u64 = 60;
 const DEFAULT_SCAN_INTERVAL_SECS: u64 = 10;
 const DEFAULT_STABILITY_SECS: f64 = 15.0;
-/// How long a Bridge `handoff/ready` row stays in the left panel if never claimed.
-const HANDOFF_UI_TTL: Duration = Duration::from_secs(120);
+/// Drop a Bridge `handoff/ready` row only if the folder never appeared on the share.
+const HANDOFF_MISSING_FOLDER_TTL: Duration = Duration::from_secs(600);
+/// After this duration without a successful claim, write a rejected outbox for ATS.
+const HANDOFF_CLAIM_TIMEOUT: Duration = Duration::from_secs(90);
+/// Keep rejected handoff rows in the UI briefly after outbox was written.
+const HANDOFF_REJECTED_UI_TTL: Duration = Duration::from_secs(120);
+/// Re-run stalled-folder recovery every N monitor scans (~10s interval → ~60s).
+const RECOVERY_EVERY_N_SCANS: u64 = 6;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ClaimResult {
@@ -73,6 +84,11 @@ struct HandoffPendingEntry {
     dir_name: String,
     correlation_id: String,
     since: Instant,
+    phase: String,
+    error_code: String,
+    error_message: String,
+    outbox_written: bool,
+    outbox_at: Option<Instant>,
 }
 
 pub struct MonitorState {
@@ -90,11 +106,10 @@ pub struct MonitorState {
 fn incoming_snapshot(
     stability: &[StabilityPendingItem],
     handoff: &[HandoffPendingEntry],
-    now: Instant,
+    _now: Instant,
 ) -> Vec<StabilityPendingItem> {
     let mut items: Vec<StabilityPendingItem> = handoff
         .iter()
-        .filter(|entry| now.saturating_duration_since(entry.since) < HANDOFF_UI_TTL)
         .filter(|entry| {
             !stability
                 .iter()
@@ -104,9 +119,12 @@ fn incoming_snapshot(
             dir_name: entry.dir_name.clone(),
             remaining_seconds: 0.0,
             required_seconds: 0.0,
-            waiting_for_media: false,
+            waiting_for_media: entry.phase == HANDOFF_PHASE_WAITING_MEDIA,
             kind: PENDING_KIND_HANDOFF.to_string(),
             correlation_id: entry.correlation_id.clone(),
+            handoff_phase: entry.phase.clone(),
+            handoff_error_code: entry.error_code.clone(),
+            handoff_error_message: entry.error_message.clone(),
         })
         .collect();
     items.extend(stability.iter().cloned());
@@ -156,12 +174,24 @@ fn note_handoff_entry(
         if !cid.is_empty() {
             existing.correlation_id = cid;
         }
+        if existing.outbox_written {
+            existing.outbox_written = false;
+            existing.outbox_at = None;
+            existing.phase = HANDOFF_PHASE_SIGNALED.to_string();
+            existing.error_code.clear();
+            existing.error_message.clear();
+        }
         return;
     }
     guard.push(HandoffPendingEntry {
         dir_name: dir_name.to_string(),
         correlation_id: cid,
         since: Instant::now(),
+        phase: HANDOFF_PHASE_SIGNALED.to_string(),
+        error_code: String::new(),
+        error_message: String::new(),
+        outbox_written: false,
+        outbox_at: None,
     });
 }
 
@@ -173,7 +203,10 @@ fn prune_handoff_entries(
     let now = Instant::now();
     let mut guard = store.lock().unwrap_or_else(|e| e.into_inner());
     guard.retain(|entry| {
-        if now.saturating_duration_since(entry.since) >= HANDOFF_UI_TTL {
+        if entry.outbox_written {
+            if let Some(at) = entry.outbox_at {
+                return now.saturating_duration_since(at) < HANDOFF_REJECTED_UI_TTL;
+            }
             return false;
         }
         let path = scan_path.join(&entry.dir_name);
@@ -181,8 +214,57 @@ fn prune_handoff_entries(
             return false;
         }
         let (_, processing_path) = marker_paths(&path);
-        !processing_path.is_file()
+        if processing_path.is_file() {
+            return false;
+        }
+        if path.is_dir() {
+            return true;
+        }
+        now.saturating_duration_since(entry.since) < HANDOFF_MISSING_FOLDER_TTL
     });
+}
+
+fn handoff_timeout_error(phase: &str) -> (&'static str, String) {
+    match phase {
+        HANDOFF_PHASE_WAITING_FOLDER | HANDOFF_PHASE_SIGNALED => (
+            CODE_HANDOFF_FOLDER_MISSING,
+            "Handoff-Ordner auf dem Share nicht sichtbar.".into(),
+        ),
+        HANDOFF_PHASE_WAITING_FERTIG => (
+            CODE_HANDOFF_NO_FERTIG,
+            "_fertig.txt fehlt — Ordner nicht bereit für AMS.".into(),
+        ),
+        HANDOFF_PHASE_WAITING_MEDIA => (
+            CODE_HANDOFF_NO_MEDIA,
+            "Keine Medien-Dateien im Handoff-Ordner.".into(),
+        ),
+        _ => (
+            CODE_HANDOFF_TIMEOUT,
+            "AMS konnte den Handoff-Auftrag nicht übernehmen (Timeout).".into(),
+        ),
+    }
+}
+
+fn write_handoff_rejection_outbox(
+    folder: &Path,
+    correlation_id: &str,
+    code: &str,
+    message: &str,
+) {
+    let cid = correlation_id.trim();
+    if cid.is_empty() {
+        return;
+    }
+    write_job_outbox(
+        folder,
+        Some(cid),
+        OutboxState::Rejected,
+        Some(OutboxError {
+            code: code.to_string(),
+            message: message.to_string(),
+        }),
+        None,
+    );
 }
 
 impl MonitorState {
@@ -333,6 +415,7 @@ async fn run_loop<F>(
     logging::log_info("Monitor-Thread gestartet.");
     let mut tracker = FolderStabilityTracker::new(DEFAULT_STABILITY_SECS);
     let mut recovered = false;
+    let mut scan_counter: u64 = 0;
 
     while running.load(Ordering::SeqCst) {
         let scan_path = get_setting("monitor_path");
@@ -377,10 +460,24 @@ async fn run_loop<F>(
         if !recovered {
             recover_stalled_folders(scan_path, &ctx).await;
             recovered = true;
+        } else if scan_counter > 0 && scan_counter % RECOVERY_EVERY_N_SCANS == 0 {
+            let n = recover_stalled_folders(scan_path, &ctx).await;
+            if n > 0 {
+                logging::log_info(&format!("Recovery: {n} unterbrochene Aufträge wiederaufgenommen."));
+            }
         }
+        scan_counter = scan_counter.saturating_add(1);
 
         logging::log_debug(&format!("Scanne Verzeichnis: {}", scan_path.display()));
-        scan_once(scan_path, &mut tracker, stability_enabled, &ctx).await;
+        let handoff_found =
+            process_handoff_pending(scan_path, &handoff_pending, &ctx).await;
+        let dir_found = scan_once(scan_path, &mut tracker, stability_enabled, &ctx).await;
+        if handoff_found + dir_found > 0 {
+            logging::log_info(&format!(
+                "Scan: {} Auftrag/Aufträge übernommen (Handoff: {handoff_found}, Ordner: {dir_found}).",
+                handoff_found + dir_found
+            ));
+        }
         prune_handoff_entries(&handoff_pending, scan_path, &registry);
         publish_incoming(
             &stability_pending,
@@ -419,6 +516,122 @@ async fn wait_until_stopped(running: &AtomicBool) {
     while running.load(Ordering::SeqCst) {
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
+}
+
+/// Claim Bridge-notified folders by explicit path; update UI phase + timeout outbox for ATS.
+async fn process_handoff_pending(
+    scan_path: &Path,
+    handoff_pending: &Mutex<Vec<HandoffPendingEntry>>,
+    ctx: &EnqueueContext<'_>,
+) -> usize {
+    let now = Instant::now();
+    let mut entries = handoff_pending
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
+    let mut found = 0usize;
+    for entry in entries.iter_mut() {
+        if entry.outbox_written {
+            continue;
+        }
+        let dir_name = entry.dir_name.trim();
+        if dir_name.is_empty() {
+            continue;
+        }
+        let folder = scan_path.join(dir_name);
+
+        if !folder.is_dir() {
+            entry.phase = HANDOFF_PHASE_WAITING_FOLDER.to_string();
+        } else {
+            let (fertig_path, processing_path) = marker_paths(&folder);
+            if processing_path.is_file() {
+                continue;
+            }
+            if !fertig_path.is_file() {
+                entry.phase = HANDOFF_PHASE_WAITING_FERTIG.to_string();
+            } else if !has_uploadable_files(&folder) {
+                entry.phase = HANDOFF_PHASE_WAITING_MEDIA.to_string();
+            } else if entry.phase != HANDOFF_PHASE_REJECTED {
+                entry.phase = HANDOFF_PHASE_SIGNALED.to_string();
+            }
+        }
+
+        if now.saturating_duration_since(entry.since) >= HANDOFF_CLAIM_TIMEOUT {
+            if !entry.correlation_id.trim().is_empty() {
+                let (code, message) = handoff_timeout_error(&entry.phase);
+                write_handoff_rejection_outbox(&folder, &entry.correlation_id, code, &message);
+                logging::log_warn(&format!(
+                    "Handoff '{dir_name}' Timeout ({code}): {message}"
+                ));
+                entry.phase = HANDOFF_PHASE_REJECTED.to_string();
+                entry.error_code = code.to_string();
+                entry.error_message = message;
+                entry.outbox_written = true;
+                entry.outbox_at = Some(now);
+            }
+            continue;
+        }
+
+        if !folder.is_dir() {
+            continue;
+        }
+
+        match try_claim_and_enqueue(&folder, ctx).await {
+            ClaimResult::Queued => {
+                logging::log_info(&format!(
+                    "Handoff-Ordner '{dir_name}' zur Upload-Warteschlange hinzugefügt."
+                ));
+                found += 1;
+            }
+            ClaimResult::NoFertigMarker => {
+                entry.phase = HANDOFF_PHASE_WAITING_FERTIG.to_string();
+            }
+            ClaimResult::NoMedia => {
+                entry.phase = HANDOFF_PHASE_WAITING_MEDIA.to_string();
+            }
+            ClaimResult::ManifestRejected { code, message } => {
+                entry.phase = HANDOFF_PHASE_REJECTED.to_string();
+                entry.error_code = code.clone();
+                entry.error_message = message.clone();
+                entry.outbox_written = true;
+                entry.outbox_at = Some(now);
+                logging::log_warn(&format!(
+                    "Handoff '{dir_name}' abgelehnt ({code}): {message}"
+                ));
+            }
+            ClaimResult::CustomerLookupFailed => {
+                entry.phase = HANDOFF_PHASE_REJECTED.to_string();
+                entry.error_code = CODE_CUSTOMER_LOOKUP_FAILED.to_string();
+                entry.error_message = "Customer-Lookup fehlgeschlagen.".into();
+                entry.outbox_written = true;
+                entry.outbox_at = Some(now);
+            }
+            ClaimResult::MarkerError(msg) | ClaimResult::IoError(msg) => {
+                entry.phase = HANDOFF_PHASE_REJECTED.to_string();
+                entry.error_code = CODE_MARKER_INVALID.to_string();
+                entry.error_message = msg.clone();
+                entry.outbox_written = true;
+                entry.outbox_at = Some(now);
+                logging::log_error(&format!(
+                    "Handoff '{dir_name}' konnte nicht übernommen werden: {msg}"
+                ));
+            }
+            ClaimResult::AlreadyProcessing | ClaimResult::AlreadyClaimed | ClaimResult::NotAFolder => {
+            }
+        }
+    }
+    {
+        let mut guard = handoff_pending.lock().unwrap_or_else(|e| e.into_inner());
+        for updated in entries {
+            if let Some(slot) = guard
+                .iter_mut()
+                .find(|e| e.dir_name.eq_ignore_ascii_case(&updated.dir_name))
+            {
+                *slot = updated;
+            }
+        }
+    }
+    found
 }
 
 pub async fn scan_once(
@@ -519,6 +732,7 @@ pub async fn try_claim_and_enqueue(folder: &Path, ctx: &EnqueueContext<'_>) -> C
         return ClaimResult::NoMedia;
     }
 
+    let mut append_target: Option<AppendTarget> = None;
     let handoff_cid: Option<String> = match evaluate_manifest_gate(folder, ctx.manifest_required) {
         GateDecision::Legacy => {
             logging::log_debug(&format!(
@@ -527,17 +741,45 @@ pub async fn try_claim_and_enqueue(folder: &Path, ctx: &EnqueueContext<'_>) -> C
             None
         }
         GateDecision::Ready { correlation_id } => {
-            logging::log_info(&format!(
-                "'{dir_name}': Manifest OK (correlation_id={correlation_id}) — Claim ohne Stability-Wait."
-            ));
-            write_job_outbox(
-                folder,
-                Some(&correlation_id),
-                OutboxState::Accepted,
-                None,
-                None,
-            );
-            Some(correlation_id)
+            match resolve_claimed_append_target(folder) {
+                Ok(target) => {
+                    if let Some(ref t) = target {
+                        logging::log_info(&format!(
+                            "'{dir_name}': Nachreichung an {} ({})",
+                            t.parent_dir_name, t.remote_path
+                        ));
+                    } else {
+                        logging::log_info(&format!(
+                            "'{dir_name}': Manifest OK (correlation_id={correlation_id}) — Claim ohne Stability-Wait."
+                        ));
+                    }
+                    append_target = target;
+                    write_job_outbox(
+                        folder,
+                        Some(&correlation_id),
+                        OutboxState::Accepted,
+                        None,
+                        None,
+                    );
+                    Some(correlation_id)
+                }
+                Err((code, message)) => {
+                    logging::log_warn(&format!(
+                        "'{dir_name}': Nachreichung abgelehnt ({code}): {message}"
+                    ));
+                    write_job_outbox(
+                        folder,
+                        Some(&correlation_id),
+                        OutboxState::Rejected,
+                        Some(OutboxError {
+                            code: code.clone(),
+                            message: message.clone(),
+                        }),
+                        None,
+                    );
+                    return ClaimResult::ManifestRejected { code, message };
+                }
+            }
         }
         GateDecision::Rejected {
             code,
@@ -651,7 +893,25 @@ pub async fn try_claim_and_enqueue(folder: &Path, ctx: &EnqueueContext<'_>) -> C
         "Kundendaten erfolgreich geladen für '{dir_name}': {}",
         kunde_label(&kunde)
     ));
-    emit_marker_history(dir_name, &marker_raw, &kunde);
+    if let Some(ref append) = append_target {
+        events::emit(
+            events::UPLOAD_HISTORY_UPDATE,
+            build_append_parent_history_update(
+                append,
+                dir_name,
+                APPEND_EVENT_QUEUED,
+                handoff_cid.as_deref(),
+                Some(&kunde),
+                Some(&marker_raw),
+                None,
+                None,
+                None,
+                None,
+            ),
+        );
+    } else {
+        emit_marker_history(dir_name, &marker_raw, &kunde);
+    }
 
     if let Err(e) = claim_fertig_marker(folder) {
         ctx.registry.unregister(Some(folder));
@@ -667,6 +927,7 @@ pub async fn try_claim_and_enqueue(folder: &Path, ctx: &EnqueueContext<'_>) -> C
         kunde,
         use_dropbox_client: use_dropbox,
         correlation_id: handoff_cid.clone(),
+        append: append_target,
     };
     if ctx.registry.enqueue(ctx.jobs, job, true) {
         logging::log_info(&format!(
@@ -770,17 +1031,62 @@ async fn recover_stalled_folders(scan_path: &Path, ctx: &EnqueueContext<'_>) -> 
             }
         };
 
+        let append = match resolve_claimed_append_target(&full_dir_path) {
+            Ok(t) => t,
+            Err((code, msg)) => {
+                logging::log_error(&format!(
+                    "Recovery: Nachreichung '{dir_name}' abgelehnt ({code}): {msg}"
+                ));
+                write_job_outbox(
+                    &full_dir_path,
+                    peek_correlation_id(&full_dir_path).as_deref(),
+                    OutboxState::Failed,
+                    Some(OutboxError {
+                        code,
+                        message: msg.clone(),
+                    }),
+                    Some(archive::ARCHIVE_ERROR),
+                );
+                archive::handle_marker_failure(
+                    ctx.archive_path,
+                    &full_dir_path,
+                    &msg,
+                    Some(&marker_raw),
+                );
+                continue;
+            }
+        };
         let use_dropbox =
             should_use_dropbox_client_for_marker(ctx.selected_cloud, &marker_raw).unwrap_or(false);
         logging::log_info(&format!(
             "Recovery: unterbrochener Auftrag '{dir_name}', Kundendaten geladen."
         ));
-        emit_marker_history(&dir_name, &marker_raw, &kunde);
+        let correlation_id = peek_correlation_id(&full_dir_path);
+        if let Some(ref append_target) = append {
+            events::emit(
+                events::UPLOAD_HISTORY_UPDATE,
+                build_append_parent_history_update(
+                    append_target,
+                    &dir_name,
+                    APPEND_EVENT_QUEUED,
+                    correlation_id.as_deref(),
+                    Some(&kunde),
+                    Some(&marker_raw),
+                    None,
+                    None,
+                    None,
+                    None,
+                ),
+            );
+        } else {
+            emit_marker_history(&dir_name, &marker_raw, &kunde);
+        }
         let job = UploadJob {
             dir_path: full_dir_path.clone(),
             kunde,
             use_dropbox_client: use_dropbox,
-            correlation_id: peek_correlation_id(&full_dir_path),
+            correlation_id,
+            append,
         };
         if ctx.registry.enqueue(ctx.jobs, job, false) {
             recovered += 1;
@@ -885,13 +1191,22 @@ mod tests {
         fs::write(dir.join("photo.jpg"), b"jpeg-bytes").unwrap();
     }
 
+    fn sample_handoff(dir_name: &str, cid: &str) -> HandoffPendingEntry {
+        HandoffPendingEntry {
+            dir_name: dir_name.into(),
+            correlation_id: cid.into(),
+            since: Instant::now(),
+            phase: HANDOFF_PHASE_SIGNALED.to_string(),
+            error_code: String::new(),
+            error_message: String::new(),
+            outbox_written: false,
+            outbox_at: None,
+        }
+    }
+
     #[test]
     fn incoming_snapshot_shows_handoff_until_stability_takes_over() {
-        let handoff = vec![HandoffPendingEntry {
-            dir_name: "JobA".into(),
-            correlation_id: "cid-1".into(),
-            since: Instant::now(),
-        }];
+        let handoff = vec![sample_handoff("JobA", "cid-1")];
         let merged = incoming_snapshot(&[], &handoff, Instant::now());
         assert_eq!(merged.len(), 1);
         assert_eq!(merged[0].kind, PENDING_KIND_HANDOFF);
@@ -904,6 +1219,9 @@ mod tests {
             waiting_for_media: false,
             kind: "stability".into(),
             correlation_id: String::new(),
+            handoff_phase: String::new(),
+            handoff_error_code: String::new(),
+            handoff_error_message: String::new(),
         }];
         let merged = incoming_snapshot(&stability, &handoff, Instant::now());
         assert_eq!(merged.len(), 1);
@@ -916,14 +1234,59 @@ mod tests {
         let job = root.path().join("JobB");
         fs::create_dir(&job).unwrap();
         fs::write(job.join(MARKER_PROCESSING), b"x").unwrap();
-        let store = Mutex::new(vec![HandoffPendingEntry {
-            dir_name: "JobB".into(),
-            correlation_id: "c".into(),
-            since: Instant::now(),
-        }]);
+        let store = Mutex::new(vec![sample_handoff("JobB", "c")]);
         let registry = UploadQueueRegistry::new();
         prune_handoff_entries(&store, root.path(), &registry);
         assert!(store.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn handoff_timeout_error_maps_phases() {
+        use crate::model::handoff::{
+            CODE_HANDOFF_FOLDER_MISSING, CODE_HANDOFF_NO_FERTIG, CODE_HANDOFF_NO_MEDIA,
+            CODE_HANDOFF_TIMEOUT,
+        };
+
+        assert_eq!(
+            handoff_timeout_error(HANDOFF_PHASE_WAITING_FOLDER).0,
+            CODE_HANDOFF_FOLDER_MISSING
+        );
+        assert_eq!(
+            handoff_timeout_error(HANDOFF_PHASE_WAITING_FERTIG).0,
+            CODE_HANDOFF_NO_FERTIG
+        );
+        assert_eq!(
+            handoff_timeout_error(HANDOFF_PHASE_WAITING_MEDIA).0,
+            CODE_HANDOFF_NO_MEDIA
+        );
+        assert_eq!(
+            handoff_timeout_error("unknown").0,
+            CODE_HANDOFF_TIMEOUT
+        );
+    }
+
+    #[tokio::test]
+    async fn handoff_timeout_writes_rejected_outbox() {
+        let root = tempdir().unwrap();
+        let share = root.path().join("aktuell");
+        fs::create_dir_all(&share).unwrap();
+        let mut entry = sample_handoff("JobTimeout", "dddddddd-dddd-dddd-dddd-dddddddddddd");
+        entry.since = Instant::now()
+            .checked_sub(HANDOFF_CLAIM_TIMEOUT + Duration::from_secs(5))
+            .unwrap();
+        entry.phase = HANDOFF_PHASE_WAITING_FOLDER.to_string();
+        let store = Mutex::new(vec![entry]);
+        let registry = UploadQueueRegistry::new();
+        let (jobs_tx, _jobs_rx) = unbounded_channel();
+        let ctx = ctx(&registry, &jobs_tx, "custom_api", root.path().to_str().unwrap());
+        assert_eq!(process_handoff_pending(&share, &store, &ctx).await, 0);
+        let outbox = share
+            .join(".ams-handoff")
+            .join("dddddddd-dddd-dddd-dddd-dddddddddddd.json");
+        assert!(outbox.is_file(), "expected rejected outbox at {}", outbox.display());
+        let guard = store.lock().unwrap();
+        assert!(guard[0].outbox_written);
+        assert_eq!(guard[0].phase, HANDOFF_PHASE_REJECTED);
     }
 
     fn ctx<'a>(

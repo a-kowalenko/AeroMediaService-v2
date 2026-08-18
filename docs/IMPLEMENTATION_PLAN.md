@@ -68,8 +68,9 @@
 | Kundenaufnahme & Marker-Zuweisung | ✅ Phase 12 |
 | ATS↔AMS Handoff (Docs P0) | 🔄 Phase 13 — Spec: [`HANDOFF.md`](./HANDOFF.md) · P0 ✅ · P1 ✅ · P1b ✅ · P2 ✅ · P3 ✅ · P4 ✅ · L4 UX ✅ · P5+ offen |
 | Medien nachladen (bestehende Order) | ✅ Phase 14 |
+| ATS-Nachreichen (Append-Handoff) | ✅ Phase 15 |
 
-**Nächste Phase:** 13 — ATS↔AMS Handoff Teilphase **P5+** (optional: SHA-256, strict extras, …)
+**Nächste Phase:** 13 P5+ (optional) — Spec: [`HANDOFF.md`](./HANDOFF.md)
 
 ---
 
@@ -688,9 +689,23 @@ Setup: `setup_completed`, Theme: `ui_theme` (`dark` \| `light`).
 **Ziel:** Vergessene Dateien in denselben Dropbox-Ordner und dieselbe Cloud-Order legen, ohne neuen Monitor-Ordner oder neuen Kunden-Link.
 
 - [x] Historie-Aktion „Nachladen…“ (Status Erfolgreich)
+- [x] Dialog: Option (HV/HF/OV/OF + Preview) zuerst, dann Dateien wählen
 - [x] Upload in gespeicherten `remote_path`; bestehender Share-Link; keine Kunden-Benachrichtigung
 - [x] Custom API: `existing_order_id` + Root-Pfad aus `remote_path`
 - [x] Cloud: Order-Lookup (id / Pfad / customer+booking), Status- und Manifest-Merge
+
+---
+
+### Phase 15 — ATS-Nachreichen (Append-Handoff)
+
+**Status:** ✅ Erledigt  
+**Ziel:** ATS reicht Medien an exportierte Vorgänge nach; AMS hängt sie an die bestehende Order (gleicher Link, keine Notify). Spec: [`HANDOFF.md`](./HANDOFF.md) §6.1.
+
+- [x] Manifest `extensions.kind=append` + `parent_correlation_id`
+- [x] Gate: Parent muss Historie `Erfolgreich` sein
+- [x] Worker-Route: Phase-14-Append (`remote_path` / `existing_order_id`), kein neuer Link, keine Mail
+- [x] Bridge-Capability `append-v1`
+- [x] ATS: Historie-Dialog Dateien + Kategorie + Preview/Voll
 
 ---
 
@@ -732,3 +747,4 @@ Updater-Endpoint und Signing: siehe [`docs/RELEASE.md`](./RELEASE.md) (analog Ae
 | 12 | Kundenaufnahme & Marker-Zuweisung | ✅ |
 | 13 | ATS↔AMS Handoff | 🔄 P0 ✅ · P1 ✅ · P1b ✅ · P2 ✅ · P3 ✅ · P4 ✅ · L4 UX ✅ · P5+ offen |
 | 14 | Medien nachladen | ✅ |
+| 15 | ATS-Nachreichen (Append) | ✅ |

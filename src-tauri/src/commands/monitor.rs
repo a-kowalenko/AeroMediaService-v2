@@ -25,11 +25,10 @@ pub fn start_monitoring(
     monitor: State<'_, MonitorState>,
 ) -> Result<bool, String> {
     let config = config.inner().clone();
-    let started = monitor.start(move |key| config.get(key, None).unwrap_or_default())?;
-    if started {
-        let _ = app.emit(events::MONITORING_STATUS_CHANGED, true);
-    }
-    Ok(started)
+    let _started = monitor.start(move |key| config.get(key, None).unwrap_or_default())?;
+    let running = monitor.is_running();
+    let _ = app.emit(events::MONITORING_STATUS_CHANGED, running);
+    Ok(running)
 }
 
 #[tauri::command]

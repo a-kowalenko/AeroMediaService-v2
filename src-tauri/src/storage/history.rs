@@ -18,6 +18,7 @@ use crate::constants::{HISTORY_DB_FILE, LEGACY_HISTORY_JSON};
 use crate::model::history_status::{build_combined_error_text, build_overall_status};
 use crate::storage::app_config_dir;
 use crate::storage::config::ConfigError;
+use crate::upload::append::is_append_dir_name;
 
 const KNOWN_KEYS: &[&str] = &[
     "id",
@@ -224,6 +225,14 @@ impl HistoryEntry {
     }
 }
 
+fn is_hidden_append_shadow(entry: &HistoryEntry) -> bool {
+    is_append_dir_name(&entry.dir_name)
+        && entry.status.trim() == "Gestartet"
+        && entry.remote_path.trim().is_empty()
+        && entry.share_link.trim().is_empty()
+        && entry.archived_path.trim().is_empty()
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct HistoryPage {
     pub items: Vec<HistoryEntry>,
@@ -275,6 +284,19 @@ impl HistoryState {
     pub fn get_by_id(&self, id: &str) -> Result<Option<HistoryEntry>, String> {
         let store = self.store.lock().map_err(|e| e.to_string())?;
         store.get_by_id(id).map_err(|e| e.to_string())
+    }
+
+    #[allow(dead_code)]
+    pub fn find_by_correlation_id(&self, cid: &str) -> Result<Option<HistoryEntry>, String> {
+        let store = self.store.lock().map_err(|e| e.to_string())?;
+        store
+            .find_by_correlation_id(cid)
+            .map_err(|e| e.to_string())
+    }
+
+    pub fn find_by_dir_name(&self, dir_name: &str) -> Result<Option<HistoryEntry>, String> {
+        let store = self.store.lock().map_err(|e| e.to_string())?;
+        store.find_by_dir_name(dir_name).map_err(|e| e.to_string())
     }
 
     pub fn all_entries(&self) -> Result<Vec<HistoryEntry>, String> {
@@ -463,6 +485,48 @@ impl HistoryStore {
         Ok(entry)
     }
 
+    pub fn find_by_correlation_id(
+        &self,
+        correlation_id: &str,
+    ) -> Result<Option<HistoryEntry>, HistoryError> {
+        let cid = correlation_id.trim();
+        if cid.is_empty() {
+            return Ok(None);
+        }
+        for mut entry in self.get_filtered_history("")? {
+            let stored = entry
+                .extra
+                .get("correlation_id")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .trim();
+            if stored == cid {
+                entry.refresh_computed();
+                return Ok(Some(entry));
+            }
+        }
+        Ok(None)
+    }
+
+    pub fn find_by_dir_name(&self, dir_name: &str) -> Result<Option<HistoryEntry>, HistoryError> {
+        let name = dir_name.trim();
+        if name.is_empty() {
+            return Ok(None);
+        }
+        let conn = self.connect()?;
+        let mut entry = conn
+            .query_row(
+                "SELECT * FROM history WHERE dir_name = ?1",
+                params![name],
+                row_to_entry,
+            )
+            .optional()?;
+        if let Some(entry) = entry.as_mut() {
+            entry.refresh_computed();
+        }
+        Ok(entry)
+    }
+
     pub fn get_filtered_page(
         &self,
         search: &str,
@@ -505,6 +569,9 @@ impl HistoryStore {
         for row in rows {
             let mut entry = row?;
             entry.refresh_computed();
+            if is_hidden_append_shadow(&entry) {
+                continue;
+            }
             if needle.is_empty() || entry.search_blob().contains(&needle) {
                 items.push(entry);
             }
@@ -788,6 +855,40 @@ mod tests {
     }
 
     #[test]
+    fn find_by_correlation_id_reads_extra() {
+        let (_dir, mut store) = open_tmp();
+        store
+            .add_or_update(&json!({
+                "dir_name": "Flug_cid",
+                "status": "Erfolgreich",
+                "remote_path": "/Flug_cid",
+                "correlation_id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+            }))
+            .unwrap();
+        let found = store
+            .find_by_correlation_id("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+            .unwrap()
+            .unwrap();
+        assert_eq!(found.dir_name, "Flug_cid");
+        assert!(store.find_by_correlation_id("missing").unwrap().is_none());
+    }
+
+    #[test]
+    fn find_by_dir_name_reads_entry() {
+        let (_dir, mut store) = open_tmp();
+        store
+            .add_or_update(&json!({
+                "dir_name": "Flug_dir",
+                "status": "Erfolgreich",
+                "remote_path": "/Flug_dir",
+            }))
+            .unwrap();
+        let found = store.find_by_dir_name("Flug_dir").unwrap().unwrap();
+        assert_eq!(found.dir_name, "Flug_dir");
+        assert!(store.find_by_dir_name("missing").unwrap().is_none());
+    }
+
+    #[test]
     fn successful_retry_does_not_keep_upload_error_as_current() {
         let (_dir, mut store) = open_tmp();
         store
@@ -839,6 +940,29 @@ mod tests {
         assert_eq!(store.get_filtered_history("").unwrap().len(), 1);
         store.clear_all().unwrap();
         assert!(store.get_filtered_history("").unwrap().is_empty());
+    }
+
+    #[test]
+    fn hidden_append_shadow_rows_are_excluded_from_history() {
+        let (_dir, mut store) = open_tmp();
+        store
+            .add_or_update(&json!({
+                "dir_name": "20260818_Test_TA_TM_nachreichung_02",
+                "status": "Gestartet",
+                "first_name": "Shadow",
+            }))
+            .unwrap();
+        store
+            .add_or_update(&json!({
+                "dir_name": "20260818_Test_TA_TM",
+                "status": "Erfolgreich",
+                "remote_path": "/20260818_Test_TA_TM",
+            }))
+            .unwrap();
+
+        let items = store.get_filtered_history("").unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].dir_name, "20260818_Test_TA_TM");
     }
 
     #[test]

@@ -29,6 +29,16 @@ pub const CODE_MANIFEST_REQUIRED: &str = "manifest_required";
 pub const CODE_MARKER_INVALID: &str = "marker_invalid";
 pub const CODE_CUSTOMER_LOOKUP_FAILED: &str = "customer_lookup_failed";
 pub const CODE_CANCELLED: &str = "cancelled";
+pub const CODE_APPEND_PARENT_MISSING: &str = "append_parent_missing";
+pub const CODE_APPEND_PARENT_NOT_READY: &str = "append_parent_not_ready";
+pub const CODE_HANDOFF_TIMEOUT: &str = "handoff_timeout";
+pub const CODE_HANDOFF_NO_FERTIG: &str = "handoff_no_fertig";
+pub const CODE_HANDOFF_NO_MEDIA: &str = "handoff_no_media";
+pub const CODE_HANDOFF_FOLDER_MISSING: &str = "handoff_folder_missing";
+
+pub const EXT_KIND: &str = "kind";
+pub const KIND_APPEND: &str = "append";
+pub const EXT_PARENT_CORRELATION_ID: &str = "parent_correlation_id";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GateDecision {
@@ -242,9 +252,18 @@ pub fn evaluate_manifest_gate(folder: &Path, manifest_required: bool) -> GateDec
     }
 
     match load_and_validate_manifest(folder) {
-        Ok(m) => GateDecision::Ready {
-            correlation_id: m.correlation_id,
-        },
+        Ok(m) => {
+            if is_append_manifest(&m) && parent_correlation_id(&m).is_none() {
+                return GateDecision::Rejected {
+                    code: CODE_APPEND_PARENT_MISSING,
+                    message: "Nachreichung ohne parent_correlation_id.".into(),
+                    correlation_id: Some(m.correlation_id),
+                };
+            }
+            GateDecision::Ready {
+                correlation_id: m.correlation_id,
+            }
+        }
         Err(e) => GateDecision::Rejected {
             code: e.code(),
             message: e.to_string(),
@@ -405,6 +424,44 @@ pub fn parse_manifest_json(raw: &str) -> Result<HandoffManifestV1, ManifestError
     }
 
     Ok(manifest)
+}
+
+pub fn manifest_kind(manifest: &HandoffManifestV1) -> Option<&str> {
+    manifest
+        .extensions
+        .get(EXT_KIND)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+}
+
+pub fn is_append_manifest(manifest: &HandoffManifestV1) -> bool {
+    manifest_kind(manifest)
+        .map(|k| k.eq_ignore_ascii_case(KIND_APPEND))
+        .unwrap_or(false)
+}
+
+pub fn parent_correlation_id(manifest: &HandoffManifestV1) -> Option<String> {
+    manifest
+        .extensions
+        .get(EXT_PARENT_CORRELATION_ID)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
+/// Best-effort append parent id from a job folder.
+pub fn peek_parent_correlation_id(folder: &Path) -> Option<String> {
+    let raw = fs::read_to_string(manifest_path(folder)).ok()?;
+    let value: Value = serde_json::from_str(raw.trim()).ok()?;
+    value
+        .get("extensions")
+        .and_then(|ext| ext.get(EXT_PARENT_CORRELATION_ID))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
 }
 
 pub fn validate_integrity(
@@ -652,6 +709,44 @@ mod tests {
             }
             other => panic!("expected Ready, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn gate_rejects_append_without_parent_id() {
+        let dir = tempdir().unwrap();
+        let media = dir.path().join("Handcam_Foto");
+        fs::create_dir_all(&media).unwrap();
+        fs::write(media.join("a.jpg"), b"jpeg").unwrap();
+        let mut m = sample_manifest(vec![ManifestFileEntry {
+            path: "Handcam_Foto/a.jpg".into(),
+            size: 4,
+        }]);
+        m.extensions = json!({ "kind": "append" });
+        write_manifest(dir.path(), &m);
+        match evaluate_manifest_gate(dir.path(), false) {
+            GateDecision::Rejected { code, correlation_id, .. } => {
+                assert_eq!(code, CODE_APPEND_PARENT_MISSING);
+                assert_eq!(
+                    correlation_id.as_deref(),
+                    Some("11111111-2222-3333-4444-555555555555")
+                );
+            }
+            other => panic!("expected Rejected, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn append_extensions_parse() {
+        let mut m = sample_manifest(vec![]);
+        m.extensions = json!({
+            "kind": "append",
+            "parent_correlation_id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+        });
+        assert!(is_append_manifest(&m));
+        assert_eq!(
+            parent_correlation_id(&m).as_deref(),
+            Some("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+        );
     }
 
     #[test]

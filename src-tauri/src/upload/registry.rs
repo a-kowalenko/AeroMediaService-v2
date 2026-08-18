@@ -22,6 +22,17 @@ pub struct UploadJob {
     pub use_dropbox_client: bool,
     /// ATS handoff correlation id when a valid manifest was present (P1b outbox).
     pub correlation_id: Option<String>,
+    /// When set, worker appends into the parent order instead of creating a new one.
+    pub append: Option<AppendTarget>,
+}
+
+/// Existing successful upload that an ATS Nachreichung should merge into.
+#[derive(Debug, Clone)]
+pub struct AppendTarget {
+    pub parent_dir_name: String,
+    pub remote_path: String,
+    pub order_id: Option<String>,
+    pub share_link: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -261,6 +272,7 @@ mod tests {
             },
             use_dropbox_client: false,
             correlation_id: None,
+            append: None,
         }
     }
 

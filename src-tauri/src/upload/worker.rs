@@ -13,6 +13,10 @@ use crate::model::handoff::{write_job_outbox, OutboxError, OutboxState, CODE_CAN
 use crate::model::kunde::Kunde;
 use crate::model::marker::remove_upload_markers;
 use crate::storage::logging;
+use crate::upload::append::{
+    build_append_parent_history_update, APPEND_EVENT_CANCELLED, APPEND_EVENT_COMPLETED,
+    APPEND_EVENT_FAILED, APPEND_EVENT_UPLOADING,
+};
 use crate::upload::control::{UploadCancelled, UploadControl};
 use crate::upload::registry::{UploadJob, UploadQueueRegistry};
 use crate::util::archive::{self, ARCHIVE_CANCELLED, ARCHIVE_ERROR, ARCHIVE_SUCCESS};
@@ -102,6 +106,11 @@ pub async fn process_job(
 
     registry.mark_active(local_dir_path);
 
+    if let Some(append) = job.append.clone() {
+        process_append_job(job, &append, client, control, registry, archive_path).await;
+        return;
+    }
+
     if job.use_dropbox_client {
         logging::log_info(&format!(
             "Beginne Verarbeitung von: {dir_name} (DropboxClient — reiner Kontakt-Marker)"
@@ -141,6 +150,7 @@ pub async fn process_job(
                     &notify.sms_status,
                     notify.sms_id.as_deref(),
                     client.last_order_id().as_deref(),
+                    job.correlation_id.as_deref(),
                 ),
             );
             // Final outbox status before archive move (P1b); outbox file stays on share.
@@ -212,6 +222,179 @@ pub async fn process_job(
             {
                 emit_archive_history(&moved);
             }
+        }
+    }
+
+    registry.unregister(Some(local_dir_path));
+    events::emit_progress_file(0, 0, 0);
+    events::emit_progress_total(0, 0, 0);
+    logging::log_info("Warte auf nächsten Upload-Auftrag...");
+    events::emit_status("Warte auf nächsten Auftrag...");
+}
+
+async fn process_append_job(
+    job: &UploadJob,
+    append: &crate::upload::registry::AppendTarget,
+    client: &dyn CloudClient,
+    control: &UploadControl,
+    registry: &UploadQueueRegistry,
+    archive_path: &str,
+) {
+    let local_dir_path = job.dir_path.as_path();
+    let dir_name = local_dir_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("unbekannt");
+    let kunde = &job.kunde;
+    let parent = &append.parent_dir_name;
+
+    logging::log_info(&format!(
+        "Beginne Nachreichung '{dir_name}' → {parent} ({})",
+        append.remote_path
+    ));
+    write_job_outbox(
+        local_dir_path,
+        job.correlation_id.as_deref(),
+        OutboxState::Uploading,
+        None,
+        None,
+    );
+    events::emit_job_active(true);
+    events::emit_status(format!("Nachreichen: {parent}"));
+    events::emit(
+        events::UPLOAD_HISTORY_UPDATE,
+        build_append_parent_history_update(
+            append,
+            dir_name,
+            APPEND_EVENT_UPLOADING,
+            job.correlation_id.as_deref(),
+            Some(kunde),
+            None,
+            None,
+            None,
+            None,
+            None,
+        ),
+    );
+
+    client.set_append_order_id(append.order_id.clone());
+    let outcome = match upload_with_retries(
+        client,
+        local_dir_path,
+        &append.remote_path,
+        dir_name,
+        kunde,
+        control,
+    )
+    .await
+    {
+        Ok(()) => JobOutcome::Success {
+            remote_path: append.remote_path.clone(),
+            share_link: append.share_link.clone(),
+        },
+        Err(e) if e.is_cancelled() => JobOutcome::Cancelled,
+        Err(e) => JobOutcome::Failed(e.to_string()),
+    };
+    client.set_append_order_id(None);
+    events::emit_job_active(false);
+
+    match outcome {
+        JobOutcome::Success {
+            remote_path,
+            share_link,
+        } => {
+            logging::log_info(&format!(
+                "Nachreichung '{dir_name}' in {parent} abgeschlossen."
+            ));
+            crate::model::marker::remove_upload_markers(local_dir_path);
+            write_job_outbox(
+                local_dir_path,
+                job.correlation_id.as_deref(),
+                OutboxState::Completed,
+                None,
+                Some(ARCHIVE_SUCCESS),
+            );
+            let moved = archive::archive_directory(archive_path, local_dir_path, ARCHIVE_SUCCESS);
+            events::emit(
+                events::UPLOAD_HISTORY_UPDATE,
+                build_append_parent_history_update(
+                    append,
+                    dir_name,
+                    APPEND_EVENT_COMPLETED,
+                    job.correlation_id.as_deref(),
+                    Some(kunde),
+                    None,
+                    moved.as_ref().map(|m| m.archived_path.as_path()),
+                    None,
+                    share_link.as_deref(),
+                    client.last_order_id().as_deref(),
+                ),
+            );
+            events::emit_status(format!("Nachgereicht: {remote_path}"));
+            events::emit_finished(dir_name.to_string());
+        }
+        JobOutcome::Cancelled => {
+            logging::log_info(&format!("Nachreichung abgebrochen: {dir_name}"));
+            events::emit_status(format!("Abgebrochen: {dir_name}"));
+            write_job_outbox(
+                local_dir_path,
+                job.correlation_id.as_deref(),
+                OutboxState::Failed,
+                Some(OutboxError {
+                    code: CODE_CANCELLED.into(),
+                    message: "Nachreichung abgebrochen.".into(),
+                }),
+                Some(ARCHIVE_CANCELLED),
+            );
+            let moved = archive::archive_directory(archive_path, local_dir_path, ARCHIVE_CANCELLED);
+            events::emit(
+                events::UPLOAD_HISTORY_UPDATE,
+                build_append_parent_history_update(
+                    append,
+                    dir_name,
+                    APPEND_EVENT_CANCELLED,
+                    job.correlation_id.as_deref(),
+                    Some(kunde),
+                    None,
+                    moved.as_ref().map(|m| m.archived_path.as_path()),
+                    Some("Nachreichung abgebrochen."),
+                    None,
+                    None,
+                ),
+            );
+        }
+        JobOutcome::Failed(err) => {
+            logging::log_error(&format!(
+                "Nachreichung '{dir_name}' fehlgeschlagen: {err}"
+            ));
+            events::emit_status(format!("Fehler: {dir_name}"));
+            events::emit_failed(err.clone());
+            write_job_outbox(
+                local_dir_path,
+                job.correlation_id.as_deref(),
+                OutboxState::Failed,
+                Some(OutboxError {
+                    code: "upload_failed".into(),
+                    message: err.clone(),
+                }),
+                Some(ARCHIVE_ERROR),
+            );
+            let moved = archive::archive_directory(archive_path, local_dir_path, ARCHIVE_ERROR);
+            events::emit(
+                events::UPLOAD_HISTORY_UPDATE,
+                build_append_parent_history_update(
+                    append,
+                    dir_name,
+                    APPEND_EVENT_FAILED,
+                    job.correlation_id.as_deref(),
+                    Some(kunde),
+                    None,
+                    moved.as_ref().map(|m| m.archived_path.as_path()),
+                    Some(err.as_str()),
+                    None,
+                    None,
+                ),
+            );
         }
     }
 
@@ -379,6 +562,7 @@ fn success_history(
     sms_status: &str,
     sms_id: Option<&str>,
     order_id: Option<&str>,
+    correlation_id: Option<&str>,
 ) -> serde_json::Value {
     let mut history = serde_json::json!({
         "dir_name": dir_name,
@@ -395,6 +579,9 @@ fn success_history(
     }
     if let Some(order_id) = order_id.map(str::trim).filter(|s| !s.is_empty()) {
         history["order_id"] = serde_json::Value::String(order_id.to_string());
+    }
+    if let Some(cid) = correlation_id.map(str::trim).filter(|s| !s.is_empty()) {
+        history["correlation_id"] = serde_json::Value::String(cid.to_string());
     }
     history
 }
@@ -501,6 +688,7 @@ mod tests {
             kunde: sample_kunde(),
             use_dropbox_client: false,
             correlation_id: None,
+            append: None,
         }
     }
 
@@ -645,6 +833,7 @@ mod tests {
             "Gesendet",
             None,
             None,
+            None,
         );
         assert_eq!(without_id["email_status"], "Gesendet");
         assert_eq!(without_id["sms_status"], "Gesendet");
@@ -660,9 +849,11 @@ mod tests {
             "Gesendet",
             Some("12345"),
             Some("order_abc"),
+            Some("cid-1"),
         );
         assert_eq!(with_id["sms_id"], "12345");
         assert_eq!(with_id["email_status"], "Fehler: Versand fehlgeschlagen");
         assert_eq!(with_id["order_id"], "order_abc");
+        assert_eq!(with_id["correlation_id"], "cid-1");
     }
 }

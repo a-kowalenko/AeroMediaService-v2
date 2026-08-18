@@ -130,6 +130,37 @@ Lokal-Modus ohne Marker (`skip_marker_file`): kein AMS-Handoff.
 | `extensions` | freies Objekt — Forward-Compat ohne Schema-Bump |
 | Dateiname | `_ams_manifest.v1.json` — parallele Schema-Versionen möglich |
 
+### 6.1 Append / Nachreichen (Phase 15)
+
+Medien nachträglich in **dieselbe Cloud-Order / denselben Share-Link** legen, ohne neuen Kundenordner.
+
+ATS schreibt einen **neuen Staging-Ordner** auf `aktuell` (nicht in das AMS-Archiv):
+
+`{original}_nachreichung_01/`
+
+Manifest bleibt Schema v1; Append-Metadaten liegen in `extensions` (kein Schema-Bump):
+
+```json
+{
+  "extensions": {
+    "kind": "append",
+    "parent_correlation_id": "<uuid des Erst-Handoffs>"
+  }
+}
+```
+
+| Regel | Verhalten |
+|--------|-----------|
+| Ordnername | `{parent_folder_name}_nachreichung_{nn}` — eigener Claim, eigene `correlation_id` |
+| Parent | AMS löst `parent_correlation_id` in der Historie auf (`remote_path`, `order_id`) |
+| Parent-Status | nur `Erfolgreich` — sonst Gate `append_parent_not_ready`, kein Claim |
+| Upload | bestehende Append-Pipeline (Phase 14): gleicher `remote_path` / `existing_order_id` |
+| Link | unverändert; **keine** Kunden-Benachrichtigung |
+| Archiv | Append-Ordner nach Erfolg nach `erfolg` (wie ein Job) |
+| Bridge | Capability `append-v1`; `POST /v1/handoff/ready` unverändert (Wake) |
+
+Filesystem allein reicht: Bridge down → Monitor scannt den Append-Ordner.
+
 ---
 
 ## 7. AMS-Gate (einzige Kernänderung an L1)
@@ -159,6 +190,8 @@ Upload-Worker, Queue, Cloud, Notify: **unberührt**.
 | `size_mismatch` | Größe stimmt nicht |
 | `marker_invalid` | wie bisher |
 | `customer_lookup_failed` | wie bisher |
+| `append_parent_missing` | `kind=append` ohne `parent_correlation_id` |
+| `append_parent_not_ready` | Parent unbekannt oder nicht `Erfolgreich` |
 
 ---
 
@@ -200,7 +233,7 @@ Beispiel:
 | `POST` | `/v1/handoff/ready` | Monitor wake / Priorität — **kein** Upload-Bypass |
 
 Capabilities statt harter Versionskopplung, z. B.  
-`["manifest-v1","status-outbox","lookup","ready"]`.
+`["manifest-v1","status-outbox","lookup","ready","append-v1"]`.
 
 Breaking Changes → `/v2`; additive Felder in `/v1` erlaubt.
 
@@ -253,6 +286,7 @@ Windows-Config: UNC (`\\host\aktuell`), nicht nur `smb://`.
 | **P4** ✅ | Bridge mDNS Discovery only (`_ams-bridge._tcp.local.`) | beide |
 | **L4 UX** ✅ | ATS Historie: Status-Chips/Stepper, Last-Known in SQLite, Poll stoppt bei Terminal | ATS |
 | **P5+** | optional: SHA-256, strict extras, … | nach Bedarf |
+| **Phase 15** ✅ | Append/Nachreichen: `kind=append` + Parent-Gate + Worker-Route | AMS + ATS |
 
 **Eine Teilphase pro Agent-Session.** Upload-Worker nicht anfassen außer Status-Spiegel für Outbox, wo nötig.
 

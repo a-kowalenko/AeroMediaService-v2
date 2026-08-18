@@ -12,13 +12,15 @@ pub const CAPABILITY_MANIFEST_V1: &str = "manifest-v1";
 pub const CAPABILITY_STATUS_OUTBOX: &str = "status-outbox";
 pub const CAPABILITY_LOOKUP: &str = "lookup";
 pub const CAPABILITY_READY: &str = "ready";
+pub const CAPABILITY_APPEND_V1: &str = "append-v1";
 
-/// Capabilities advertised by AMS in P3 (includes job status + handoff/ready).
-pub const P3_CAPABILITIES: [&str; 4] = [
+/// Capabilities advertised by AMS (P3 + append).
+pub const P3_CAPABILITIES: [&str; 5] = [
     CAPABILITY_MANIFEST_V1,
     CAPABILITY_STATUS_OUTBOX,
     CAPABILITY_LOOKUP,
     CAPABILITY_READY,
+    CAPABILITY_APPEND_V1,
 ];
 
 pub type BridgeCapabilities = Vec<String>;
@@ -187,7 +189,7 @@ mod tests {
         assert!(h.online);
         assert_eq!(
             h.capabilities,
-            vec!["manifest-v1", "status-outbox", "lookup", "ready",]
+            vec!["manifest-v1", "status-outbox", "lookup", "ready", "append-v1",]
         );
         assert!(h.capabilities.iter().any(|c| c == "ready"));
     }

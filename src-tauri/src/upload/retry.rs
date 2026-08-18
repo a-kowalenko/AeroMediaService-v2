@@ -207,6 +207,7 @@ pub async fn retry_upload_from_history(
         kunde: kunde.clone(),
         use_dropbox_client,
         correlation_id: peek_correlation_id(&target_path),
+        append: None,
     };
     if !registry.enqueue(jobs, job, false) {
         return Err(format!(

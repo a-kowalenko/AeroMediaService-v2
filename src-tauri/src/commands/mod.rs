@@ -24,7 +24,8 @@ pub use monitor::{
     get_monitoring_status, get_stability_pending, start_monitoring, stop_monitoring,
 };
 pub use operator::{
-    append_history_media, channels_delivered, get_manual_status_warnings, get_sandbox_warnings,
+    append_history_files, append_history_media, channels_delivered, get_manual_status_warnings,
+    get_sandbox_warnings,
     lookup_share_link, resend_history_notifications, retry_upload, save_history_contact,
     set_manual_status, sync_sms_journal,
 };

@@ -68,9 +68,34 @@ function stabilityLabel(item: PendingView, now: number): string {
 
 function pendingItemLabel(item: PendingView, now: number): string {
   if (isHandoffItem(item)) {
-    return "Vom Studio gemeldet — Upload wird vorbereitet";
+    const phase = item.handoff_phase?.trim() ?? "";
+    switch (phase) {
+      case "waiting_folder":
+        return "Warte auf Ordner auf dem Share…";
+      case "waiting_fertig":
+        return "Ordner da — warte auf _fertig.txt…";
+      case "waiting_media":
+        return "Warte auf Medien-Dateien…";
+      case "rejected": {
+        const msg = item.handoff_error_message?.trim();
+        if (msg) return msg;
+        const code = item.handoff_error_code?.trim();
+        return code ? `Handoff abgelehnt (${code})` : "Handoff abgelehnt";
+      }
+      default:
+        return "Vom Studio gemeldet — Upload wird vorbereitet";
+    }
   }
   return stabilityLabel(item, now);
+}
+
+function handoffDetailLabel(item: PendingView): string {
+  const phase = item.handoff_phase?.trim() ?? "";
+  if (phase === "rejected") return "abgelehnt";
+  if (phase === "waiting_folder") return "Share";
+  if (phase === "waiting_fertig") return "Marker";
+  if (phase === "waiting_media") return "Dateien";
+  return "neu";
 }
 
 function stabilityProgress(item: PendingView, now: number): number {
@@ -252,9 +277,11 @@ export function UploadPanel({ className, compact = false }: Props) {
           <ul className="space-y-1.5">
             {pending.map((item) => {
               const handoff = isHandoffItem(item);
+              const handoffRejected =
+                handoff && item.handoff_phase?.trim() === "rejected";
               const left = remainingSeconds(item, now);
               const detail = handoff
-                ? "neu"
+                ? handoffDetailLabel(item)
                 : item.waiting_for_media
                   ? "Dateien"
                   : left <= 0
@@ -265,9 +292,11 @@ export function UploadPanel({ className, compact = false }: Props) {
                   key={`${item.kind ?? "stability"}-${item.dir_name}`}
                   className={cn(
                     "rounded-lg border px-2.5 py-2 text-sm",
-                    handoff
-                      ? "border-primary/25 bg-primary/5"
-                      : "border-warning/25 bg-warning/5",
+                    handoffRejected
+                      ? "border-destructive/30 bg-destructive/5"
+                      : handoff
+                        ? "border-primary/25 bg-primary/5"
+                        : "border-warning/25 bg-warning/5",
                   )}
                 >
                   <div className="flex items-center justify-between gap-2">
@@ -277,9 +306,11 @@ export function UploadPanel({ className, compact = false }: Props) {
                     <span
                       className={cn(
                         "inline-flex shrink-0 items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] font-medium",
-                        handoff
-                          ? "bg-primary/15 text-primary"
-                          : "bg-warning/15 text-warning",
+                        handoffRejected
+                          ? "bg-destructive/15 text-destructive"
+                          : handoff
+                            ? "bg-primary/15 text-primary"
+                            : "bg-warning/15 text-warning",
                       )}
                     >
                       {handoff ? (

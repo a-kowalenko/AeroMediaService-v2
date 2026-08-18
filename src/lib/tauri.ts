@@ -58,6 +58,9 @@ export type StabilityPendingItem = {
   waiting_for_media: boolean;
   kind?: string;
   correlation_id?: string;
+  handoff_phase?: string;
+  handoff_error_code?: string;
+  handoff_error_message?: string;
 };
 
 export function getStabilityPending(): Promise<StabilityPendingItem[]> {
@@ -146,6 +149,23 @@ export type HistoryEntry = {
   extra?: Record<string, unknown>;
 };
 
+export type HistoryAppendEvent = {
+  kind?: string;
+  source_dir_name?: string;
+  parent_dir_name?: string;
+  state?: string;
+  created_at?: string;
+  updated_at?: string;
+  completed_at?: string;
+  archived_path?: string;
+  error_msg?: string;
+  share_link?: string;
+  order_id?: string;
+  correlation_id?: string;
+  remote_path?: string;
+  marker_raw?: string;
+};
+
 export type HistoryPage = {
   items: HistoryEntry[];
   total: number;
@@ -190,6 +210,25 @@ export function retryUpload(id: string): Promise<string> {
 
 export function appendHistoryMedia(id: string, localDir: string): Promise<string> {
   return invoke<string>("append_history_media", { id, localDir });
+}
+
+export type AppendCategoryId =
+  | "handcam_video"
+  | "handcam_foto"
+  | "outside_video"
+  | "outside_foto";
+
+export type AppendFileItem = {
+  path: string;
+  category: AppendCategoryId;
+  preview: boolean;
+};
+
+export function appendHistoryFiles(
+  id: string,
+  items: AppendFileItem[],
+): Promise<string> {
+  return invoke<string>("append_history_files", { id, items });
 }
 
 export function getSandboxWarnings(): Promise<string[]> {

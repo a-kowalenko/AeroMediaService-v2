@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { open as openDirectoryDialog } from "@tauri-apps/plugin-dialog";
 import { openPath, openUrl } from "@tauri-apps/plugin-opener";
 import {
   Check,
@@ -16,6 +15,7 @@ import {
   Upload,
   X,
 } from "lucide-react";
+import { AppendMediaDialog } from "./AppendMediaDialog";
 import { ResendNotificationsDialog } from "./ResendNotificationsDialog";
 import { HistoryStatusChips, StatusChip } from "./StatusChip";
 import { VirtualList } from "./VirtualList";
@@ -31,14 +31,15 @@ import {
   extraNumber,
   extraString,
   formatHistoryDate,
+  historyAppendEvents,
   formatManualStatusSummary,
   formatResendHistorySummary,
   historyDisplayName,
   overallStatusTone,
 } from "@/lib/utils";
-import type { HistoryEntry } from "@/lib/tauri";
+import type { AppendFileItem, HistoryAppendEvent, HistoryEntry } from "@/lib/tauri";
 import {
-  appendHistoryMedia,
+  appendHistoryFiles,
   channelsDelivered,
   getManualStatusWarnings,
   getSandboxWarnings,
@@ -90,6 +91,19 @@ type ErrorDetail = {
   text: string;
   tone: "current" | "resolved" | "none";
 };
+
+function appendEventTimestamp(event: HistoryAppendEvent): string {
+  return (
+    event.completed_at?.trim() ||
+    event.updated_at?.trim() ||
+    event.created_at?.trim() ||
+    ""
+  );
+}
+
+function appendEventLabel(event: HistoryAppendEvent): string {
+  return event.state?.trim() || "Unbekannt";
+}
 
 function DetailIconButton({
   disabled,
@@ -159,6 +173,7 @@ export function HistoryTable() {
   const [statusMenuOpen, setStatusMenuOpen] = useState(false);
   const [moreOpen, setMoreOpen] = useState(false);
   const [resendOpen, setResendOpen] = useState(false);
+  const [appendOpen, setAppendOpen] = useState(false);
   const [sandboxWarnings, setSandboxWarnings] = useState<string[]>([]);
   const listHostRef = useRef<HTMLDivElement>(null);
   const statusMenuRef = useRef<HTMLDivElement>(null);
@@ -234,6 +249,10 @@ export function HistoryTable() {
   const selected = useMemo(
     () => items.find((item) => item.id === selectedId) ?? null,
     [items, selectedId],
+  );
+  const selectedAppendEvents = useMemo(
+    () => (selected ? historyAppendEvents(selected) : []),
+    [selected],
   );
 
   useEffect(() => {
@@ -357,7 +376,7 @@ export function HistoryTable() {
     }
   }
 
-  async function onAppend() {
+  function onAppend() {
     if (!selected) return;
     if (!canAppendMedia(selected.status)) {
       showError(
@@ -370,27 +389,20 @@ export function HistoryTable() {
       showError("Keine Cloud-Verbindung. Bitte zuerst verbinden.", "Dateien nachladen");
       return;
     }
-    const remote = selected.remote_path.trim() || `/${selected.dir_name}`;
-    const ok = await confirm(
-      `Vergessene Dateien in denselben Cloud-Ordner laden?\n\nZiel: ${remote}\nDer bestehende Download-Link bleibt. Es wird keine neue Kunden-Nachricht gesendet.\n\nBitte einen Ordner mit denselben Kategorie-Unterordnern wählen (z. B. Outside_Foto).`,
-      {
-        title: "Dateien nachladen",
-        primaryLabel: "Ordner wählen…",
-      },
-    );
-    if (!ok) return;
-    const localDir = await openDirectoryDialog({
-      directory: true,
-      title: "Medienordner zum Nachladen",
-    });
-    if (!localDir || Array.isArray(localDir)) return;
+    setAppendOpen(true);
+  }
+
+  async function onAppendSubmit(items: AppendFileItem[]) {
+    if (!selected) return;
     setActionBusy(true);
     try {
-      const message = await appendHistoryMedia(selected.id, localDir);
+      const message = await appendHistoryFiles(selected.id, items);
       showAppToast(message, { tone: "success", title: "Nachgeladen" });
+      setAppendOpen(false);
       await load({ maintainPage: true });
     } catch (err) {
       showError(String(err), "Dateien nachladen");
+      throw err;
     } finally {
       setActionBusy(false);
     }
@@ -699,8 +711,69 @@ export function HistoryTable() {
     return parts;
   }
 
+  function renderAppendTimeline(events: HistoryAppendEvent[]) {
+    if (!events.length) return null;
+    return (
+      <div className="mt-2 min-w-0 max-w-full overflow-hidden rounded-xl border border-border/70 bg-card/50 p-3">
+        <div className="mb-2 flex min-w-0 items-center justify-between gap-2">
+          <h4 className="m-0 shrink-0 text-xs font-semibold tracking-wide text-foreground uppercase">
+            Nachreichungen
+          </h4>
+          <span className="shrink-0 text-[11px] text-muted">{events.length} Verlaufseintrag(e)</span>
+        </div>
+        <div className="grid min-w-0 gap-2">
+          {events.map((event, index) => {
+            const stamp = appendEventTimestamp(event);
+            const archivedPath = event.archived_path?.trim() ?? "";
+            const errorText = event.error_msg?.trim() ?? "";
+            return (
+              <div
+                key={`${event.correlation_id ?? event.source_dir_name ?? "append"}-${index}`}
+                className="min-w-0 overflow-hidden rounded-lg border border-border/60 bg-background/60 px-3 py-2"
+              >
+                <div className="flex min-w-0 items-start justify-between gap-2">
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-sm font-medium text-foreground">
+                      {event.source_dir_name?.trim() || "Nachreichung"}
+                    </p>
+                    <p className="text-[11px] text-muted">
+                      {stamp ? formatHistoryDate(stamp) : "Zeitpunkt unbekannt"}
+                    </p>
+                  </div>
+                  <StatusChip status={appendEventLabel(event)} compact className="shrink-0" />
+                </div>
+                <div className="mt-2 grid min-w-0 gap-1 text-xs text-muted">
+                  {event.remote_path?.trim() ? (
+                    <p className="break-all">Cloud-Ziel: {event.remote_path}</p>
+                  ) : null}
+                  {errorText ? (
+                    <p className="break-all text-destructive">Fehler: {errorText}</p>
+                  ) : null}
+                  {archivedPath ? (
+                    <div className="flex min-w-0 items-center gap-2">
+                      <span className="min-w-0 flex-1 truncate" title={archivedPath}>
+                        Archiv: {archivedPath}
+                      </span>
+                      <DetailIconButton
+                        disabled={actionBusy}
+                        title="Archivordner öffnen"
+                        onClick={() => void openPath(archivedPath).catch((err) => showError(String(err), "Archiv"))}
+                      >
+                        <FolderOpen className="h-3.5 w-3.5" />
+                      </DetailIconButton>
+                    </div>
+                  ) : null}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    );
+  }
+
   return (
-    <section className="flex h-full min-h-0 flex-col">
+    <section className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden">
       <div className="flex flex-wrap items-center gap-2 border-b border-border/70 bg-card-elevated/40 px-4 py-3">
         <div className="min-w-0 flex-1 basis-full sm:basis-auto">
           <h2 className="text-sm font-semibold tracking-tight text-foreground">
@@ -854,8 +927,8 @@ export function HistoryTable() {
         </p>
       ) : null}
 
-      <div className="flex min-h-0 flex-1">
-        <div className="flex min-h-0 w-full min-w-0 flex-col lg:w-[min(52%,28rem)] lg:border-r lg:border-border">
+      <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden">
+        <div className="flex min-h-0 w-full min-w-0 flex-col lg:w-[min(52%,28rem)] lg:shrink-0 lg:border-r lg:border-border">
           <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
             <div
               className="shrink-0 grid grid-cols-[7.5rem_1fr_auto] gap-2 px-3 py-2.5 text-xs font-semibold tracking-wide text-muted uppercase"
@@ -956,16 +1029,17 @@ export function HistoryTable() {
           </div>
         </div>
 
-        <aside className="hidden min-h-0 min-w-0 flex-1 overflow-y-auto p-4 lg:block">
+        <aside className="hidden min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto p-4 lg:block">
           {selected ? (
-            <div className="grid gap-2 rounded-xl border border-border bg-card/70 p-4 text-sm shadow-sm backdrop-blur-sm">
-              <div className="mb-1 flex flex-wrap items-start justify-between gap-2">
-                <h3 className="m-0 text-sm font-semibold tracking-tight text-foreground">
+            <div className="grid min-w-0 max-w-full gap-2 rounded-xl border border-border bg-card/70 p-4 text-sm shadow-sm backdrop-blur-sm">
+              <div className="mb-1 flex min-w-0 flex-wrap items-start justify-between gap-2">
+                <h3 className="m-0 shrink-0 text-sm font-semibold tracking-tight text-foreground">
                   Details
                 </h3>
-                <HistoryStatusChips entry={selected} />
+                <HistoryStatusChips entry={selected} className="min-w-0 max-w-full" />
               </div>
               {renderDetailRows(DETAIL_ROWS)}
+              {renderAppendTimeline(selectedAppendEvents)}
             </div>
           ) : (
             <div className="flex h-full min-h-[12rem] items-center justify-center rounded-xl border border-dashed border-border/80 bg-card/40 px-6 text-center text-sm text-muted">
@@ -976,15 +1050,26 @@ export function HistoryTable() {
       </div>
 
       {selected ? (
-        <div className="border-t border-border p-4 lg:hidden">
+        <div className="min-w-0 overflow-x-hidden border-t border-border p-4 lg:hidden">
           <h3 className="mb-2 text-sm font-semibold tracking-tight text-foreground">
             Details
           </h3>
-          <HistoryStatusChips entry={selected} className="mb-3" />
-          <div className="grid gap-2 text-sm">
+          <HistoryStatusChips entry={selected} className="mb-3 min-w-0 max-w-full" />
+          <div className="grid min-w-0 gap-2 text-sm">
             {renderDetailRows(DETAIL_ROWS)}
           </div>
+          {renderAppendTimeline(selectedAppendEvents)}
         </div>
+      ) : null}
+
+      {appendOpen && selected ? (
+        <AppendMediaDialog
+          open={appendOpen}
+          entry={selected}
+          busy={actionBusy}
+          onOpenChange={setAppendOpen}
+          onSubmit={onAppendSubmit}
+        />
       ) : null}
 
       {resendOpen && selected ? (

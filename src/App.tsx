@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { Play, Square } from "lucide-react";
 import { AppChrome } from "@/components/chrome";
@@ -92,6 +92,14 @@ function App() {
   const openCustomerCount = useCustomerStore((s) => s.openCount);
   const refreshCustomerCounts = useCustomerStore((s) => s.refreshCounts);
   const connected = isCloudConnected(connectionStatus);
+
+  const syncMonitoringState = useCallback(async () => {
+    try {
+      setMonitoring(await getMonitoringStatus());
+    } catch {
+      // ignore
+    }
+  }, [setMonitoring]);
 
   const installBlockedReason = (() => {
     if (updateInstalling) return "Installation läuft bereits…";
@@ -292,6 +300,17 @@ function App() {
     const timer = window.setTimeout(() => {
       void (async () => {
         try {
+          const monitorPath = (await getSetting("monitor_path", "")).trim();
+          if (monitorPath && !cancelled) {
+            try {
+              await startMonitoring();
+              await syncMonitoringState();
+              if (!cancelled) setStatusLabel("Monitoring aktiv.");
+            } catch (err) {
+              showError(String(err), "Monitoring");
+            }
+          }
+
           const selected = (
             await getSetting("selected_cloud_service", "dropbox")
           )
@@ -318,11 +337,6 @@ function App() {
             if (cancelled) return;
             if (result.success) {
               setConnectionStatus(result.status || "Verbunden");
-              try {
-                await startMonitoring();
-              } catch (err) {
-                showError(String(err), "Monitoring");
-              }
               setStatusLabel(result.message || "Bereit.");
               showAppToast(result.message || "Verbunden.", {
                 tone: "success",
@@ -342,6 +356,7 @@ function App() {
           }
         } finally {
           if (!cancelled) {
+            await syncMonitoringState();
             setStartupOverlay(false);
             void runUpdateCheck(false);
           }
@@ -352,12 +367,13 @@ function App() {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [setConnectionStatus, setupWizardOpen, showError]);
+  }, [setConnectionStatus, setupWizardOpen, showError, syncMonitoringState]);
 
   async function onStart() {
     setMonitorBusy(true);
     try {
       await startMonitoring();
+      await syncMonitoringState();
       setStatusLabel("Monitoring aktiv.");
       showAppToast("Monitoring gestartet.", { tone: "success" });
     } catch (err) {
@@ -371,6 +387,7 @@ function App() {
     setMonitorBusy(true);
     try {
       await stopMonitoring();
+      setMonitoring(false);
       setStatusLabel("Monitoring gestoppt.");
       showAppToast("Monitoring gestoppt.", { tone: "info" });
     } catch (err) {

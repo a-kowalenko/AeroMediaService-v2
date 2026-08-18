@@ -21,7 +21,11 @@ export function ConnectionStatusIndicator({ className }: Props) {
     label = "Upload läuft";
     tone = "text-primary";
     Icon = Cloud;
-  } else if (connected && monitoring) {
+  } else if (monitoring && connected) {
+    label = "Monitoring";
+    tone = "text-success";
+    Icon = Radar;
+  } else if (monitoring) {
     label = "Monitoring";
     tone = "text-success";
     Icon = Radar;

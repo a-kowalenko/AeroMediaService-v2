@@ -46,10 +46,23 @@ pub struct StabilityPendingItem {
     pub kind: String,
     #[serde(default)]
     pub correlation_id: String,
+    /// Handoff detail: `signaled`, `waiting_folder`, `waiting_fertig`, `waiting_media`, `rejected`.
+    #[serde(default)]
+    pub handoff_phase: String,
+    #[serde(default)]
+    pub handoff_error_code: String,
+    #[serde(default)]
+    pub handoff_error_message: String,
 }
 
 pub const PENDING_KIND_STABILITY: &str = "stability";
 pub const PENDING_KIND_HANDOFF: &str = "handoff";
+
+pub const HANDOFF_PHASE_SIGNALED: &str = "signaled";
+pub const HANDOFF_PHASE_WAITING_FOLDER: &str = "waiting_folder";
+pub const HANDOFF_PHASE_WAITING_FERTIG: &str = "waiting_fertig";
+pub const HANDOFF_PHASE_WAITING_MEDIA: &str = "waiting_media";
+pub const HANDOFF_PHASE_REJECTED: &str = "rejected";
 
 /// Case-normalized absolute path key (legacy `os.path.normcase(os.path.abspath(...))`).
 pub fn folder_key(dir_path: &Path) -> String {
@@ -274,6 +287,9 @@ impl FolderStabilityTracker {
                     waiting_for_media: state.waiting_for_media,
                     kind: PENDING_KIND_STABILITY.to_string(),
                     correlation_id: String::new(),
+                    handoff_phase: String::new(),
+                    handoff_error_code: String::new(),
+                    handoff_error_message: String::new(),
                 }
             })
             .collect();

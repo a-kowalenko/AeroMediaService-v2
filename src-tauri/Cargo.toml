@@ -43,6 +43,7 @@ tauri-plugin-dialog = "2"
 axum = { version = "0.8", default-features = false, features = ["macros", "json", "tokio", "http1"] }
 mdns-sd = "0.15"
 hostname = "0.4"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 
 [target."cfg(any(target_os = \"macos\", windows, target_os = \"linux\"))".dependencies]
 tauri-plugin-updater = "2"

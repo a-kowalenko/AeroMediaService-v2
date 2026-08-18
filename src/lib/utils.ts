@@ -1,5 +1,6 @@
 import { type ClassValue, clsx } from "clsx";
 import { twMerge } from "tailwind-merge";
+import type { HistoryAppendEvent } from "./tauri";
 
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
@@ -181,6 +182,14 @@ export function extraBool(entry: { extra?: Record<string, unknown> }, key: strin
     return lower === "1" || lower === "true" || lower === "yes";
   }
   return false;
+}
+
+export function historyAppendEvents(entry: {
+  extra?: Record<string, unknown>;
+}): HistoryAppendEvent[] {
+  const raw = entry.extra?.append_events;
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((item): item is HistoryAppendEvent => Boolean(item && typeof item === "object"));
 }
 
 export function formatResendHistorySummary(entry: { extra?: Record<string, unknown> }): string {

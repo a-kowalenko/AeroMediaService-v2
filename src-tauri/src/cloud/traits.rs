@@ -69,6 +69,11 @@ pub trait CloudClient: Send + Sync {
         let _ = self;
         None
     }
+
+    /// Bind a subsequent `upload_directory` to an existing Custom-API order (append).
+    fn set_append_order_id(&self, id: Option<String>) {
+        let _ = (self, id);
+    }
 }
 
 #[cfg(test)]

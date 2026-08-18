@@ -219,6 +219,10 @@ impl CloudClient for CustomApiClient {
     fn last_order_id(&self) -> Option<String> {
         CustomApiClient::last_order_id(self)
     }
+
+    fn set_append_order_id(&self, id: Option<String>) {
+        CustomApiClient::set_append_order_id(self, id);
+    }
 }
 
 pub fn api_origin(base_url: &str) -> String {
