@@ -80,7 +80,7 @@ const DETAIL_ROWS: Array<[string, (item: HistoryEntry) => string]> = [
     },
   ],
   [
-    "Nachgeladen",
+    "Nachgereicht",
     (i) => {
       const n = extraNumber(i, "append_count");
       if (!n) return "—";
@@ -308,13 +308,13 @@ export function HistoryTable() {
 
   const appendTitle = (() => {
     if (actionBusy) return "Bitte warten…";
-    if (!selected) return "Eintrag auswählen, um Dateien nachzuladen";
+    if (!selected) return "Eintrag auswählen, um Dateien nachzureichen";
     if (!canAppendMedia(selected.status)) {
       return `Nicht verfügbar bei Status „${selected.status || "—"}“ (nur erfolgreiche Uploads)`;
     }
     if (!connected) return "Keine Cloud-Verbindung — bitte zuerst verbinden";
     const remote = selected.remote_path.trim() || `/${selected.dir_name}`;
-    return `Vergessene Dateien in ${remote} nachladen (bestehender Link bleibt)`;
+    return `Vergessene Dateien in ${remote} nachreichen (bestehender Link bleibt)`;
   })();
 
   const statusMenuTitle = (() => {
@@ -399,13 +399,13 @@ export function HistoryTable() {
     if (!selected) return;
     if (!canAppendMedia(selected.status)) {
       showError(
-        `Status „${selected.status}“ unterstützt kein Nachladen.`,
-        "Dateien nachladen",
+        `Status „${selected.status}“ unterstützt kein Nachreichen.`,
+        "Nachreichen",
       );
       return;
     }
     if (!connected) {
-      showError("Keine Cloud-Verbindung. Bitte zuerst verbinden.", "Dateien nachladen");
+      showError("Keine Cloud-Verbindung. Bitte zuerst verbinden.", "Nachreichen");
       return;
     }
     setAppendOpen(true);
@@ -416,11 +416,11 @@ export function HistoryTable() {
     setActionBusy(true);
     try {
       const message = await appendHistoryFiles(selected.id, items);
-      showAppToast(message, { tone: "success", title: "Nachgeladen" });
+      showAppToast(message, { tone: "success", title: "Nachgereicht" });
       setAppendOpen(false);
       await load({ maintainPage: true });
     } catch (err) {
-      showError(String(err), "Dateien nachladen");
+      showError(String(err), "Nachreichen");
       throw err;
     } finally {
       setActionBusy(false);
@@ -863,7 +863,7 @@ export function HistoryTable() {
             onClick={() => void onAppend()}
           >
             <Upload className="h-3.5 w-3.5" />
-            Nachladen…
+            Nachreichen…
           </Button>
           <div className="relative" ref={statusMenuRef}>
             <Button

@@ -93,7 +93,7 @@ const PHOTO_EXTS = ["jpg", "jpeg", "png", "bmp", "tiff", "tif", "webp", "heic", 
 
 const STATUS_HINT: Record<CatStatus, { text: string; className: string }> = {
   paid: {
-    text: "Bezahlt — Dateien werden als Original nachgeladen.",
+    text: "Bezahlt — Dateien werden als Original nachgereicht.",
     className:
       "border-emerald-500/30 bg-emerald-500/10 text-emerald-950 dark:text-emerald-100",
   },
@@ -440,7 +440,7 @@ export function AppendMediaDialog({
           </button>
           <div className="min-w-0 text-center">
             <DialogTitle className="truncate text-[15px] font-semibold tracking-tight">
-              Nachladen
+              Nachreichen
             </DialogTitle>
             <DialogDescription className="truncate text-[11px] leading-tight">
               {customer}
@@ -457,7 +457,7 @@ export function AppendMediaDialog({
                 : "cursor-not-allowed text-muted/40",
             )}
           >
-            {busy ? "Lade nach…" : "Senden"}
+            {busy ? "Wird nachgereicht…" : "Senden"}
           </button>
         </header>
 
@@ -467,7 +467,7 @@ export function AppendMediaDialog({
               <h3 className="px-1 pb-1.5 text-[11px] font-semibold tracking-[0.08em] text-muted uppercase">
                 Produkt
               </h3>
-              <div className="space-y-3" role="radiogroup" aria-label="Produkt für Nachladen">
+              <div className="space-y-3" role="radiogroup" aria-label="Produkt für Nachreichen">
                 {CAT_GROUPS.map((group) => (
                   <div key={group.id}>
                     <p className="px-1 pb-1 text-[11px] font-semibold tracking-[0.08em] text-muted uppercase">

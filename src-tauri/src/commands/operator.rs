@@ -85,7 +85,7 @@ pub async fn append_history_media(
         .and_then(|v| v.as_str())
         .unwrap_or("");
     Ok(format!(
-        "{count}× nachgeladen nach {remote}. Der bestehende Download-Link bleibt gültig."
+        "{count}× nachgereicht nach {remote}. Der bestehende Download-Link bleibt gültig."
     ))
 }
 
@@ -119,7 +119,7 @@ pub async fn append_history_files(
         .and_then(|v| v.as_str())
         .unwrap_or("");
     Ok(format!(
-        "{count}× nachgeladen nach {remote} ({} Datei(en)). Der bestehende Download-Link bleibt gültig.",
+        "{count}× nachgereicht nach {remote} ({} Datei(en)). Der bestehende Download-Link bleibt gültig.",
         items.len()
     ))
 }

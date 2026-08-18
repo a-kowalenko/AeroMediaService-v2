@@ -92,7 +92,7 @@ Vollständiges Mapping: `@docs/MIGRATION.md`
 - ✅ Phase 13 / P3: Bridge job status + handoff/ready (Monitor wake; Datei-Handoff bleibt Fallback)
 - ✅ Phase 13 / P4: Bridge mDNS Discovery (`_ams-bridge._tcp.local.`; Token manuell)
 - ✅ Phase 13 / L4 UX (ATS): Historie AMS-Status-Chips + Stepper, Last-Known-Persistenz, Poll-Härtung
-- ✅ Phase 14: Medien nachladen in bestehenden Dropbox-/Cloud-Ordner (gleiche Order, gleicher Link)
+- ✅ Phase 14: Medien nachreichen in bestehenden Dropbox-/Cloud-Ordner (gleiche Order, gleicher Link)
 - ✅ Phase 15: ATS-Nachreichen (`kind=append`, gleicher Link, keine Notify)
 
 **Nächster Schritt:** Phase 13 / **P5+** — optional (SHA-256, strict extras, …). Spec: `@docs/HANDOFF.md`

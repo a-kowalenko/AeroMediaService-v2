@@ -67,7 +67,7 @@
 | Polish (Wizard, Titlebar, History-Virtualisierung, Legacy-Migration) | ✅ Phase 11 |
 | Kundenaufnahme & Marker-Zuweisung | ✅ Phase 12 |
 | ATS↔AMS Handoff (Docs P0) | 🔄 Phase 13 — Spec: [`HANDOFF.md`](./HANDOFF.md) · P0 ✅ · P1 ✅ · P1b ✅ · P2 ✅ · P3 ✅ · P4 ✅ · L4 UX ✅ · P5+ offen |
-| Medien nachladen (bestehende Order) | ✅ Phase 14 |
+| Medien nachreichen (bestehende Order) | ✅ Phase 14 |
 | ATS-Nachreichen (Append-Handoff) | ✅ Phase 15 |
 
 **Nächste Phase:** 13 P5+ (optional) — Spec: [`HANDOFF.md`](./HANDOFF.md)
@@ -683,12 +683,12 @@ Setup: `setup_completed`, Theme: `ui_theme` (`dark` \| `light`).
 
 ---
 
-### Phase 14 — Medien nachladen (bestehende Order / Dropbox-Ordner)
+### Phase 14 — Medien nachreichen (bestehende Order / Dropbox-Ordner)
 
 **Status:** ✅ Erledigt  
 **Ziel:** Vergessene Dateien in denselben Dropbox-Ordner und dieselbe Cloud-Order legen, ohne neuen Monitor-Ordner oder neuen Kunden-Link.
 
-- [x] Historie-Aktion „Nachladen…“ (Status Erfolgreich)
+- [x] Historie-Aktion „Nachreichen…“ (Status Erfolgreich)
 - [x] Dialog: Option (HV/HF/OV/OF + Preview) zuerst, dann Dateien wählen
 - [x] Upload in gespeicherten `remote_path`; bestehender Share-Link; keine Kunden-Benachrichtigung
 - [x] Custom API: `existing_order_id` + Root-Pfad aus `remote_path`
@@ -746,5 +746,5 @@ Updater-Endpoint und Signing: siehe [`docs/RELEASE.md`](./RELEASE.md) (analog Ae
 | 11 | Polish | ✅ |
 | 12 | Kundenaufnahme & Marker-Zuweisung | ✅ |
 | 13 | ATS↔AMS Handoff | 🔄 P0 ✅ · P1 ✅ · P1b ✅ · P2 ✅ · P3 ✅ · P4 ✅ · L4 UX ✅ · P5+ offen |
-| 14 | Medien nachladen | ✅ |
+| 14 | Medien nachreichen | ✅ |
 | 15 | ATS-Nachreichen (Append) | ✅ |

@@ -352,7 +352,7 @@ fn collect_media_files(
 
 pub fn stage_append_files(items: &[AppendFileItem], kunde: &Kunde) -> Result<PathBuf, String> {
     if items.is_empty() {
-        return Err("Bitte mindestens eine Datei zum Nachladen wählen.".into());
+        return Err("Bitte mindestens eine Datei zum Nachreichen wählen.".into());
     }
     let parsed: Vec<(AppendCategory, bool, PathBuf)> = items
         .iter()
@@ -712,7 +712,7 @@ pub async fn append_media_from_history(
     let status = json_str(history_entry, "status").trim();
     if !can_append_media(status) {
         return Err(format!(
-            "Status „{status}“ unterstützt kein Nachladen (nur Erfolgreich)."
+            "Status „{status}“ unterstützt kein Nachreichen (nur Erfolgreich)."
         ));
     }
 
@@ -744,16 +744,16 @@ pub async fn append_media_from_history(
 
     if use_custom && !is_direct_dropbox_upload_mode(&runtime_setting("custom_api_upload_mode")) {
         return Err(
-            "Nachladen über die Custom API ist nur im Modus „Dropbox + Manifest“ möglich."
+            "Nachreichen über die Custom API ist nur im Modus „Dropbox + Manifest“ möglich."
                 .into(),
         );
     }
 
     logging::log_info(&format!(
-        "Nachladen in {remote_path} aus {} (dir_name={dir_name})",
+        "Nachreichen in {remote_path} aus {} (dir_name={dir_name})",
         local_dir.display()
     ));
-    events::emit_status(format!("Lade Dateien nach: {remote_path}"));
+    events::emit_status(format!("Nachreichen: {remote_path}"));
 
     control.reset_for_new_job();
 
@@ -772,7 +772,7 @@ pub async fn append_media_from_history(
     };
 
     if !ok {
-        return Err("Nachladen fehlgeschlagen (siehe Log).".into());
+        return Err("Nachreichen fehlgeschlagen (siehe Log).".into());
     }
 
     let now = Local::now().format("%Y-%m-%dT%H:%M:%S").to_string();
@@ -798,7 +798,7 @@ pub async fn append_media_from_history(
     }
 
     events::emit(events::UPLOAD_HISTORY_UPDATE, &updates);
-    events::emit_status(format!("Nachgeladen: {remote_path}"));
+    events::emit_status(format!("Nachgereicht: {remote_path}"));
     Ok(updates)
 }
 
