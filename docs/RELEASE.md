@@ -21,14 +21,34 @@ Private Key: lokal `src-tauri/keys/updater.key` (gitignored) — Inhalt als GitH
 | `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | optional (leer, wenn Key ohne Passwort) |
 | Apple / Windows Authenticode | nein (optional) |
 
-## Neuen Release erstellen
+## Neuen Release erstellen (empfohlen)
 
-1. Version in `src-tauri/tauri.conf.json` + `src-tauri/Cargo.toml` (+ `package.json`) setzen
-2. Tag `vX.Y.Z` pushen (oder Workflow **release** manuell mit Tag starten)
-3. Actions → Workflow **release** (Win + zwei Mac-Jobs + Ubuntu AppImage)
-4. Öffentliches Repo → Release prüfen, danach manuell **Set as the latest release**
+Voraussetzung: **sauberer** Working Tree auf `master`/`main`, synchron mit `origin`.
+
+### IDE (Play)
+
+Run Configuration **Release** (`.run/Release.run.xml`) -> Play.  
+Im Terminal: `patch` / `minor` / `major` wählen, mit `y` bestätigen.
+
+Das Skript setzt die Version in `package.json`, `package-lock.json`, `src-tauri/Cargo.toml`, `src-tauri/Cargo.lock` und `src-tauri/tauri.conf.json`, committed `release: x.y.z`, taggt `vx.y.z` und pusht Branch + Tag.
+
+### Terminal
+
+```powershell
+npm run release
+```
+
+Danach: Actions -> Workflow **release** (Win + zwei Mac-Jobs + Ubuntu AppImage); öffentliches Repo -> Releases prüfen.
 
 Neue Releases bekommen **kein** „Latest“-Label. Erst nach manueller Promotion greifen Installer-Links und Auto-Update (`/releases/latest/`).
+
+### Lokaler Windows-Build ohne Release
+
+```powershell
+npm run build:win
+```
+
+Das baut lokal nur das Windows-NSIS-Setup. Ohne `TAURI_SIGNING_PRIVATE_KEY` werden die Updater-Artefakte automatisch über `src-tauri/tauri.conf.ci.json` deaktiviert.
 
 ## Plattform-Artefakte
 
@@ -44,6 +64,7 @@ Neue Releases bekommen **kein** „Latest“-Label. Erst nach manueller Promotio
 - macOS ohne Apple Developer Account: nicht notarisiert (Gatekeeper-Warnung möglich).
 - Windows ohne Authenticode: ggf. SmartScreen-Warnung.
 - Auto-Update nutzt die Tauri-Updater-Signatur (Pubkey), unabhängig von OS-Code-Signing.
+- PR-CI bleibt bewusst leichtgewichtig; volle Bundle-Builds laufen nur in `release.yml`.
 - App-Datenpfade bleiben stabil: `%LOCALAPPDATA%\AeroMediaService\` / `~/Library/Application Support/AeroMediaService/` / `~/.local/share/AeroMediaService/`
 - Keyring-Service: `AeroMediaService-v2`
 
