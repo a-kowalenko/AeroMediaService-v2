@@ -11,7 +11,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::Serialize;
-use serde_json::json;
+use serde_json::{json, Value};
 use tokio::sync::oneshot;
 
 use super::types::{
@@ -176,6 +176,7 @@ async fn health(State(state): State<AppState>, headers: HeaderMap) -> Json<Healt
         StatusCode::OK,
         None,
         None,
+        None,
     );
     response
 }
@@ -188,9 +189,10 @@ async fn customer_lookup(
     let mode = match body.lookup_mode() {
         Ok(m) => m,
         Err(msg) => {
+            let failure = LookupResponse::failure("invalid_mode", msg);
             let response = (
                 StatusCode::BAD_REQUEST,
-                Json(LookupResponse::failure("invalid_mode", msg)),
+                Json(failure.clone()),
             );
             record_bridge_event(
                 &state.presence,
@@ -201,6 +203,7 @@ async fn customer_lookup(
                 StatusCode::BAD_REQUEST,
                 None,
                 None,
+                Some(lookup_event_payload(&body, StatusCode::BAD_REQUEST, &failure)),
             );
             return response;
         }
@@ -210,13 +213,11 @@ async fn customer_lookup(
     let booking_id = body.booking_id.trim().to_string();
     let marker_type = body.marker_type.trim().to_string();
     if customer_id.is_empty() || booking_id.is_empty() || marker_type.is_empty() {
-        let response = (
-            StatusCode::BAD_REQUEST,
-            Json(LookupResponse::failure(
-                "invalid_request",
-                "customer_id, booking_id und type sind Pflicht.",
-            )),
+        let failure = LookupResponse::failure(
+            "invalid_request",
+            "customer_id, booking_id und type sind Pflicht.",
         );
+        let response = (StatusCode::BAD_REQUEST, Json(failure.clone()));
         record_bridge_event(
             &state.presence,
             &headers,
@@ -226,6 +227,7 @@ async fn customer_lookup(
             StatusCode::BAD_REQUEST,
             None,
             None,
+            Some(lookup_event_payload(&body, StatusCode::BAD_REQUEST, &failure)),
         );
         return response;
     }
@@ -252,8 +254,46 @@ async fn customer_lookup(
         response.0,
         None,
         None,
+        Some(lookup_event_payload(&body, response.0, &response.1.0)),
     );
     response
+}
+
+fn lookup_event_payload(
+    body: &LookupRequest,
+    status: StatusCode,
+    response: &LookupResponse,
+) -> Value {
+    json!({
+        "request": {
+            "customer_id": body.customer_id.trim(),
+            "booking_id": body.booking_id.trim(),
+            "type": body.marker_type.trim(),
+            "mode": body.mode.trim(),
+        },
+        "response": {
+            "http_status": status.as_u16(),
+            "ok": response.ok,
+            "error": response.error,
+            "customer": response.customer.as_ref().map(compact_kunde_payload),
+        }
+    })
+}
+
+fn compact_kunde_payload(kunde: &crate::model::kunde::Kunde) -> Value {
+    json!({
+        "customer_number": kunde.customer_number,
+        "booking_number": kunde.booking_number,
+        "first_name": kunde.first_name,
+        "last_name": kunde.last_name,
+        "email": kunde.email,
+        "phone": kunde.phone,
+        "type": kunde.customer_type,
+        "handcam_foto": kunde.handcam_foto,
+        "handcam_video": kunde.handcam_video,
+        "outside_foto": kunde.outside_foto,
+        "outside_video": kunde.outside_video,
+    })
 }
 
 /// Mirror status outbox under `monitor_path/.ams-handoff/<correlation_id>.json`.
@@ -275,6 +315,7 @@ async fn job_status(
             "/v1/jobs/{correlation_id}",
             "GET",
             StatusCode::BAD_REQUEST,
+            None,
             None,
             None,
         );
@@ -307,6 +348,7 @@ async fn job_status(
             StatusCode::SERVICE_UNAVAILABLE,
             Some(cid),
             None,
+            None,
         );
         return response;
     }
@@ -326,6 +368,7 @@ async fn job_status(
             "GET",
             StatusCode::NOT_FOUND,
             Some(cid),
+            None,
             None,
         );
         return response;
@@ -352,6 +395,7 @@ async fn job_status(
         "GET",
         response.0,
         Some(cid),
+        None,
         None,
     );
     response
@@ -381,6 +425,10 @@ async fn handoff_ready(
         StatusCode::OK,
         Some(cid),
         Some(folder),
+        Some(json!({
+            "correlation_id": cid,
+            "folder_name": folder,
+        })),
     );
     response
 }

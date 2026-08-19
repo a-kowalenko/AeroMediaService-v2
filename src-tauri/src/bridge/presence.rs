@@ -1,6 +1,9 @@
 ﻿use axum::http::{HeaderMap, StatusCode};
+use serde_json::Value;
 
-use crate::storage::ats_presence::{AtsActivityInput, AtsIdentityInput, AtsPresenceState};
+use crate::storage::ats_presence::{
+    clamp_activity_payload_json, AtsActivityInput, AtsIdentityInput, AtsPresenceState,
+};
 use crate::storage::logging;
 
 pub const HEADER_INSTANCE_ID: &str = "x-ats-instance-id";
@@ -60,8 +63,12 @@ pub fn record_bridge_event(
     status: StatusCode,
     correlation_id: Option<&str>,
     folder_name: Option<&str>,
+    payload: Option<Value>,
 ) {
     let identity = parse_identity(headers);
+    let payload_json = payload
+        .map(clamp_activity_payload_json)
+        .unwrap_or_default();
     let activity = AtsActivityInput {
         event_type: kind.as_str().into(),
         route: route.into(),
@@ -69,6 +76,7 @@ pub fn record_bridge_event(
         status_code_class: status_class(status),
         correlation_id: correlation_id.unwrap_or("").trim().to_string(),
         folder_name: folder_name.unwrap_or("").trim().to_string(),
+        payload_json,
     };
     if let Err(e) = presence.record_event(identity, activity) {
         logging::log_warn(&format!(

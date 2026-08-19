@@ -51,7 +51,7 @@ import {
     type AtsHostSummary,
     type AvailableRelease,
 } from "@/lib/tauri";
-import {compareVersionParts} from "@/lib/versionCompare";
+import {AtsActivityEventCard} from "@/components/AtsActivityEventCard";
 import {
     atsPresenceChipLabel,
     atsPresenceChipTone,
@@ -64,6 +64,8 @@ import {
     countConnectedAtsHosts,
 } from "@/components/AtsHostListSections";
 import {showAppToast} from "@/lib/toast";
+import {eventTypeLabel} from "@/lib/atsActivityDisplay";
+import {compareVersionParts} from "@/lib/versionCompare";
 import {useThemeStore, type ThemeMode} from "@/store/themeStore";
 import {useUiStore} from "@/store/uiStore";
 
@@ -183,21 +185,6 @@ function formatTimestamp(value: string): string {
         dateStyle: "short",
         timeStyle: "short",
     }).format(date);
-}
-
-function eventTypeLabel(value: string): string {
-    switch (value) {
-        case "handoff_ready":
-            return "Ready";
-        case "customer_lookup":
-            return "Lookup";
-        case "job_status":
-            return "Job-Status";
-        case "health":
-            return "Health";
-        default:
-            return value || "—";
-    }
 }
 
 function PathField({
@@ -1492,34 +1479,10 @@ export function SettingsDialog({
                                                                     ) : (
                                                                         <div className="space-y-2">
                                                                             {selectedAtsDetails.host.recent_events.slice(0, 8).map((entry) => (
-                                                                                <div
-                                                                                    key={`${entry.occurred_at}-${entry.event_type}-${entry.correlation_id}`}
-                                                                                    className="rounded-md border border-border/50 bg-background/80 p-3 text-xs"
-                                                                                >
-                                                                                    <div
-                                                                                        className="flex flex-wrap items-center gap-2">
-                                                                                        <AtsPresenceChip
-                                                                                            label={eventTypeLabel(entry.event_type)}
-                                                                                            tone="neutral"
-                                                                                        />
-                                                                                        <span className="text-muted">
-                                                                                            {formatTimestamp(entry.occurred_at)}
-                                                                                        </span>
-                                                                                        <span className="text-muted">
-                                                                                            {entry.method} {entry.route}
-                                                                                        </span>
-                                                                                    </div>
-                                                                                    {entry.correlation_id || entry.folder_name ? (
-                                                                                        <div className="mt-2 space-y-0.5 text-muted">
-                                                                                            {entry.correlation_id ? (
-                                                                                                <p>Correlation ID: {entry.correlation_id}</p>
-                                                                                            ) : null}
-                                                                                            {entry.folder_name ? (
-                                                                                                <p>Ordner: {entry.folder_name}</p>
-                                                                                            ) : null}
-                                                                                        </div>
-                                                                                    ) : null}
-                                                                                </div>
+                                                                                <AtsActivityEventCard
+                                                                                    key={`${entry.occurred_at}-${entry.event_type}-${entry.correlation_id}-${entry.payload_json.slice(0, 24)}`}
+                                                                                    entry={entry}
+                                                                                />
                                                                             ))}
                                                                         </div>
                                                                     )}

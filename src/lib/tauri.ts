@@ -116,6 +116,7 @@ export type AtsActivityEntry = {
     status_code_class: string;
     correlation_id: string;
     folder_name: string;
+    payload_json: string;
 };
 
 export type AtsJobOriginView = {

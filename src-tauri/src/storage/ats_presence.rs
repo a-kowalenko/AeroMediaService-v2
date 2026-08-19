@@ -23,6 +23,7 @@ const DEFAULT_JOBS_PAGE_SIZE: u32 = 50;
 const MAX_JOBS_PAGE_SIZE: u32 = 200;
 const ACTIVITY_RETENTION_HOURS: i64 = 24 * 7;
 const PRUNE_INTERVAL_SECONDS: i64 = 5 * 60;
+const MAX_ACTIVITY_PAYLOAD_CHARS: usize = 8192;
 /// ATS polls `/v1/health` every 45s; 120s = 2× poll interval + buffer.
 const CONNECTED_TTL_SECONDS: i64 = 120;
 /// Hosts seen within this window but not connected → „Nicht verbunden“.
@@ -59,6 +60,7 @@ pub struct AtsActivityInput {
     pub status_code_class: String,
     pub correlation_id: String,
     pub folder_name: String,
+    pub payload_json: String,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -96,6 +98,7 @@ pub struct AtsActivityEntry {
     pub status_code_class: String,
     pub correlation_id: String,
     pub folder_name: String,
+    pub payload_json: String,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -275,6 +278,10 @@ impl AtsPresenceStore {
              CREATE INDEX IF NOT EXISTS idx_ats_job_origin_instance_time
                 ON ats_job_origin(instance_id, last_seen_at DESC);",
         )?;
+        let _ = conn.execute(
+            "ALTER TABLE ats_activity ADD COLUMN payload_json TEXT NOT NULL DEFAULT ''",
+            [],
+        );
         Ok(conn)
     }
 
@@ -317,8 +324,8 @@ impl AtsPresenceStore {
             "INSERT INTO ats_activity (
                 instance_id, occurred_at, event_type, route, method, status_code_class,
                 correlation_id, folder_name, hostname_snapshot, ats_version_snapshot,
-                ats_app_snapshot, degraded_identity
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                ats_app_snapshot, degraded_identity, payload_json
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
             params![
                 &identity.instance_id,
                 &now,
@@ -332,6 +339,7 @@ impl AtsPresenceStore {
                 &identity.ats_version,
                 &identity.ats_app,
                 degraded,
+                &activity.payload_json,
             ],
         )?;
         self.upsert_job_origin(&conn, &identity.instance_id, activity, &now)?;
@@ -528,7 +536,7 @@ impl AtsPresenceStore {
         };
 
         let mut event_stmt = conn.prepare(
-            "SELECT occurred_at, event_type, route, method, status_code_class, correlation_id, folder_name
+            "SELECT occurred_at, event_type, route, method, status_code_class, correlation_id, folder_name, payload_json
              FROM ats_activity
              WHERE instance_id = ?1 AND occurred_at >= ?2
              ORDER BY occurred_at DESC
@@ -543,6 +551,7 @@ impl AtsPresenceStore {
                 status_code_class: row.get(4)?,
                 correlation_id: row.get(5)?,
                 folder_name: row.get(6)?,
+                payload_json: row.get(7)?,
             })
         })?;
         let mut recent_events = Vec::new();
@@ -699,6 +708,14 @@ fn display_label(hostname: &str, degraded_identity: bool) -> String {
     }
 }
 
+pub fn clamp_activity_payload_json(value: serde_json::Value) -> String {
+    let raw = value.to_string();
+    if raw.chars().count() <= MAX_ACTIVITY_PAYLOAD_CHARS {
+        return raw;
+    }
+    raw.chars().take(MAX_ACTIVITY_PAYLOAD_CHARS).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -732,6 +749,7 @@ mod tests {
             status_code_class: "2xx".into(),
             correlation_id: cid.into(),
             folder_name: folder.into(),
+            payload_json: String::new(),
         }
     }
 
@@ -759,6 +777,24 @@ mod tests {
         assert_eq!(details.recent_jobs.len(), 1);
         assert_eq!(details.recent_jobs[0].correlation_id, "cid-1");
         assert_eq!(details.recent_jobs[0].folder_name, "Flug_01");
+    }
+
+    #[test]
+    fn stores_activity_payload_json() {
+        let (_dir, mut store) = open_tmp();
+        let mut activity = event("customer_lookup", "", "");
+        activity.payload_json = r#"{"request":{"customer_id":"c1"}}"#.into();
+        store
+            .record_event(
+                &host("11111111-2222-3333-4444-555555555555", false),
+                &activity,
+            )
+            .unwrap();
+        let details = store
+            .get_host_details("11111111-2222-3333-4444-555555555555", 60, 20)
+            .unwrap()
+            .unwrap();
+        assert_eq!(details.recent_events[0].payload_json, activity.payload_json);
     }
 
     #[test]

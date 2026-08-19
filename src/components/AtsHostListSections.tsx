@@ -3,6 +3,7 @@ import {useState} from "react";
 import {
   atsPresenceChipLabel,
   atsPresenceChipTone,
+  atsPresenceRowClass,
   groupAtsHostsByPresence,
   type AtsHostGroups,
 } from "@/lib/atsPresence";
@@ -70,11 +71,7 @@ function HostRow({
     <button
       key={host.instance_id}
       type="button"
-      className={`w-full rounded-lg border px-3 py-3 text-left transition-colors ${
-        selected
-          ? "border-primary/45 bg-primary/5"
-          : "border-border/60 bg-background hover:bg-muted/20"
-      }`}
+      className={atsPresenceRowClass(host, selected)}
       onClick={onSelect}
     >
       <div className="flex items-start justify-between gap-3">

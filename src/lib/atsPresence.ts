@@ -60,7 +60,7 @@ export function atsPresenceChipLabel(host: AtsHostSummary): string {
     case "inactive_long":
       return "Inaktiv (>30 Tage)";
     default:
-      return "Getrennt";
+      return host.is_active ? "Kürzlich aktiv" : "Getrennt";
   }
 }
 
@@ -69,5 +69,42 @@ export function atsPresenceChipTone(
 ): "active" | "inactive" | "degraded" {
   if (host.degraded_identity) return "degraded";
   if (host.presence_category === "connected") return "active";
+  if (host.presence_category === "disconnected" && host.is_active) return "degraded";
   return "inactive";
+}
+
+/** Row container — avoids primary (brand green) for non-connected hosts. */
+export function atsPresenceRowClass(host: AtsHostSummary, selected: boolean): string {
+  const base =
+    "w-full rounded-lg border px-3 py-3 text-left transition-colors";
+
+  if (host.degraded_identity) {
+    return selected
+      ? `${base} border-warning/45 bg-warning/10`
+      : `${base} border-warning/25 bg-background hover:bg-warning/5`;
+  }
+
+  switch (host.presence_category) {
+    case "connected":
+      return selected
+        ? `${base} border-success/45 bg-success/10`
+        : `${base} border-success/20 bg-background hover:bg-success/5`;
+    case "disconnected":
+      if (host.is_active) {
+        return selected
+          ? `${base} border-warning/45 bg-warning/10`
+          : `${base} border-warning/25 bg-background hover:bg-warning/5`;
+      }
+      return selected
+        ? `${base} border-border/70 bg-muted/30`
+        : `${base} border-border/60 bg-background hover:bg-muted/20`;
+    case "inactive_long":
+      return selected
+        ? `${base} border-border/60 bg-muted/20`
+        : `${base} border-border/50 bg-muted/5 hover:bg-muted/15`;
+    default:
+      return selected
+        ? `${base} border-border/70 bg-muted/30`
+        : `${base} border-border/60 bg-background hover:bg-muted/20`;
+  }
 }

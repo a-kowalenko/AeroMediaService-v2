@@ -1,4 +1,5 @@
 ﻿import {useCallback, useEffect, useMemo, useState} from "react";
+import {AtsActivityEventCard} from "@/components/AtsActivityEventCard";
 import {Spinner} from "@/components/Spinner";
 import {StatusChip} from "@/components/StatusChip";
 import {
@@ -25,6 +26,7 @@ import {
   getAtsHostsSummary,
   type AtsHostDetails,
 } from "@/lib/tauri";
+import {eventTypeLabel} from "@/lib/atsActivityDisplay";
 
 function PresenceChip({
   label,
@@ -58,21 +60,6 @@ function formatTimestamp(value: string): string {
     dateStyle: "short",
     timeStyle: "short",
   }).format(date);
-}
-
-function eventTypeLabel(value: string): string {
-  switch (value) {
-    case "handoff_ready":
-      return "Ready";
-    case "customer_lookup":
-      return "Lookup";
-    case "job_status":
-      return "Job-Status";
-    case "health":
-      return "Health";
-    default:
-      return value || "-";
-  }
 }
 
 type Props = {
@@ -245,22 +232,10 @@ export function AtsClientsDialog({open, onClose}: Props) {
                   ) : (
                     <div className="space-y-2">
                       {details.host.recent_events.slice(0, 8).map((entry) => (
-                        <div
-                          key={`${entry.occurred_at}-${entry.event_type}-${entry.correlation_id}`}
-                          className="rounded-md border border-border/50 bg-background/80 p-3 text-xs"
-                        >
-                          <div className="flex flex-wrap items-center gap-2">
-                            <PresenceChip label={eventTypeLabel(entry.event_type)} tone="neutral" />
-                            <span className="text-muted">{formatTimestamp(entry.occurred_at)}</span>
-                            <span className="text-muted">{entry.method} {entry.route}</span>
-                          </div>
-                          {entry.correlation_id || entry.folder_name ? (
-                            <div className="mt-2 space-y-0.5 text-muted">
-                              {entry.correlation_id ? <p>Correlation ID: {entry.correlation_id}</p> : null}
-                              {entry.folder_name ? <p>Ordner: {entry.folder_name}</p> : null}
-                            </div>
-                          ) : null}
-                        </div>
+                        <AtsActivityEventCard
+                          key={`${entry.occurred_at}-${entry.event_type}-${entry.correlation_id}-${entry.payload_json.slice(0, 24)}`}
+                          entry={entry}
+                        />
                       ))}
                     </div>
                   )}
