@@ -6,8 +6,8 @@ import { AppFeedbackHost } from "@/components/AppFeedbackHost";
 import { ConnectionStatusIndicator } from "@/components/ConnectionStatusIndicator";
 import { CustomersPanel } from "@/components/CustomersPanel";
 import { HistoryTable } from "@/components/HistoryTable";
-import { LoadingOverlay } from "@/components/LoadingOverlay";
 import { LogConsole } from "@/components/LogConsole";
+import { SplashScreen } from "@/components/SplashScreen";
 import { SettingsCluster } from "@/components/SettingsCluster";
 import { SettingsDialog } from "@/components/SettingsDialog";
 import { SetupWizard } from "@/components/SetupWizard";
@@ -55,7 +55,9 @@ function App() {
   const [monitorBusy, setMonitorBusy] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [setupWizardOpen, setSetupWizardOpen] = useState(false);
-  const [startupOverlay, setStartupOverlay] = useState(false);
+  const [splashOpen, setSplashOpen] = useState(true);
+  const [splashStatus, setSplashStatus] = useState("Wird gestartet…");
+  const [splashError, setSplashError] = useState<string | null>(null);
   const [statusLabel, setStatusLabel] = useState("Bereit.");
   const [updateDialogOpen, setUpdateDialogOpen] = useState(false);
   const [versionInstall, setVersionInstall] = useState<{
@@ -248,9 +250,11 @@ function App() {
           .toLowerCase();
         if (setup !== "true") {
           setSetupWizardOpen(true);
+          setSplashOpen(false);
         }
       } catch {
         setSetupWizardOpen(true);
+        setSplashOpen(false);
       }
     })();
   }, [setMonitoring, setConnectionStatus, setThemeMode, refreshCustomerCounts]);
@@ -300,8 +304,12 @@ function App() {
     const timer = window.setTimeout(() => {
       void (async () => {
         try {
+          setSplashStatus("Konfiguration wird geladen…");
+          setSplashError(null);
+
           const monitorPath = (await getSetting("monitor_path", "")).trim();
           if (monitorPath && !cancelled) {
+            setSplashStatus("Monitor-Status wird abgerufen…");
             try {
               await startMonitoring();
               await syncMonitoringState();
@@ -331,8 +339,8 @@ function App() {
           if (!shouldConnect) {
             if (!cancelled) setStatusLabel("Bereit.");
           } else {
+            if (!cancelled) setSplashStatus("Verbindung wird hergestellt…");
             setStatusLabel("Verbindung wird hergestellt…");
-            setStartupOverlay(true);
             const result = await autoConnectCloud();
             if (cancelled) return;
             if (result.success) {
@@ -352,12 +360,13 @@ function App() {
         } catch (err) {
           if (!cancelled) {
             setStatusLabel("Bereit.");
+            setSplashError(String(err));
             showError(String(err), "Auto-Connect");
           }
         } finally {
           if (!cancelled) {
             await syncMonitoringState();
-            setStartupOverlay(false);
+            setSplashOpen(false);
             void runUpdateCheck(false);
           }
         }
@@ -399,9 +408,11 @@ function App() {
 
   return (
     <div className="app-root">
-      <LoadingOverlay
-        visible={startupOverlay}
-        message="Verbindung wird hergestellt…"
+      <SplashScreen
+        open={splashOpen}
+        status={splashStatus}
+        version={version === "…" ? undefined : version}
+        error={splashError}
       />
 
       <AppChrome
