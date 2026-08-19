@@ -2,7 +2,7 @@ import { FormEvent, type ReactNode, useCallback, useEffect, useMemo, useState } 
 import { open as openDirectoryDialog } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { FolderOpen, Moon, Sun } from "lucide-react";
-import { LoadingOverlay } from "@/components/LoadingOverlay";
+import { Spinner } from "@/components/Spinner";
 import { SettingsSection } from "@/components/settings/SettingsSection";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -107,6 +107,30 @@ function Field({ label, children }: { label: string; children: ReactNode }) {
     <div className="space-y-1.5">
       <Label>{label}</Label>
       {children}
+    </div>
+  );
+}
+
+function InlineStatus({
+  label,
+  value,
+  loading = false,
+}: {
+  label: string;
+  value: string;
+  loading?: boolean;
+}) {
+  return (
+    <div className="flex flex-wrap items-center gap-2 text-xs text-muted">
+      <span>
+        {label}: {value}
+      </span>
+      {loading ? (
+        <span className="inline-flex items-center gap-1.5">
+          <Spinner size={12} className="border-[1.5px]" />
+          <span>wird geladen…</span>
+        </span>
+      ) : null}
     </div>
   );
 }
@@ -217,7 +241,6 @@ export function SettingsDialog({
   const confirm = useUiStore((s) => s.confirm);
   const [tab, setTab] = useState<TabId>("general");
   const [busy, setBusy] = useState(false);
-  const [statusLoading, setStatusLoading] = useState(false);
   const [status, setStatus] = useState("");
   const [error, setError] = useState("");
 
@@ -240,6 +263,7 @@ export function SettingsDialog({
   });
   const [bridgeStatusLabel, setBridgeStatusLabel] = useState("—");
   const [bridgeBusy, setBridgeBusy] = useState(false);
+  const [bridgeStatusLoading, setBridgeStatusLoading] = useState(false);
 
   const [cloudService, setCloudService] = useState<"dropbox" | "custom_api">("dropbox");
   const [dropbox, setDropbox] = useState({
@@ -248,6 +272,7 @@ export function SettingsDialog({
   });
   const [dbStatus, setDbStatus] = useState("Nicht verbunden");
   const [dbBusy, setDbBusy] = useState(false);
+  const [dbStatusLoading, setDbStatusLoading] = useState(false);
 
   const [customApi, setCustomApi] = useState({
     custom_api_url: "",
@@ -264,6 +289,7 @@ export function SettingsDialog({
   const [customApiStatus, setCustomApiStatus] = useState("Nicht verbunden");
   const [customDbStatus, setCustomDbStatus] = useState("Nicht verbunden");
   const [customBusy, setCustomBusy] = useState(false);
+  const [customDbStatusLoading, setCustomDbStatusLoading] = useState(false);
 
   const [email, setEmail] = useState({
     smtp_host: "",
@@ -291,6 +317,7 @@ export function SettingsDialog({
   });
   const [smsBalance, setSmsBalance] = useState("Unbekannt");
   const [smsBusy, setSmsBusy] = useState(false);
+  const [smsBalanceLoading, setSmsBalanceLoading] = useState(false);
 
   const [shortener, setShortener] = useState({
     link_shortener_enabled: false,
@@ -389,7 +416,6 @@ export function SettingsDialog({
   const loadAll = useCallback(async () => {
     setError("");
     setStatus("");
-    setStatusLoading(true);
     try {
       const [
         monitor_path,
@@ -464,18 +490,23 @@ export function SettingsDialog({
         bridge_bind: bridge_bind || "0.0.0.0:8787",
         bridge_token: "",
       });
-      try {
-        const status = await getBridgeStatus();
-        setBridgeStatusLabel(
-          status.running
-            ? `Aktiv auf ${status.bind_addr}`
-            : status.last_error
-              ? `Inaktiv (${status.last_error})`
-              : "Inaktiv",
-        );
-      } catch {
-        setBridgeStatusLabel("—");
-      }
+      setBridgeStatusLoading(true);
+      void getBridgeStatus()
+        .then((status) => {
+          setBridgeStatusLabel(
+            status.running
+              ? `Aktiv auf ${status.bind_addr}`
+              : status.last_error
+                ? `Inaktiv (${status.last_error})`
+                : "Inaktiv",
+          );
+        })
+        .catch(() => {
+          setBridgeStatusLabel("—");
+        })
+        .finally(() => {
+          setBridgeStatusLoading(false);
+        });
       setCloudService(selected_cloud_service === "custom_api" ? "custom_api" : "dropbox");
       setEmail((prev) => ({
         ...prev,
@@ -605,16 +636,47 @@ export function SettingsDialog({
 
         const sandbox = boolFromSetting(seven_sandbox_mode);
         const balanceKey = sandbox ? seven_sandbox_api_key : seven_api_key;
-        const [nativeStatus, customStatus, balance] = await Promise.all([
-          verifyDropboxStatus("native").catch(() => "Verbindungsfehler"),
-          verifyDropboxStatus("custom").catch(() => "Verbindungsfehler"),
-          balanceKey
-            ? getSmsBalance(balanceKey).catch(() => "Netzwerkfehler")
-            : Promise.resolve(""),
-        ]);
-        setDbStatus(nativeStatus);
-        setCustomDbStatus(customStatus);
-        setSmsBalance(balance || "Unbekannt");
+        setDbStatusLoading(true);
+        void verifyDropboxStatus("native")
+          .then((nativeStatus) => {
+            setDbStatus(nativeStatus);
+          })
+          .catch(() => {
+            setDbStatus("Verbindungsfehler");
+          })
+          .finally(() => {
+            setDbStatusLoading(false);
+          });
+
+        setCustomDbStatusLoading(true);
+        void verifyDropboxStatus("custom")
+          .then((customStatus) => {
+            setCustomDbStatus(customStatus);
+          })
+          .catch(() => {
+            setCustomDbStatus("Verbindungsfehler");
+          })
+          .finally(() => {
+            setCustomDbStatusLoading(false);
+          });
+
+        if (balanceKey) {
+          setSmsBalanceLoading(true);
+          setSmsBalance("Unbekannt");
+          void getSmsBalance(balanceKey)
+            .then((balance) => {
+              setSmsBalance(balance);
+            })
+            .catch(() => {
+              setSmsBalance("Netzwerkfehler");
+            })
+            .finally(() => {
+              setSmsBalanceLoading(false);
+            });
+        } else {
+          setSmsBalance("Fehlender API-Key");
+          setSmsBalanceLoading(false);
+        }
       } catch (err) {
         setError(
           `Geheimnisse konnten nicht geladen werden (Keyring): ${err}. ` +
@@ -623,8 +685,6 @@ export function SettingsDialog({
       }
     } catch (err) {
       setError(`Einstellungen konnten nicht geladen werden: ${err}`);
-    } finally {
-      setStatusLoading(false);
     }
   }, []);
 
@@ -928,17 +988,12 @@ export function SettingsDialog({
       <DialogContent
         className="relative flex h-[min(85vh,42rem)] max-w-2xl flex-col gap-4 overflow-visible"
         onPointerDownOutside={(e) => {
-          if (statusLoading || busy) e.preventDefault();
+          if (busy) e.preventDefault();
         }}
         onEscapeKeyDown={(e) => {
-          if (statusLoading || busy) e.preventDefault();
+          if (busy) e.preventDefault();
         }}
       >
-        <LoadingOverlay
-          visible={statusLoading}
-          message="Verbindungsstatus wird geladen…"
-        />
-
         <DialogHeader className="shrink-0">
           <DialogTitle>Einstellungen</DialogTitle>
           <DialogDescription className="sr-only">
@@ -1135,9 +1190,11 @@ export function SettingsDialog({
                       >
                         {bridgeBusy ? "…" : "Bridge anwenden"}
                       </Button>
-                      <span className="text-xs text-muted-foreground">
-                        Status: {bridgeStatusLabel}
-                      </span>
+                      <InlineStatus
+                        label="Status"
+                        value={bridgeStatusLabel}
+                        loading={bridgeStatusLoading}
+                      />
                     </div>
                   </div>
                 </SettingsSection>
@@ -1220,7 +1277,11 @@ export function SettingsDialog({
                           }
                         />
                       </Field>
-                      <p className="text-xs text-muted">Status: {dbStatus}</p>
+                      <InlineStatus
+                        label="Status"
+                        value={dbStatus}
+                        loading={dbStatusLoading}
+                      />
                       <Button
                         type="button"
                         disabled={
@@ -1397,9 +1458,11 @@ export function SettingsDialog({
                             }
                           />
                         </Field>
-                        <p className="text-xs text-muted">
-                          Status: {customDbStatus}
-                        </p>
+                        <InlineStatus
+                          label="Status"
+                          value={customDbStatus}
+                          loading={customDbStatusLoading}
+                        />
                         <Button
                           type="button"
                           disabled={
@@ -1644,9 +1707,11 @@ export function SettingsDialog({
                       Sandbox-Modus
                     </label>
                     <div className="flex flex-wrap items-center gap-3">
-                      <span className="text-xs text-muted">
-                        Aktuelle Balance: {smsBalance}
-                      </span>
+                      <InlineStatus
+                        label="Aktuelle Balance"
+                        value={smsBalance}
+                        loading={smsBalanceLoading}
+                      />
                       <Button
                         type="button"
                         variant="secondary"
