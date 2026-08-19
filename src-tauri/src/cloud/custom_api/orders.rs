@@ -12,7 +12,8 @@ use crate::cloud::traits::CloudError;
 use crate::events;
 use crate::model::kunde::Kunde;
 use crate::model::marker::{
-    build_kunde_from_customer, describe_customer_media_shape, ApiMarkerQuery, LookupMode,
+    build_kunde_from_customer, describe_customer_media_shape, normalize_marker_type,
+    ApiMarkerQuery, LookupMode,
 };
 use crate::storage::logging;
 use crate::storage::secrets;
@@ -27,10 +28,11 @@ pub fn customer_lookup_url(base_url: &str, mode: LookupMode) -> String {
 }
 
 pub fn customer_lookup_params(query: &ApiMarkerQuery, mode: LookupMode) -> Vec<(String, String)> {
+    let marker_type = normalize_marker_type(Some(&query.marker_type));
     let mut params = vec![
         ("customer_id".into(), query.customer_id.clone()),
         ("booking_id".into(), query.booking_id.clone()),
-        ("type".into(), query.marker_type.clone()),
+        ("type".into(), marker_type),
     ];
     if mode == LookupMode::Id {
         params.push(("Fallback".into(), "true".into()));
@@ -428,6 +430,20 @@ mod tests {
         assert_eq!(hash.len(), 3);
         let id = customer_lookup_params(&query, LookupMode::Id);
         assert!(id.iter().any(|(k, v)| k == "Fallback" && v == "true"));
+    }
+
+    #[test]
+    fn customer_lookup_params_normalize_handcam_type() {
+        let query = ApiMarkerQuery {
+            customer_id: "3971".into(),
+            booking_id: "2405".into(),
+            marker_type: "Handcam".into(),
+        };
+        let params = customer_lookup_params(&query, LookupMode::Id);
+        assert_eq!(
+            params.iter().find(|(k, _)| k == "type").map(|(_, v)| v.as_str()),
+            Some("Handycam")
+        );
     }
 
     #[tokio::test]

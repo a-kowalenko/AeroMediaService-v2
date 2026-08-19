@@ -21,7 +21,7 @@ use super::types::{
 use crate::cloud::custom_api::fetch_customer_as_kunde;
 use crate::commands::ConfigState;
 use crate::model::handoff::{read_status_outbox, CODE_CUSTOMER_LOOKUP_FAILED};
-use crate::model::marker::ApiMarkerQuery;
+use crate::model::marker::{normalize_marker_type, ApiMarkerQuery};
 use crate::storage::ats_presence::AtsPresenceState;
 use crate::storage::logging;
 use super::presence::{record_bridge_event, BridgeEventKind};
@@ -203,16 +203,19 @@ async fn customer_lookup(
                 StatusCode::BAD_REQUEST,
                 None,
                 None,
-                Some(lookup_event_payload(&body, StatusCode::BAD_REQUEST, &failure)),
+                Some(lookup_event_payload(
+                    &body,
+                    &lookup_query_from_body(&body),
+                    StatusCode::BAD_REQUEST,
+                    &failure,
+                )),
             );
             return response;
         }
     };
 
-    let customer_id = body.customer_id.trim().to_string();
-    let booking_id = body.booking_id.trim().to_string();
-    let marker_type = body.marker_type.trim().to_string();
-    if customer_id.is_empty() || booking_id.is_empty() || marker_type.is_empty() {
+    let query = lookup_query_from_body(&body);
+    if query.customer_id.is_empty() || query.booking_id.is_empty() || query.marker_type.is_empty() {
         let failure = LookupResponse::failure(
             "invalid_request",
             "customer_id, booking_id und type sind Pflicht.",
@@ -227,16 +230,15 @@ async fn customer_lookup(
             StatusCode::BAD_REQUEST,
             None,
             None,
-            Some(lookup_event_payload(&body, StatusCode::BAD_REQUEST, &failure)),
+            Some(lookup_event_payload(
+                &body,
+                &query,
+                StatusCode::BAD_REQUEST,
+                &failure,
+            )),
         );
         return response;
     }
-
-    let query = ApiMarkerQuery {
-        customer_id,
-        booking_id,
-        marker_type,
-    };
 
     let response = match fetch_customer_as_kunde(&query, mode).await {
         Ok(kunde) => (StatusCode::OK, Json(LookupResponse::success(kunde))),
@@ -254,13 +256,22 @@ async fn customer_lookup(
         response.0,
         None,
         None,
-        Some(lookup_event_payload(&body, response.0, &response.1.0)),
+        Some(lookup_event_payload(&body, &query, response.0, &response.1.0)),
     );
     response
 }
 
+fn lookup_query_from_body(body: &LookupRequest) -> ApiMarkerQuery {
+    ApiMarkerQuery {
+        customer_id: body.customer_id.trim().to_string(),
+        booking_id: body.booking_id.trim().to_string(),
+        marker_type: normalize_marker_type(Some(body.marker_type.trim())),
+    }
+}
+
 fn lookup_event_payload(
     body: &LookupRequest,
+    query: &ApiMarkerQuery,
     status: StatusCode,
     response: &LookupResponse,
 ) -> Value {
@@ -269,6 +280,7 @@ fn lookup_event_payload(
             "customer_id": body.customer_id.trim(),
             "booking_id": body.booking_id.trim(),
             "type": body.marker_type.trim(),
+            "type_api": query.marker_type.trim(),
             "mode": body.mode.trim(),
         },
         "response": {
