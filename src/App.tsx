@@ -440,7 +440,7 @@ function App() {
         <div className="pointer-events-none flex min-w-0 items-center gap-2.5">
           <div className="flex h-[34px] w-[34px] shrink-0 items-center justify-center rounded-lg bg-primary-soft ring-1 ring-primary/20">
             <img
-              src="/logo.png"
+              src="/ams_logo.png"
               alt=""
               className="h-[22px] w-[22px] object-contain"
               onError={(e) => {
