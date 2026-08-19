@@ -239,7 +239,11 @@ Beispiel:
 
 ### 9.1 Presence / Host-Aktivität (P5+)
 
-- AMS kann optional Bridge-only Presence anzeigen: **aktiv = mindestens ein Bridge-Event in den letzten 60 Minuten**.
+- AMS kann optional Bridge-only Presence anzeigen:
+  - **verbunden** = Bridge-Request in den letzten ~2 Minuten (2× ATS-Health-Poll à 45 s)
+  - **nicht verbunden** = kein Kontakt in ~2 Min., aber `last_seen` innerhalb der letzten 30 Tage
+  - **länger inaktiv** = `last_seen` älter als 30 Tage
+  - **aktiv** (KPI) = mindestens ein Bridge-Event in den letzten 60 Minuten
 - Presence basiert **nur** auf Bridge-Requests; ATS ohne Bridge bleibt bewusst unsichtbar.
 - `X-Ats-Instance-Id` ist der technische Host-Schlüssel; `X-Ats-Hostname` bleibt die menschenlesbare Anzeige im AMS-UI.
 - `GET /v1/jobs/{correlation_id}` und `POST /v1/handoff/ready` erlauben zusätzlich die Zuordnung `correlation_id -> ATS-Host`.

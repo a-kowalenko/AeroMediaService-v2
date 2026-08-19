@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 
 use chrono::{Duration, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::constants::ATS_PRESENCE_DB_FILE;
@@ -23,6 +23,10 @@ const DEFAULT_JOBS_PAGE_SIZE: u32 = 50;
 const MAX_JOBS_PAGE_SIZE: u32 = 200;
 const ACTIVITY_RETENTION_HOURS: i64 = 24 * 7;
 const PRUNE_INTERVAL_SECONDS: i64 = 5 * 60;
+/// ATS polls `/v1/health` every 45s; 120s = 2× poll interval + buffer.
+const CONNECTED_TTL_SECONDS: i64 = 120;
+/// Hosts seen within this window but not connected → „Nicht verbunden“.
+const RECENT_WINDOW_DAYS: i64 = 30;
 
 #[derive(Debug, Error)]
 pub enum AtsPresenceError {
@@ -57,6 +61,14 @@ pub struct AtsActivityInput {
     pub folder_name: String,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AtsPresenceCategory {
+    Connected,
+    Disconnected,
+    InactiveLong,
+}
+
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct AtsHostSummary {
     pub instance_id: String,
@@ -67,7 +79,9 @@ pub struct AtsHostSummary {
     pub last_event_type: String,
     pub last_event_at: String,
     pub last_seen_at: String,
+    pub is_connected: bool,
     pub is_active: bool,
+    pub presence_category: AtsPresenceCategory,
     pub activity_count_ttl: u32,
     pub jobs_count_ttl: u32,
     pub degraded_identity: bool,
@@ -104,7 +118,9 @@ pub struct AtsHostDetails {
     pub last_seen_at: String,
     pub last_event_type: String,
     pub last_event_at: String,
+    pub is_connected: bool,
     pub is_active: bool,
+    pub presence_category: AtsPresenceCategory,
     pub degraded_identity: bool,
     pub activity_window_minutes: u32,
     pub recent_events: Vec<AtsActivityEntry>,
@@ -411,6 +427,8 @@ impl AtsPresenceStore {
     ) -> Result<Vec<AtsHostSummary>, AtsPresenceError> {
         let ttl = clamp_ttl(ttl_minutes);
         let cutoff = ttl_cutoff(ttl);
+        let connected_cutoff = connected_cutoff();
+        let recent_cutoff = recent_window_cutoff();
         let conn = self.connect()?;
         let mut stmt = conn.prepare(
             "SELECT
@@ -436,10 +454,7 @@ impl AtsPresenceStore {
                       AND TRIM(a2.correlation_id) <> ''
                 ), 0) AS jobs_count
              FROM ats_hosts h
-             ORDER BY
-                CASE WHEN h.last_seen_at >= ?1 THEN 0 ELSE 1 END,
-                h.last_seen_at DESC,
-                h.display_hostname COLLATE NOCASE ASC",
+             ORDER BY h.last_seen_at DESC, h.display_hostname COLLATE NOCASE ASC",
         )?;
         let rows = stmt.query_map(params![cutoff], |row| {
             let hostname: String = row.get(1)?;
@@ -454,7 +469,13 @@ impl AtsPresenceStore {
                 last_event_type: row.get(4)?,
                 last_event_at: row.get(5)?,
                 last_seen_at: last_seen_at.clone(),
+                is_connected: last_seen_at >= connected_cutoff,
                 is_active: last_seen_at >= cutoff,
+                presence_category: presence_category(
+                    &last_seen_at,
+                    &connected_cutoff,
+                    &recent_cutoff,
+                ),
                 activity_count_ttl: row.get::<_, i64>(8)?.max(0) as u32,
                 jobs_count_ttl: row.get::<_, i64>(9)?.max(0) as u32,
                 degraded_identity: degraded != 0,
@@ -480,6 +501,8 @@ impl AtsPresenceStore {
         let ttl = clamp_ttl(ttl_minutes);
         let details_limit = clamp_details_limit(limit);
         let cutoff = ttl_cutoff(ttl);
+        let connected_cutoff = connected_cutoff();
+        let recent_cutoff = recent_window_cutoff();
         let conn = self.connect()?;
         let host: Option<(String, String, String, String, String, String, String, i64)> = conn
             .query_row(
@@ -538,7 +561,13 @@ impl AtsPresenceStore {
             last_seen_at: last_seen_at.clone(),
             last_event_type,
             last_event_at,
+            is_connected: last_seen_at >= connected_cutoff,
             is_active: last_seen_at >= cutoff,
+            presence_category: presence_category(
+                &last_seen_at,
+                &connected_cutoff,
+                &recent_cutoff,
+            ),
             degraded_identity: degraded != 0,
             activity_window_minutes: ttl,
             recent_events,
@@ -640,6 +669,28 @@ fn ttl_cutoff(ttl_minutes: u32) -> String {
     (Utc::now() - Duration::minutes(clamp_ttl(ttl_minutes) as i64)).to_rfc3339()
 }
 
+fn connected_cutoff() -> String {
+    (Utc::now() - Duration::seconds(CONNECTED_TTL_SECONDS)).to_rfc3339()
+}
+
+fn recent_window_cutoff() -> String {
+    (Utc::now() - Duration::days(RECENT_WINDOW_DAYS)).to_rfc3339()
+}
+
+fn presence_category(
+    last_seen_at: &str,
+    connected_cutoff: &str,
+    recent_cutoff: &str,
+) -> AtsPresenceCategory {
+    if last_seen_at >= connected_cutoff {
+        AtsPresenceCategory::Connected
+    } else if last_seen_at >= recent_cutoff {
+        AtsPresenceCategory::Disconnected
+    } else {
+        AtsPresenceCategory::InactiveLong
+    }
+}
+
 fn display_label(hostname: &str, degraded_identity: bool) -> String {
     if degraded_identity {
         format!("{} (degradiert)", hostname.trim())
@@ -698,6 +749,8 @@ mod tests {
         assert_eq!(summary[0].activity_count_ttl, 1);
         assert_eq!(summary[0].jobs_count_ttl, 1);
         assert!(summary[0].is_active);
+        assert!(summary[0].is_connected);
+        assert_eq!(summary[0].presence_category, AtsPresenceCategory::Connected);
         let details = store
             .get_host_details("11111111-2222-3333-4444-555555555555", 60, 20)
             .unwrap()
@@ -720,6 +773,83 @@ mod tests {
         let summary = store.get_hosts_summary(60).unwrap();
         assert_eq!(summary[0].display_label, "Unbekannter ATS Host (degradiert)");
         assert!(summary[0].degraded_identity);
+    }
+
+    #[test]
+    fn connected_requires_recent_bridge_activity() {
+        let (_dir, store) = open_tmp();
+        let conn = store.connect().unwrap();
+        let now = Utc::now();
+        let recent = now.to_rfc3339();
+        let stale = (now - Duration::minutes(5)).to_rfc3339();
+        conn.execute(
+            "INSERT INTO ats_hosts (
+                instance_id, display_hostname, ats_version, ats_app,
+                first_seen_at, last_seen_at, last_event_at, last_event_type,
+                last_route, degraded_identity, created_at, updated_at
+             ) VALUES (?1, ?2, '', '', ?3, ?4, ?4, 'health', '/v1/health', 0, ?3, ?4)",
+            params!["connected-host", "ATS-Online", &recent, &recent],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO ats_hosts (
+                instance_id, display_hostname, ats_version, ats_app,
+                first_seen_at, last_seen_at, last_event_at, last_event_type,
+                last_route, degraded_identity, created_at, updated_at
+             ) VALUES (?1, ?2, '', '', ?3, ?4, ?4, 'health', '/v1/health', 0, ?3, ?4)",
+            params!["recent-offline-host", "ATS-Offline", &stale, &stale],
+        )
+        .unwrap();
+        let summary = store.get_hosts_summary(60).unwrap();
+        assert_eq!(summary.len(), 2);
+        let online = summary
+            .iter()
+            .find(|h| h.instance_id == "connected-host")
+            .unwrap();
+        let offline = summary
+            .iter()
+            .find(|h| h.instance_id == "recent-offline-host")
+            .unwrap();
+        assert!(online.is_connected);
+        assert!(online.is_active);
+        assert_eq!(online.presence_category, AtsPresenceCategory::Connected);
+        assert!(!offline.is_connected);
+        assert!(offline.is_active);
+        assert_eq!(offline.presence_category, AtsPresenceCategory::Disconnected);
+    }
+
+    #[test]
+    fn presence_categories_cover_recent_and_long_inactive() {
+        let (_dir, store) = open_tmp();
+        let conn = store.connect().unwrap();
+        let recent = (Utc::now() - Duration::days(2)).to_rfc3339();
+        let long_inactive = (Utc::now() - Duration::days(40)).to_rfc3339();
+        conn.execute(
+            "INSERT INTO ats_hosts (
+                instance_id, display_hostname, ats_version, ats_app,
+                first_seen_at, last_seen_at, last_event_at, last_event_type,
+                last_route, degraded_identity, created_at, updated_at
+             ) VALUES (?1, ?2, '', '', ?3, ?3, ?3, 'health', '/v1/health', 0, ?3, ?3)",
+            params!["recent-host", "ATS-Recent", &recent],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO ats_hosts (
+                instance_id, display_hostname, ats_version, ats_app,
+                first_seen_at, last_seen_at, last_event_at, last_event_type,
+                last_route, degraded_identity, created_at, updated_at
+             ) VALUES (?1, ?2, '', '', ?3, ?3, ?3, 'health', '/v1/health', 0, ?3, ?3)",
+            params!["old-host", "ATS-Old", &long_inactive],
+        )
+        .unwrap();
+        let summary = store.get_hosts_summary(60).unwrap();
+        assert_eq!(summary.len(), 2);
+        let recent_host = summary.iter().find(|h| h.instance_id == "recent-host").unwrap();
+        let old_host = summary.iter().find(|h| h.instance_id == "old-host").unwrap();
+        assert_eq!(recent_host.presence_category, AtsPresenceCategory::Disconnected);
+        assert!(!recent_host.is_active);
+        assert_eq!(old_host.presence_category, AtsPresenceCategory::InactiveLong);
+        assert!(!old_host.is_active);
     }
 
     #[test]

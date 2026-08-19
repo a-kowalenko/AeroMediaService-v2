@@ -52,6 +52,17 @@ import {
     type AvailableRelease,
 } from "@/lib/tauri";
 import {compareVersionParts} from "@/lib/versionCompare";
+import {
+    atsPresenceChipLabel,
+    atsPresenceChipTone,
+    defaultAtsHostSelection,
+    findAtsHost,
+} from "@/lib/atsPresence";
+import {
+    AtsHostListSections,
+    countActiveAtsHosts,
+    countConnectedAtsHosts,
+} from "@/components/AtsHostListSections";
 import {showAppToast} from "@/lib/toast";
 import {useThemeStore, type ThemeMode} from "@/store/themeStore";
 import {useUiStore} from "@/store/uiStore";
@@ -412,12 +423,16 @@ export function SettingsDialog({
         return "same" as const;
     }, [selectedRelease, appVersion]);
 
+    const connectedAtsHostsCount = useMemo(
+        () => countConnectedAtsHosts(atsHosts),
+        [atsHosts],
+    );
     const selectedAtsHost = useMemo(
-        () => atsHosts.find((host) => host.instance_id === selectedAtsHostId) ?? null,
+        () => findAtsHost(atsHosts, selectedAtsHostId),
         [atsHosts, selectedAtsHostId],
     );
     const activeAtsHostsCount = useMemo(
-        () => atsHosts.filter((host) => host.is_active).length,
+        () => countActiveAtsHosts(atsHosts),
         [atsHosts],
     );
 
@@ -470,7 +485,7 @@ export function SettingsDialog({
             setAtsHosts(items);
             setSelectedAtsHostId((prev) => {
                 if (prev && items.some((host) => host.instance_id === prev)) return prev;
-                return items[0]?.instance_id ?? "";
+                return defaultAtsHostSelection(items);
             });
         } catch (err) {
             setAtsHosts([]);
@@ -1255,7 +1270,7 @@ export function SettingsDialog({
                                                     }`}
                                                     onClick={() => setBridgeView("clients")}
                                                 >
-                                                    ATS-Clients ({atsHostsLoading ? "…" : atsHosts.length})
+                                                    ATS-Clients ({atsHostsLoading ? "…" : connectedAtsHostsCount})
                                                 </button>
                                             </div>
                                             {bridgeView === "clients" ? (
@@ -1370,7 +1385,7 @@ export function SettingsDialog({
                                                             Verbundene Clients
                                                         </p>
                                                         <p className="mt-1 text-2xl font-semibold text-foreground">
-                                                            {atsHostsLoading ? "…" : atsHosts.length}
+                                                            {atsHostsLoading ? "…" : connectedAtsHostsCount}
                                                         </p>
                                                     </div>
                                                     <div className="rounded-lg border border-border/60 bg-muted/15 p-3">
@@ -1386,7 +1401,7 @@ export function SettingsDialog({
                                                             Sichtbarkeit
                                                         </p>
                                                         <p className="mt-1 text-sm text-muted">
-                                                            Nur Bridge-Requests der letzten 60 Minuten
+                                                            Verbundene ~2 Min. · Aktiv 60 Min. · Inaktiv &gt;30 Tage
                                                         </p>
                                                     </div>
                                                 </div>
@@ -1396,70 +1411,12 @@ export function SettingsDialog({
                                                 ) : null}
 
                                                 <div className="grid gap-3 xl:grid-cols-[minmax(0,0.95fr)_minmax(0,1.25fr)]">
-                                                    <div className="min-w-0 space-y-2">
-                                                        {atsHosts.length === 0 ? (
-                                                            <div className="rounded-lg border border-dashed border-border/60 bg-muted/10 px-4 py-6 text-sm text-muted">
-                                                                Noch keine ATS-Bridge-Aktivität in den letzten 60 Minuten.
-                                                            </div>
-                                                        ) : (
-                                                            atsHosts.map((host) => (
-                                                                <button
-                                                                    key={host.instance_id}
-                                                                    type="button"
-                                                                    className={`w-full rounded-lg border px-3 py-3 text-left transition-colors ${
-                                                                        selectedAtsHostId === host.instance_id
-                                                                            ? "border-primary/45 bg-primary/5"
-                                                                            : "border-border/60 bg-background hover:bg-muted/20"
-                                                                    }`}
-                                                                    onClick={() => setSelectedAtsHostId(host.instance_id)}
-                                                                >
-                                                                    <div className="flex items-start justify-between gap-3">
-                                                                        <div className="min-w-0">
-                                                                            <div className="flex flex-wrap items-center gap-2">
-                                                                                <span
-                                                                                    className="truncate font-medium text-foreground">
-                                                                                    {host.hostname}
-                                                                                </span>
-                                                                                <AtsPresenceChip
-                                                                                    label={
-                                                                                        host.degraded_identity
-                                                                                            ? "Degradiert"
-                                                                                            : host.is_active
-                                                                                                ? "Aktiv"
-                                                                                                : "Inaktiv"
-                                                                                    }
-                                                                                    tone={
-                                                                                        host.degraded_identity
-                                                                                            ? "degraded"
-                                                                                            : host.is_active
-                                                                                                ? "active"
-                                                                                                : "inactive"
-                                                                                    }
-                                                                                />
-                                                                            </div>
-                                                                            <p className="mt-1 truncate text-[11px] text-muted">
-                                                                                {host.ats_app || "ATS"} {host.ats_version || ""}
-                                                                            </p>
-                                                                            <p className="mt-1 truncate text-[11px] text-muted">
-                                                                                {host.instance_id}
-                                                                            </p>
-                                                                        </div>
-                                                                        <div className="shrink-0 text-right text-[11px] text-muted">
-                                                                            <p>{eventTypeLabel(host.last_event_type)}</p>
-                                                                            <p>{formatTimestamp(host.last_seen_at)}</p>
-                                                                        </div>
-                                                                    </div>
-                                                                    <div className="mt-3 flex flex-wrap gap-2 text-[11px] text-muted">
-                                                                        <span className="rounded bg-muted/50 px-2 py-1">
-                                                                            Events: {host.activity_count_ttl}
-                                                                        </span>
-                                                                        <span className="rounded bg-muted/50 px-2 py-1">
-                                                                            Jobs: {host.jobs_count_ttl}
-                                                                        </span>
-                                                                    </div>
-                                                                </button>
-                                                            ))
-                                                        )}
+                                                    <div className="min-w-0 max-h-[min(52vh,28rem)] overflow-y-auto pr-1 [scrollbar-gutter:stable]">
+                                                        <AtsHostListSections
+                                                            hosts={atsHosts}
+                                                            selectedHostId={selectedAtsHostId}
+                                                            onSelectHost={setSelectedAtsHostId}
+                                                        />
                                                     </div>
 
                                                     <div className="min-w-0 rounded-lg border border-border/60 bg-muted/10 p-4">
@@ -1485,18 +1442,14 @@ export function SettingsDialog({
                                                                         </span>
                                                                         <AtsPresenceChip
                                                                             label={
-                                                                                selectedAtsDetails.host.degraded_identity
-                                                                                    ? "Degradiert"
-                                                                                    : selectedAtsDetails.host.is_active
-                                                                                        ? "Aktiv"
-                                                                                        : "Inaktiv"
+                                                                                selectedAtsHost
+                                                                                    ? atsPresenceChipLabel(selectedAtsHost)
+                                                                                    : "—"
                                                                             }
                                                                             tone={
-                                                                                selectedAtsDetails.host.degraded_identity
-                                                                                    ? "degraded"
-                                                                                    : selectedAtsDetails.host.is_active
-                                                                                        ? "active"
-                                                                                        : "inactive"
+                                                                                selectedAtsHost
+                                                                                    ? atsPresenceChipTone(selectedAtsHost)
+                                                                                    : "inactive"
                                                                             }
                                                                         />
                                                                     </div>

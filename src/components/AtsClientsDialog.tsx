@@ -2,6 +2,11 @@
 import {Spinner} from "@/components/Spinner";
 import {StatusChip} from "@/components/StatusChip";
 import {
+  AtsHostListSections,
+  countActiveAtsHosts,
+  countConnectedAtsHosts,
+} from "@/components/AtsHostListSections";
+import {
   Dialog,
   DialogContent,
   DialogDescription,
@@ -10,10 +15,15 @@ import {
 } from "@/components/ui/dialog";
 import {Button} from "@/components/ui/button";
 import {
+  atsPresenceChipLabel,
+  atsPresenceChipTone,
+  defaultAtsHostSelection,
+  findAtsHost,
+} from "@/lib/atsPresence";
+import {
   getAtsHostDetails,
   getAtsHostsSummary,
   type AtsHostDetails,
-  type AtsHostSummary,
 } from "@/lib/tauri";
 
 function PresenceChip({
@@ -71,20 +81,19 @@ type Props = {
 };
 
 export function AtsClientsDialog({open, onClose}: Props) {
-  const [hosts, setHosts] = useState<AtsHostSummary[]>([]);
+  const [hosts, setHosts] = useState<Awaited<ReturnType<typeof getAtsHostsSummary>>>([]);
   const [hostsLoading, setHostsLoading] = useState(false);
   const [hostsError, setHostsError] = useState("");
   const [selectedHostId, setSelectedHostId] = useState("");
   const [details, setDetails] = useState<AtsHostDetails | null>(null);
   const [detailsLoading, setDetailsLoading] = useState(false);
 
+  const connectedHostsCount = useMemo(() => countConnectedAtsHosts(hosts), [hosts]);
+  const activeHostsCount = useMemo(() => countActiveAtsHosts(hosts), [hosts]);
+
   const selectedHost = useMemo(
-    () => hosts.find((host) => host.instance_id === selectedHostId) ?? null,
+    () => findAtsHost(hosts, selectedHostId),
     [hosts, selectedHostId],
-  );
-  const activeHostsCount = useMemo(
-    () => hosts.filter((host) => host.is_active).length,
-    [hosts],
   );
 
   const loadHosts = useCallback(async () => {
@@ -95,7 +104,7 @@ export function AtsClientsDialog({open, onClose}: Props) {
       setHosts(items);
       setSelectedHostId((prev) => {
         if (prev && items.some((host) => host.instance_id === prev)) return prev;
-        return items[0]?.instance_id ?? "";
+        return defaultAtsHostSelection(items);
       });
     } catch (err) {
       setHosts([]);
@@ -137,13 +146,15 @@ export function AtsClientsDialog({open, onClose}: Props) {
     void loadDetails(selectedHostId);
   }, [open, selectedHostId, loadDetails]);
 
+  const detailsChipHost = selectedHost;
+
   return (
     <Dialog open={open} onOpenChange={(next) => !next && onClose()}>
       <DialogContent className="flex h-[min(82vh,44rem)] max-w-5xl flex-col gap-4 overflow-hidden">
         <DialogHeader className="shrink-0">
           <DialogTitle>ATS-Clients</DialogTitle>
           <DialogDescription>
-            Sichtbar sind nur ATS-Instanzen, die in den letzten 60 Minuten mindestens einen Bridge-Request an AMS gesendet haben.
+            Verbundene Clients (~2 Min.), nicht verbunden (letzte 30 Tage), länger inaktiv (&gt;30 Tage). Sortierung nach letztem Kontakt.
           </DialogDescription>
         </DialogHeader>
 
@@ -153,7 +164,7 @@ export function AtsClientsDialog({open, onClose}: Props) {
               Verbundene Clients
             </p>
             <p className="mt-1 text-2xl font-semibold text-foreground">
-              {hostsLoading ? "..." : hosts.length}
+              {hostsLoading ? "..." : connectedHostsCount}
             </p>
           </div>
           <div className="rounded-lg border border-border/60 bg-muted/15 p-3">
@@ -180,49 +191,12 @@ export function AtsClientsDialog({open, onClose}: Props) {
         {hostsError ? <p className="text-xs text-destructive">{hostsError}</p> : null}
 
         <div className="grid min-h-0 flex-1 gap-3 xl:grid-cols-[minmax(0,0.92fr)_minmax(0,1.28fr)]">
-          <div className="min-h-0 space-y-2 overflow-y-auto pr-1 [scrollbar-gutter:stable]">
-            {hosts.length === 0 ? (
-              <div className="rounded-lg border border-dashed border-border/60 bg-muted/10 px-4 py-6 text-sm text-muted">
-                Noch keine ATS-Bridge-Aktivität in den letzten 60 Minuten.
-              </div>
-            ) : (
-              hosts.map((host) => (
-                <button
-                  key={host.instance_id}
-                  type="button"
-                  className={`w-full rounded-lg border px-3 py-3 text-left transition-colors ${
-                    selectedHostId === host.instance_id
-                      ? "border-primary/45 bg-primary/5"
-                      : "border-border/60 bg-background hover:bg-muted/20"
-                  }`}
-                  onClick={() => setSelectedHostId(host.instance_id)}
-                >
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <span className="truncate font-medium text-foreground">{host.hostname}</span>
-                        <PresenceChip
-                          label={host.degraded_identity ? "Degradiert" : host.is_active ? "Aktiv" : "Inaktiv"}
-                          tone={host.degraded_identity ? "degraded" : host.is_active ? "active" : "inactive"}
-                        />
-                      </div>
-                      <p className="mt-1 truncate text-[11px] text-muted">
-                        {host.ats_app || "ATS"} {host.ats_version || ""}
-                      </p>
-                      <p className="mt-1 truncate text-[11px] text-muted">{host.instance_id}</p>
-                    </div>
-                    <div className="shrink-0 text-right text-[11px] text-muted">
-                      <p>{eventTypeLabel(host.last_event_type)}</p>
-                      <p>{formatTimestamp(host.last_seen_at)}</p>
-                    </div>
-                  </div>
-                  <div className="mt-3 flex flex-wrap gap-2 text-[11px] text-muted">
-                    <span className="rounded bg-muted/50 px-2 py-1">Events: {host.activity_count_ttl}</span>
-                    <span className="rounded bg-muted/50 px-2 py-1">Jobs: {host.jobs_count_ttl}</span>
-                  </div>
-                </button>
-              ))
-            )}
+          <div className="min-h-0 overflow-y-auto pr-1 [scrollbar-gutter:stable]">
+            <AtsHostListSections
+              hosts={hosts}
+              selectedHostId={selectedHostId}
+              onSelectHost={setSelectedHostId}
+            />
           </div>
 
           <div className="min-h-0 overflow-y-auto rounded-lg border border-border/60 bg-muted/10 p-4 [scrollbar-gutter:stable]">
@@ -240,10 +214,12 @@ export function AtsClientsDialog({open, onClose}: Props) {
                 <div className="space-y-3">
                   <div className="flex flex-wrap items-center gap-2">
                     <span className="text-base font-semibold text-foreground">{details.host.hostname}</span>
-                    <PresenceChip
-                      label={details.host.degraded_identity ? "Degradiert" : details.host.is_active ? "Aktiv" : "Inaktiv"}
-                      tone={details.host.degraded_identity ? "degraded" : details.host.is_active ? "active" : "inactive"}
-                    />
+                    {detailsChipHost ? (
+                      <PresenceChip
+                        label={atsPresenceChipLabel(detailsChipHost)}
+                        tone={atsPresenceChipTone(detailsChipHost)}
+                      />
+                    ) : null}
                   </div>
                   <div className="grid gap-2 sm:grid-cols-2">
                     <div className="rounded-md border border-border/50 bg-background/80 p-3 text-xs text-muted">
@@ -265,7 +241,7 @@ export function AtsClientsDialog({open, onClose}: Props) {
                 <div className="space-y-2">
                   <p className="text-xs font-semibold uppercase tracking-wide text-muted">Letzte Events</p>
                   {details.host.recent_events.length === 0 ? (
-                    <p className="text-sm text-muted">Keine Events im Zeitfenster.</p>
+                    <p className="text-sm text-muted">Keine Events im 60-Minuten-Fenster.</p>
                   ) : (
                     <div className="space-y-2">
                       {details.host.recent_events.slice(0, 8).map((entry) => (

@@ -89,6 +89,8 @@ export function applyBridgeConfig(): Promise<BridgeStatus> {
     return invoke<BridgeStatus>("apply_bridge_config");
 }
 
+export type AtsPresenceCategory = "connected" | "disconnected" | "inactive_long";
+
 export type AtsHostSummary = {
     instance_id: string;
     hostname: string;
@@ -98,7 +100,9 @@ export type AtsHostSummary = {
     last_event_type: string;
     last_event_at: string;
     last_seen_at: string;
+    is_connected: boolean;
     is_active: boolean;
+    presence_category: AtsPresenceCategory;
     activity_count_ttl: number;
     jobs_count_ttl: number;
     degraded_identity: boolean;
@@ -134,7 +138,9 @@ export type AtsHostDetails = {
         last_seen_at: string;
         last_event_type: string;
         last_event_at: string;
+        is_connected: boolean;
         is_active: boolean;
+        presence_category: AtsPresenceCategory;
         degraded_identity: boolean;
         activity_window_minutes: number;
         recent_events: AtsActivityEntry[];

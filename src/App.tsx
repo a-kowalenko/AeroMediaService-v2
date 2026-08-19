@@ -4,6 +4,7 @@ import { Play, Square, Users } from "lucide-react";
 import { AppChrome } from "@/components/chrome";
 import { AppFeedbackHost } from "@/components/AppFeedbackHost";
 import { AtsClientsDialog } from "@/components/AtsClientsDialog";
+import { countConnectedAtsHosts } from "@/components/AtsHostListSections";
 import { ConnectionStatusIndicator } from "@/components/ConnectionStatusIndicator";
 import { CustomersPanel } from "@/components/CustomersPanel";
 import { HistoryTable } from "@/components/HistoryTable";
@@ -110,7 +111,7 @@ function App() {
   const refreshAtsClientCount = useCallback(async () => {
     try {
       const hosts = await getAtsHostsSummary(60);
-      setAtsClientCount(hosts.length);
+      setAtsClientCount(countConnectedAtsHosts(hosts));
     } catch {
       setAtsClientCount(0);
     }
