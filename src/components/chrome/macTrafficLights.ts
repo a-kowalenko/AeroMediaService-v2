@@ -2,7 +2,7 @@
  * macOS Overlay titlebar: vertically center traffic lights with the logo tile.
  *
  * Must stay in sync with:
- * - `src-tauri/tauri.conf.json` → windows[0].trafficLightPosition
+ * - `src-tauri/tauri.conf.json` / `tauri.macos.conf.json` → windows[0].trafficLightPosition
  * - `AppChrome` header `py-[5px]` (= HEADER_PAD_Y)
  * - brand logo tile `h-[34px]` (= LOGO_TILE_PX)
  */

@@ -248,6 +248,20 @@ pub fn run() {
                     .plugin(tauri_plugin_updater::Builder::new().build())?;
                 app.handle().plugin(tauri_plugin_process::init())?;
             }
+            // macOS: tauri.macos.conf.json creates decorations + Overlay + hiddenTitle
+            // (do not toggle decorations false→true — that restores a normal title bar).
+            // Win/Linux: conf starts frameless; React AppChrome draws Min/Max/Close.
+            // Then clamp to the monitor work area so the bottom edge stays on-screen.
+            #[cfg(desktop)]
+            {
+                if let Some(window) = app.get_webview_window("main") {
+                    #[cfg(any(target_os = "windows", target_os = "linux"))]
+                    if let Err(e) = window.set_decorations(false) {
+                        eprintln!("set_decorations(false) failed: {e}");
+                    }
+                    crate::util::window_fit::fit_main_window(&window);
+                }
+            }
             Ok(())
         })
         .run(tauri::generate_context!())

@@ -16,6 +16,14 @@
 | Auto-Update | Tauri Updater Plugin |
 | Plattformen | Windows 10+, macOS, Linux |
 
+## Window Chrome
+
+Custom titlebar (Phase 11):
+
+- **Windows / Linux:** `decorations: false` at create time (`tauri.conf.json`) + Min/Max/Close in `AppChrome`. Startup clamps the window to the monitor work area (`src-tauri/src/util/window_fit.rs`) so the bottom edge cannot sit below the taskbar.
+- **macOS:** `tauri.macos.conf.json` sets `decorations` + `titleBarStyle: Overlay` + `hiddenTitle` at create time (no false→true toggle) + left inset; no custom close buttons
+- Rollback: `localStorage.setItem('ams-custom-titlebar', '0')` then reload
+
 ## Projektstruktur
 
 ```
@@ -35,7 +43,7 @@ AeroMediaService-v2/
 │   │   ├── notify/             # E-Mail, SMS, WhatsApp
 │   │   ├── storage/            # Config, Secrets, History, Customers, Logging
 │   │   ├── model/              # Kunde, Marker, Status, Handoff
-│   │   ├── util/               # Archive, Shortener, Validation
+│   │   ├── util/               # Archive, Shortener, Window-Fit
 │   │   └── commands/           # Tauri IPC
 │   └── icons/
 ├── docs/

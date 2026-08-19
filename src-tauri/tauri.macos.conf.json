@@ -1,0 +1,22 @@
+{
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Aero Media Service",
+        "width": 1280,
+        "height": 860,
+        "minWidth": 960,
+        "minHeight": 640,
+        "decorations": true,
+        "shadow": true,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true,
+        "trafficLightPosition": {
+          "x": 14,
+          "y": 16
+        }
+      }
+    ]
+  }
+}

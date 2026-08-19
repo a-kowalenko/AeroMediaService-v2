@@ -28,8 +28,10 @@ export function useWindowChrome() {
         if (!isCustomTitlebarEnabled()) {
           await appWindow.setDecorations(true);
         } else if (mode === "custom-controls") {
+          // Win/Linux: frameless custom chrome (conf starts undecorated).
           await appWindow.setDecorations(false);
         }
+        // macos-overlay: leave decorations + Overlay from window create as-is.
 
         const max = await appWindow.isMaximized();
         if (!cancelled) setIsMaximized(max);
