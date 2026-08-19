@@ -3,6 +3,7 @@
 //! File handoff (Manifest + Outbox) must work without this module.
 
 mod mdns;
+mod presence;
 mod server;
 mod types;
 
@@ -12,6 +13,7 @@ pub use types::{DEFAULT_BRIDGE_BIND, P3_CAPABILITIES};
 use std::sync::{Arc, Mutex};
 
 use crate::commands::ConfigState;
+use crate::storage::ats_presence::AtsPresenceState;
 use crate::storage::logging;
 use crate::storage::secrets;
 
@@ -19,13 +21,15 @@ use crate::storage::secrets;
 #[derive(Clone)]
 pub struct BridgeState {
     inner: Arc<Mutex<Option<BridgeRuntime>>>,
+    presence: AtsPresenceState,
     wake_monitor: MonitorWakeFn,
 }
 
 impl BridgeState {
-    pub fn new(wake_monitor: MonitorWakeFn) -> Self {
+    pub fn new(wake_monitor: MonitorWakeFn, presence: AtsPresenceState) -> Self {
         Self {
             inner: Arc::new(Mutex::new(None)),
+            presence,
             wake_monitor,
         }
     }
@@ -92,9 +96,10 @@ impl BridgeState {
             monitor_path,
             version,
             config.clone(),
+            self.presence.clone(),
             Arc::clone(&self.wake_monitor),
         )
-        .await?;
+            .await?;
         let status = runtime.status();
         {
             let mut guard = self.inner.lock().unwrap_or_else(|e| e.into_inner());

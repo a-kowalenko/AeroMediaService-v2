@@ -12,6 +12,9 @@ pub const CONFIG_DB_FILE: &str = "config.db";
 /// SQLite file for upload history (not JSON as primary store).
 pub const HISTORY_DB_FILE: &str = "history.db";
 
+/// SQLite file for ATS bridge presence / activity observability.
+pub const ATS_PRESENCE_DB_FILE: &str = "ats_presence.db";
+
 /// SQLite file for customer intake queue (Fertig-App replacement).
 pub const CUSTOMERS_DB_FILE: &str = "customers.db";
 
@@ -162,6 +165,7 @@ mod tests {
         assert_eq!(KEYRING_SERVICE_NAME, "AeroMediaService-v2");
         assert_eq!(CONFIG_DB_FILE, "config.db");
         assert_eq!(HISTORY_DB_FILE, "history.db");
+        assert_eq!(ATS_PRESENCE_DB_FILE, "ats_presence.db");
         assert_eq!(CUSTOMERS_DB_FILE, "customers.db");
         assert_eq!(LEGACY_HISTORY_JSON, "upload_history.json");
         assert_ne!(KEYRING_SERVICE_NAME, "DropboxUploaderApp");

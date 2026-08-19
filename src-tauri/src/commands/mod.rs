@@ -7,7 +7,10 @@ pub mod operator;
 pub mod settings;
 pub mod upload;
 
-pub use bridge::{apply_bridge_config, get_bridge_status};
+pub use bridge::{
+    apply_bridge_config, get_ats_host_details, get_ats_hosts_summary, get_ats_jobs_by_host,
+    get_bridge_status,
+};
 pub use cloud::{
     auto_connect_cloud, connect_active_cloud, connect_custom_api, connect_dropbox,
     disconnect_active_cloud, disconnect_custom_api, disconnect_dropbox, finish_dropbox_oauth,

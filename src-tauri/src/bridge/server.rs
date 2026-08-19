@@ -5,7 +5,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use axum::extract::{Path as AxumPath, State};
-use axum::http::{header, Request, StatusCode};
+use axum::http::{header, HeaderMap, Request, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -22,7 +22,9 @@ use crate::cloud::custom_api::fetch_customer_as_kunde;
 use crate::commands::ConfigState;
 use crate::model::handoff::{read_status_outbox, CODE_CUSTOMER_LOOKUP_FAILED};
 use crate::model::marker::ApiMarkerQuery;
+use crate::storage::ats_presence::AtsPresenceState;
 use crate::storage::logging;
+use super::presence::{record_bridge_event, BridgeEventKind};
 
 /// Callback to interrupt the monitor wait loop (no upload enqueue).
 /// Args: folder_name, correlation_id (either may be empty).
@@ -34,6 +36,7 @@ struct AppState {
     version: String,
     /// Live monitor_path from config on each health / jobs call.
     config: ConfigState,
+    presence: AtsPresenceState,
     wake_monitor: MonitorWakeFn,
 }
 
@@ -78,6 +81,7 @@ impl BridgeRuntime {
         monitor_path_initial: String,
         version: String,
         config: ConfigState,
+        presence: AtsPresenceState,
         wake_monitor: MonitorWakeFn,
     ) -> Result<Self, String> {
         let addr: SocketAddr = bind
@@ -95,6 +99,7 @@ impl BridgeRuntime {
             token: Arc::new(token),
             version: version.clone(),
             config,
+            presence,
             wake_monitor,
         };
 
@@ -156,25 +161,48 @@ async fn require_bearer(
     next.run(request).await
 }
 
-async fn health(State(state): State<AppState>) -> Json<HealthResponse> {
+async fn health(State(state): State<AppState>, headers: HeaderMap) -> Json<HealthResponse> {
     let monitor_path = state
         .config
         .get("monitor_path", Some(""))
         .unwrap_or_default();
-    Json(HealthResponse::p3(&state.version, monitor_path))
+    let response = Json(HealthResponse::p3(&state.version, monitor_path));
+    record_bridge_event(
+        &state.presence,
+        &headers,
+        BridgeEventKind::Health,
+        "/v1/health",
+        "GET",
+        StatusCode::OK,
+        None,
+        None,
+    );
+    response
 }
 
 async fn customer_lookup(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
+    headers: HeaderMap,
     Json(body): Json<LookupRequest>,
 ) -> impl IntoResponse {
     let mode = match body.lookup_mode() {
         Ok(m) => m,
         Err(msg) => {
-            return (
+            let response = (
                 StatusCode::BAD_REQUEST,
                 Json(LookupResponse::failure("invalid_mode", msg)),
             );
+            record_bridge_event(
+                &state.presence,
+                &headers,
+                BridgeEventKind::CustomerLookup,
+                "/v1/customer/lookup",
+                "POST",
+                StatusCode::BAD_REQUEST,
+                None,
+                None,
+            );
+            return response;
         }
     };
 
@@ -182,13 +210,24 @@ async fn customer_lookup(
     let booking_id = body.booking_id.trim().to_string();
     let marker_type = body.marker_type.trim().to_string();
     if customer_id.is_empty() || booking_id.is_empty() || marker_type.is_empty() {
-        return (
+        let response = (
             StatusCode::BAD_REQUEST,
             Json(LookupResponse::failure(
                 "invalid_request",
                 "customer_id, booking_id und type sind Pflicht.",
             )),
         );
+        record_bridge_event(
+            &state.presence,
+            &headers,
+            BridgeEventKind::CustomerLookup,
+            "/v1/customer/lookup",
+            "POST",
+            StatusCode::BAD_REQUEST,
+            None,
+            None,
+        );
+        return response;
     }
 
     let query = ApiMarkerQuery {
@@ -197,26 +236,49 @@ async fn customer_lookup(
         marker_type,
     };
 
-    match fetch_customer_as_kunde(&query, mode).await {
+    let response = match fetch_customer_as_kunde(&query, mode).await {
         Ok(kunde) => (StatusCode::OK, Json(LookupResponse::success(kunde))),
         Err(msg) => (
             StatusCode::BAD_GATEWAY,
             Json(LookupResponse::failure(CODE_CUSTOMER_LOOKUP_FAILED, msg)),
         ),
-    }
+    };
+    record_bridge_event(
+        &state.presence,
+        &headers,
+        BridgeEventKind::CustomerLookup,
+        "/v1/customer/lookup",
+        "POST",
+        response.0,
+        None,
+        None,
+    );
+    response
 }
 
 /// Mirror status outbox under `monitor_path/.ams-handoff/<correlation_id>.json`.
 async fn job_status(
     State(state): State<AppState>,
+    headers: HeaderMap,
     AxumPath(correlation_id): AxumPath<String>,
 ) -> impl IntoResponse {
     let cid = correlation_id.trim();
     if cid.is_empty() {
-        return (
+        let response = (
             StatusCode::BAD_REQUEST,
             Json(JobStatusResponse::bad_request("correlation_id fehlt.")),
         );
+        record_bridge_event(
+            &state.presence,
+            &headers,
+            BridgeEventKind::JobStatus,
+            "/v1/jobs/{correlation_id}",
+            "GET",
+            StatusCode::BAD_REQUEST,
+            None,
+            None,
+        );
+        return response;
     }
 
     let monitor_path = state
@@ -225,7 +287,7 @@ async fn job_status(
         .unwrap_or_default();
     let monitor_path = monitor_path.trim();
     if monitor_path.is_empty() {
-        return (
+        let response = (
             StatusCode::SERVICE_UNAVAILABLE,
             Json(JobStatusResponse {
                 ok: false,
@@ -236,17 +298,39 @@ async fn job_status(
                 }),
             }),
         );
+        record_bridge_event(
+            &state.presence,
+            &headers,
+            BridgeEventKind::JobStatus,
+            "/v1/jobs/{correlation_id}",
+            "GET",
+            StatusCode::SERVICE_UNAVAILABLE,
+            Some(cid),
+            None,
+        );
+        return response;
     }
 
     let share_root = Path::new(monitor_path);
     let path = crate::model::handoff::outbox_path(share_root, cid);
     if !path.is_file() {
-        return (
+        let response = (
             StatusCode::NOT_FOUND,
             Json(JobStatusResponse::not_found(cid)),
         );
+        record_bridge_event(
+            &state.presence,
+            &headers,
+            BridgeEventKind::JobStatus,
+            "/v1/jobs/{correlation_id}",
+            "GET",
+            StatusCode::NOT_FOUND,
+            Some(cid),
+            None,
+        );
+        return response;
     }
-    match read_status_outbox(share_root, cid) {
+    let response = match read_status_outbox(share_root, cid) {
         Ok(doc) => (StatusCode::OK, Json(JobStatusResponse::found(doc))),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -259,12 +343,24 @@ async fn job_status(
                 }),
             }),
         ),
-    }
+    };
+    record_bridge_event(
+        &state.presence,
+        &headers,
+        BridgeEventKind::JobStatus,
+        "/v1/jobs/{correlation_id}",
+        "GET",
+        response.0,
+        Some(cid),
+        None,
+    );
+    response
 }
 
 /// Wake monitor scan loop. Does **not** claim folders or bypass the upload queue.
 async fn handoff_ready(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(body): Json<HandoffReadyRequest>,
 ) -> impl IntoResponse {
     let cid = body.correlation_id.trim();
@@ -275,7 +371,18 @@ async fn handoff_ready(
         if folder.is_empty() { "-" } else { folder },
     ));
     (state.wake_monitor)(folder.to_string(), cid.to_string());
-    (StatusCode::OK, Json(HandoffReadyResponse::woken()))
+    let response = (StatusCode::OK, Json(HandoffReadyResponse::woken()));
+    record_bridge_event(
+        &state.presence,
+        &headers,
+        BridgeEventKind::HandoffReady,
+        "/v1/handoff/ready",
+        "POST",
+        StatusCode::OK,
+        Some(cid),
+        Some(folder),
+    );
+    response
 }
 
 #[cfg(test)]
@@ -284,6 +391,8 @@ mod tests {
     use crate::constants::CONFIG_DB_FILE;
     use crate::model::handoff::{write_status_outbox, OutboxAmsMeta, OutboxState, SCHEMA_V1};
     use crate::storage::config::ConfigStore;
+    use crate::constants::ATS_PRESENCE_DB_FILE;
+    use crate::storage::ats_presence::{AtsPresenceState, AtsPresenceStore};
     use serde_json::json;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tempfile::tempdir;
@@ -301,6 +410,13 @@ mod tests {
         Arc::new(|_, _| {})
     }
 
+    fn test_presence() -> AtsPresenceState {
+        let dir = tempdir().unwrap();
+        let store = AtsPresenceStore::open_at(dir.path().join(ATS_PRESENCE_DB_FILE)).unwrap();
+        std::mem::forget(dir);
+        AtsPresenceState::from_store(store)
+    }
+
     #[tokio::test]
     async fn health_requires_token_and_returns_ready_capability() {
         let config = test_config_with_monitor(r"\\test\aktuell");
@@ -310,10 +426,11 @@ mod tests {
             String::new(),
             "0.1.0-test".into(),
             config,
+            test_presence(),
             noop_wake(),
         )
-        .await
-        .expect("bind");
+            .await
+            .expect("bind");
         let base = format!("http://{}", runtime.bind_addr);
 
         let client = reqwest::Client::new();
@@ -352,10 +469,11 @@ mod tests {
             String::new(),
             "0.1.0".into(),
             config,
+            test_presence(),
             noop_wake(),
         )
-        .await
-        .unwrap();
+            .await
+            .unwrap();
         let base = format!("http://{}", runtime.bind_addr);
         let client = reqwest::Client::new();
         let resp = client
@@ -387,7 +505,7 @@ mod tests {
             None,
             OutboxAmsMeta::default(),
         )
-        .unwrap();
+            .unwrap();
 
         let config = test_config_with_monitor(share.path().to_str().unwrap());
         let runtime = BridgeRuntime::start(
@@ -396,10 +514,11 @@ mod tests {
             String::new(),
             "0.1.0".into(),
             config,
+            test_presence(),
             noop_wake(),
         )
-        .await
-        .unwrap();
+            .await
+            .unwrap();
         let base = format!("http://{}", runtime.bind_addr);
         let client = reqwest::Client::new();
 
@@ -443,10 +562,11 @@ mod tests {
             String::new(),
             "0.1.0".into(),
             config,
+            test_presence(),
             wake,
         )
-        .await
-        .unwrap();
+            .await
+            .unwrap();
         let base = format!("http://{}", runtime.bind_addr);
         let client = reqwest::Client::new();
 

@@ -615,7 +615,7 @@ Nur Phase 12. Danach cargo test && npm run tauri dev.
 - [x] **P3** — Bridge: `GET /v1/jobs/{correlation_id}`, `POST /v1/handoff/ready` (Monitor wake, kein Upload-Bypass)
 - [x] **P4** — Bridge mDNS Discovery only (`_ams-bridge._tcp.local.`; Token manuell; keine SHA/strict)
 - [x] **L4 UX** — ATS Historie: AMS-Status-Chips + Phasen-Stepper, Last-Known in SQLite, Poll bei Terminal stoppen
-- [ ] **P5+** — optional: SHA-256, strict extras, …
+- [x] **P5+** — Bridge-Presence/Host-Aktivität (ATS `X-Ats-*` Header, AMS Presence-Store + UI); weitere optionale Themen bleiben z. B. SHA-256 / strict extras
 
 #### AMS-Gate (P1) — Kurz
 

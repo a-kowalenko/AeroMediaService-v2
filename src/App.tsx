@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { Play, Square } from "lucide-react";
+import { Play, Square, Users } from "lucide-react";
 import { AppChrome } from "@/components/chrome";
 import { AppFeedbackHost } from "@/components/AppFeedbackHost";
+import { AtsClientsDialog } from "@/components/AtsClientsDialog";
 import { ConnectionStatusIndicator } from "@/components/ConnectionStatusIndicator";
 import { CustomersPanel } from "@/components/CustomersPanel";
 import { HistoryTable } from "@/components/HistoryTable";
@@ -27,6 +28,7 @@ import {
   cancelUpdateInstall,
   checkForUpdates,
   getAppVersion,
+  getAtsHostsSummary,
   getCloudConnectionStatus,
   getMonitoringStatus,
   getSecret,
@@ -54,6 +56,7 @@ function App() {
   const [version, setVersion] = useState<string>("…");
   const [monitorBusy, setMonitorBusy] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [atsClientsOpen, setAtsClientsOpen] = useState(false);
   const [setupWizardOpen, setSetupWizardOpen] = useState(false);
   const [splashOpen, setSplashOpen] = useState(true);
   const [splashStatus, setSplashStatus] = useState("Wird gestartet…");
@@ -77,6 +80,7 @@ function App() {
   const [updaterPlatformHint, setUpdaterPlatformHint] = useState<string | null>(
     null,
   );
+  const [atsClientCount, setAtsClientCount] = useState(0);
 
   const monitoring = useAppStore((s) => s.monitoring);
   const connectionStatus = useAppStore((s) => s.connectionStatus);
@@ -102,6 +106,15 @@ function App() {
       // ignore
     }
   }, [setMonitoring]);
+
+  const refreshAtsClientCount = useCallback(async () => {
+    try {
+      const hosts = await getAtsHostsSummary(60);
+      setAtsClientCount(hosts.length);
+    } catch {
+      setAtsClientCount(0);
+    }
+  }, []);
 
   const installBlockedReason = (() => {
     if (updateInstalling) return "Installation läuft bereits…";
@@ -239,6 +252,7 @@ function App() {
       .then(setUpdaterPlatformHint)
       .catch(() => setUpdaterPlatformHint(null));
     void refreshCustomerCounts();
+    void refreshAtsClientCount();
     void (async () => {
       try {
         const theme = (await getSetting("ui_theme", "dark")).trim().toLowerCase();
@@ -257,7 +271,19 @@ function App() {
         setSplashOpen(false);
       }
     })();
-  }, [setMonitoring, setConnectionStatus, setThemeMode, refreshCustomerCounts]);
+    const atsTimer = window.setInterval(() => {
+      void refreshAtsClientCount();
+    }, 30000);
+    return () => {
+      window.clearInterval(atsTimer);
+    };
+  }, [
+    setMonitoring,
+    setConnectionStatus,
+    setThemeMode,
+    refreshCustomerCounts,
+    refreshAtsClientCount,
+  ]);
 
   useEffect(() => {
     const unlisteners: Array<() => void> = [];
@@ -418,6 +444,19 @@ function App() {
       <AppChrome
         actions={
           <>
+            <Button
+              type="button"
+              variant="secondary"
+              size="sm"
+              onClick={() => setAtsClientsOpen(true)}
+              title="ATS-Clients anzeigen"
+            >
+              <Users className="h-3.5 w-3.5" />
+              <span className="hidden sm:inline">Clients</span>
+              <span className="rounded-full bg-primary-soft px-1.5 text-[10px] font-semibold leading-4 text-primary">
+                {atsClientCount}
+              </span>
+            </Button>
             <ConnectionStatusIndicator />
             {monitoring ? (
               <Button
@@ -551,6 +590,11 @@ function App() {
           setSettingsOpen(false);
           setSetupWizardOpen(true);
         }}
+      />
+
+      <AtsClientsDialog
+        open={atsClientsOpen}
+        onClose={() => setAtsClientsOpen(false)}
       />
 
       <SetupWizard

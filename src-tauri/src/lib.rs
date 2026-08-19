@@ -21,8 +21,9 @@ use commands::{
     append_history_files, append_history_media, cancel_upload, channels_delivered, clear_history, connect_active_cloud, connect_custom_api,
     connect_dropbox, delete_customer, delete_history_items, disconnect_active_cloud,
     disconnect_custom_api, disconnect_dropbox, finish_dropbox_oauth, get_app_version,
-    get_assignment_history, get_bridge_status, get_cloud_connection_status, get_history,
-    get_history_entry, get_manual_status_warnings, get_monitoring_status, get_recent_logs,
+    get_assignment_history, get_ats_host_details, get_ats_hosts_summary, get_ats_jobs_by_host,
+    get_bridge_status, get_cloud_connection_status, get_history, get_history_entry,
+    get_manual_status_warnings, get_monitoring_status, get_recent_logs,
     get_sandbox_warnings, get_secret, get_setting, get_sms_balance, get_stability_pending,
     get_upload_control_state, get_upload_queue, list_customers, list_media_folders_cmd,
     lookup_share_link, migrate_legacy_settings, pause_upload, propose_customer_assignments,
@@ -32,6 +33,7 @@ use commands::{
     update_customer, verify_dropbox_status, resolve_history_booking_flags, expand_append_media_paths, ConfigState,
 };
 use monitor::MonitorState;
+use storage::ats_presence::AtsPresenceState;
 use storage::customers::CustomerState;
 use storage::history::HistoryState;
 use storage::logging::{init_logging, log_info, log_warn, set_log_emitter};
@@ -58,7 +60,10 @@ pub fn run() {
         Arc::clone(&upload_state.registry),
         upload_state.jobs.clone(),
     );
-    let bridge_state = BridgeState::new(monitor_state.wake_fn());
+    let ats_presence_state = AtsPresenceState::new().unwrap_or_else(|e| {
+        panic!("failed to initialize ATS presence store: {e}");
+    });
+    let bridge_state = BridgeState::new(monitor_state.wake_fn(), ats_presence_state.clone());
     let history_state = HistoryState::new().unwrap_or_else(|e| {
         panic!("failed to initialize history store: {e}");
     });
@@ -72,6 +77,7 @@ pub fn run() {
         .manage(config_state.clone())
         .manage(cloud_state.clone())
         .manage(bridge_state.clone())
+        .manage(ats_presence_state)
         .manage(monitor_state)
         .manage(upload_state)
         .manage(history_state)
@@ -91,6 +97,9 @@ pub fn run() {
             stop_monitoring,
             get_bridge_status,
             apply_bridge_config,
+            get_ats_hosts_summary,
+            get_ats_host_details,
+            get_ats_jobs_by_host,
             pause_upload,
             resume_upload,
             cancel_upload,

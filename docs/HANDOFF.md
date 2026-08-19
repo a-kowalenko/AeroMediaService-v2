@@ -222,6 +222,11 @@ Beispiel:
 
 - Bind: LAN (nicht nur `127.0.0.1`); **Token-Auth** Pflicht.
 - ATS-Config: Base-URL + Token (wechselnde Netze → manuell / zuletzt erfolgreich speichern).
+- ATS sendet bei **jedem** Bridge-Request zusätzlich Identitäts-Header:
+  - `X-Ats-Instance-Id` = stabile ATS-Installations-UUID (Primary Key für Presence)
+  - `X-Ats-Hostname` = PC-Name aus ATS-Settings / Hostname (für UI-Anzeige)
+  - `X-Ats-Version` = ATS-Version
+  - `X-Ats-App` = App-Name (z. B. `AeroTandemStudio`)
 - Discovery (mDNS): **P4** — Service-Typ `_ams-bridge._tcp.local.`; Token bleibt manuell; Fallback = manuelle URL.
 - Credentials der Customer-API bleiben bei AMS.
 
@@ -231,6 +236,13 @@ Beispiel:
 | `POST` | `/v1/customer/lookup` | Preflight; AMS → bestehende Customer-API |
 | `GET` | `/v1/jobs/{correlation_id}` | Status (Spiegel Outbox / History) |
 | `POST` | `/v1/handoff/ready` | Monitor wake / Priorität — **kein** Upload-Bypass |
+
+### 9.1 Presence / Host-Aktivität (P5+)
+
+- AMS kann optional Bridge-only Presence anzeigen: **aktiv = mindestens ein Bridge-Event in den letzten 60 Minuten**.
+- Presence basiert **nur** auf Bridge-Requests; ATS ohne Bridge bleibt bewusst unsichtbar.
+- `X-Ats-Instance-Id` ist der technische Host-Schlüssel; `X-Ats-Hostname` bleibt die menschenlesbare Anzeige im AMS-UI.
+- `GET /v1/jobs/{correlation_id}` und `POST /v1/handoff/ready` erlauben zusätzlich die Zuordnung `correlation_id -> ATS-Host`.
 
 Capabilities statt harter Versionskopplung, z. B.  
 `["manifest-v1","status-outbox","lookup","ready","append-v1"]`.
@@ -285,7 +297,7 @@ Windows-Config: UNC (`\\host\aktuell`), nicht nur `smb://`.
 | **P3** ✅ | Bridge: job status + handoff/ready | beide |
 | **P4** ✅ | Bridge mDNS Discovery only (`_ams-bridge._tcp.local.`) | beide |
 | **L4 UX** ✅ | ATS Historie: Status-Chips/Stepper, Last-Known in SQLite, Poll stoppt bei Terminal | ATS |
-| **P5+** | optional: SHA-256, strict extras, … | nach Bedarf |
+| **P5+** | optional / nach Bedarf: SHA-256, strict extras, Bridge-Presence/Host-Aktivität | nach Bedarf |
 | **Phase 15** ✅ | Append/Nachreichen: `kind=append` + Parent-Gate + Worker-Route | AMS + ATS |
 
 **Eine Teilphase pro Agent-Session.** Upload-Worker nicht anfassen außer Status-Spiegel für Outbox, wo nötig.
