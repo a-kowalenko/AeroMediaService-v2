@@ -15,12 +15,15 @@ use serde_json::{json, Value};
 use tokio::sync::oneshot;
 
 use super::types::{
-    HandoffReadyRequest, HandoffReadyResponse, HealthResponse, JobStatusResponse, LookupRequest,
-    LookupResponse,
+    HandoffCancelRequest, HandoffCancelResponse, HandoffReadyRequest, HandoffReadyResponse,
+    HealthResponse, JobStatusResponse, LookupErrorBody, LookupRequest, LookupResponse,
 };
 use crate::cloud::custom_api::fetch_customer_as_kunde;
 use crate::commands::ConfigState;
-use crate::model::handoff::{read_status_outbox, CODE_CUSTOMER_LOOKUP_FAILED};
+use crate::model::handoff::{
+    read_status_outbox, write_status_outbox, OutboxAmsMeta, OutboxError, OutboxState,
+    CODE_CUSTOMER_LOOKUP_FAILED, CODE_CANCELLED,
+};
 use crate::model::marker::{normalize_marker_type, ApiMarkerQuery};
 use crate::storage::ats_presence::AtsPresenceState;
 use crate::storage::logging;
@@ -30,6 +33,9 @@ use super::presence::{record_bridge_event, BridgeEventKind};
 /// Args: folder_name, correlation_id (either may be empty).
 pub type MonitorWakeFn = Arc<dyn Fn(String, String) + Send + Sync>;
 
+/// Callback when ATS aborts an in-flight upload handoff.
+pub type MonitorCancelFn = Arc<dyn Fn(String, String) + Send + Sync>;
+
 #[derive(Clone)]
 struct AppState {
     token: Arc<String>,
@@ -38,6 +44,7 @@ struct AppState {
     config: ConfigState,
     presence: AtsPresenceState,
     wake_monitor: MonitorWakeFn,
+    cancel_monitor: MonitorCancelFn,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -83,6 +90,7 @@ impl BridgeRuntime {
         config: ConfigState,
         presence: AtsPresenceState,
         wake_monitor: MonitorWakeFn,
+        cancel_monitor: MonitorCancelFn,
     ) -> Result<Self, String> {
         let addr: SocketAddr = bind
             .parse()
@@ -101,6 +109,7 @@ impl BridgeRuntime {
             config,
             presence,
             wake_monitor,
+            cancel_monitor,
         };
 
         let app = Router::new()
@@ -108,6 +117,7 @@ impl BridgeRuntime {
             .route("/v1/customer/lookup", post(customer_lookup))
             .route("/v1/jobs/{correlation_id}", get(job_status))
             .route("/v1/handoff/ready", post(handoff_ready))
+            .route("/v1/handoff/cancel", post(handoff_cancel))
             .layer(middleware::from_fn_with_state(
                 state.clone(),
                 require_bearer,
@@ -445,6 +455,77 @@ async fn handoff_ready(
     response
 }
 
+/// Drop a pending ATS handoff after upload abort. Writes failed/cancelled outbox for ATS UI.
+async fn handoff_cancel(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<HandoffCancelRequest>,
+) -> impl IntoResponse {
+    let cid = body.correlation_id.trim();
+    let folder = body.folder_name.trim();
+    if cid.is_empty() {
+        let failure = HandoffCancelResponse {
+            ok: false,
+            cancelled: false,
+            error: Some(LookupErrorBody {
+                code: "invalid_request".into(),
+                message: "correlation_id ist Pflicht.".into(),
+            }),
+        };
+        return (StatusCode::BAD_REQUEST, Json(failure));
+    }
+
+    let reason = body.reason.trim();
+    let message = if reason.is_empty() {
+        "Upload abgebrochen (ATS).".into()
+    } else {
+        reason.to_string()
+    };
+
+    logging::log_info(&format!(
+        "AMS-Bridge handoff/cancel: correlation_id={cid}, folder_name={} — pending handoff entfernen.",
+        if folder.is_empty() { "-" } else { folder },
+    ));
+
+    (state.cancel_monitor)(folder.to_string(), cid.to_string());
+
+    let monitor_path = state
+        .config
+        .get("monitor_path", Some(""))
+        .unwrap_or_default();
+    if !monitor_path.trim().is_empty() {
+        let share_root = Path::new(monitor_path.trim());
+        let _ = write_status_outbox(
+            share_root,
+            cid,
+            OutboxState::Failed,
+            Some(OutboxError {
+                code: CODE_CANCELLED.to_string(),
+                message: message.clone(),
+            }),
+            OutboxAmsMeta::default(),
+        );
+    }
+
+    let response = (StatusCode::OK, Json(HandoffCancelResponse::cancelled()));
+    record_bridge_event(
+        &state.presence,
+        &headers,
+        BridgeEventKind::HandoffCancel,
+        "/v1/handoff/cancel",
+        "POST",
+        StatusCode::OK,
+        Some(cid),
+        Some(folder),
+        Some(json!({
+            "correlation_id": cid,
+            "folder_name": folder,
+            "reason": message,
+        })),
+    );
+    response
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -470,6 +551,10 @@ mod tests {
         Arc::new(|_, _| {})
     }
 
+    fn noop_cancel() -> MonitorCancelFn {
+        Arc::new(|_, _| {})
+    }
+
     fn test_presence() -> AtsPresenceState {
         let dir = tempdir().unwrap();
         let store = AtsPresenceStore::open_at(dir.path().join(ATS_PRESENCE_DB_FILE)).unwrap();
@@ -488,6 +573,7 @@ mod tests {
             config,
             test_presence(),
             noop_wake(),
+            noop_cancel(),
         )
             .await
             .expect("bind");
@@ -516,6 +602,7 @@ mod tests {
         assert!(body.capabilities.contains(&"manifest-v1".into()));
         assert!(body.capabilities.contains(&"status-outbox".into()));
         assert!(body.capabilities.contains(&"ready".into()));
+        assert!(body.capabilities.contains(&"handoff-cancel".into()));
 
         runtime.shutdown().await;
     }
@@ -531,6 +618,7 @@ mod tests {
             config,
             test_presence(),
             noop_wake(),
+            noop_cancel(),
         )
             .await
             .unwrap();
@@ -576,6 +664,7 @@ mod tests {
             config,
             test_presence(),
             noop_wake(),
+            noop_cancel(),
         )
             .await
             .unwrap();
@@ -624,6 +713,7 @@ mod tests {
             config,
             test_presence(),
             wake,
+            noop_cancel(),
         )
             .await
             .unwrap();
@@ -653,6 +743,72 @@ mod tests {
         let body: HandoffReadyResponse = ok.json().await.unwrap();
         assert!(body.ok && body.woken);
         assert_eq!(wakes.load(Ordering::SeqCst), 1);
+
+        runtime.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn handoff_cancel_requires_auth_and_writes_cancelled_outbox() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let cancels = Arc::new(AtomicUsize::new(0));
+        let cancels_c = Arc::clone(&cancels);
+        let cancel: MonitorCancelFn = Arc::new(move |folder, cid| {
+            assert_eq!(folder, "JobCancel");
+            assert_eq!(cid, "cccccccc-dddd-eeee-ffff-gggggggggggg");
+            cancels_c.fetch_add(1, Ordering::SeqCst);
+        });
+
+        let share = tempdir().unwrap();
+        let cid = "cccccccc-dddd-eeee-ffff-gggggggggggg";
+        let config = test_config_with_monitor(share.path().to_str().unwrap());
+        let runtime = BridgeRuntime::start(
+            "127.0.0.1:0".into(),
+            "tok".into(),
+            String::new(),
+            "0.1.0".into(),
+            config,
+            test_presence(),
+            noop_wake(),
+            cancel,
+        )
+        .await
+        .unwrap();
+        let base = format!("http://{}", runtime.bind_addr);
+        let client = reqwest::Client::new();
+
+        let unauth = client
+            .post(format!("{base}/v1/handoff/cancel"))
+            .json(&json!({
+                "correlation_id": cid,
+                "folder_name": "JobCancel",
+                "reason": "Vorgang abgebrochen"
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(unauth.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(cancels.load(Ordering::SeqCst), 0);
+
+        let ok = client
+            .post(format!("{base}/v1/handoff/cancel"))
+            .header(header::AUTHORIZATION, "Bearer tok")
+            .json(&json!({
+                "correlation_id": cid,
+                "folder_name": "JobCancel",
+                "reason": "Vorgang abgebrochen"
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(ok.status(), StatusCode::OK);
+        let body: HandoffCancelResponse = ok.json().await.unwrap();
+        assert!(body.ok && body.cancelled);
+        assert_eq!(cancels.load(Ordering::SeqCst), 1);
+
+        let outbox = read_status_outbox(share.path(), cid).unwrap();
+        assert_eq!(outbox.state, OutboxState::Failed);
+        assert_eq!(outbox.error.as_ref().unwrap().code, CODE_CANCELLED);
 
         runtime.shutdown().await;
     }

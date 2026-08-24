@@ -17,6 +17,7 @@ pub enum BridgeEventKind {
     CustomerLookup,
     JobStatus,
     HandoffReady,
+    HandoffCancel,
 }
 
 impl BridgeEventKind {
@@ -26,6 +27,7 @@ impl BridgeEventKind {
             BridgeEventKind::CustomerLookup => "customer_lookup",
             BridgeEventKind::JobStatus => "job_status",
             BridgeEventKind::HandoffReady => "handoff_ready",
+            BridgeEventKind::HandoffCancel => "handoff_cancel",
         }
     }
 }

@@ -2,6 +2,7 @@
 
 use tauri::State;
 
+use crate::upload::control::UploadControlState;
 use crate::upload::registry::QueueSnapshotItem;
 use crate::upload::UploadState;
 
@@ -27,14 +28,5 @@ pub fn get_upload_queue(upload: State<'_, UploadState>) -> Vec<QueueSnapshotItem
 
 #[tauri::command]
 pub fn get_upload_control_state(upload: State<'_, UploadState>) -> UploadControlState {
-    UploadControlState {
-        paused: upload.control.is_paused(),
-        cancelled: upload.control.is_cancelled(),
-    }
-}
-
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct UploadControlState {
-    pub paused: bool,
-    pub cancelled: bool,
+    upload.control.snapshot()
 }

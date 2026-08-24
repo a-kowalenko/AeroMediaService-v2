@@ -6,6 +6,7 @@ import { ProgressBar } from "./ProgressBar";
 import { Button } from "@/components/ui/button";
 import {
   STABILITY_PENDING_CHANGED,
+  UPLOAD_CONTROL_CHANGED,
   UPLOAD_FAILED,
   UPLOAD_FINISHED,
   UPLOAD_JOB_ACTIVE,
@@ -17,18 +18,33 @@ import {
 import {
   cancelUpload,
   getStabilityPending,
+  getUploadControlState,
   getUploadQueue,
   pauseUpload,
   resumeUpload,
   type ByteProgress,
   type QueueSnapshotItem,
   type StabilityPendingItem,
+  type UploadControlState,
 } from "@/lib/tauri";
 import { cn } from "@/lib/utils";
 import { showAppToast } from "@/lib/toast";
 import { useUiStore } from "@/store/uiStore";
 
 const EMPTY_PROGRESS: ByteProgress = { percent: 0, current: 0, total: 0 };
+const IDLE_CONTROL: UploadControlState = {
+  paused: false,
+  holding: false,
+  cancelled: false,
+};
+
+/** Pause request vs. worker actually blocked in wait_if_paused. */
+type PausePhase = "running" | "pausing" | "paused";
+
+function pausePhaseFrom(control: UploadControlState): PausePhase {
+  if (!control.paused) return "running";
+  return control.holding ? "paused" : "pausing";
+}
 
 type PendingView = StabilityPendingItem & { receivedAt: number };
 
@@ -120,11 +136,15 @@ export function UploadPanel({ className, compact = false }: Props) {
   const [pending, setPending] = useState<PendingView[]>([]);
   const [now, setNow] = useState(() => Date.now());
   const [busy, setBusy] = useState(false);
+  const [control, setControl] = useState<UploadControlState>(IDLE_CONTROL);
   const confirm = useUiStore((s) => s.confirm);
+  const pausePhase = pausePhaseFrom(control);
+  const isPausedLike = pausePhase !== "running";
 
   useEffect(() => {
     getUploadQueue().then(setQueue).catch(() => {});
     getStabilityPending().then((items) => setPending(stampPending(items))).catch(() => {});
+    getUploadControlState().then(setControl).catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -147,8 +167,12 @@ export function UploadPanel({ className, compact = false }: Props) {
         })
         .catch(() => {});
     };
-    add<boolean>(UPLOAD_JOB_ACTIVE, setActive);
+    add<boolean>(UPLOAD_JOB_ACTIVE, (next) => {
+      setActive(next);
+      if (!next) setControl(IDLE_CONTROL);
+    });
     add<string>(UPLOAD_STATUS_UPDATE, setStatus);
+    add<UploadControlState>(UPLOAD_CONTROL_CHANGED, setControl);
     add<ByteProgress>(UPLOAD_PROGRESS_FILE, setFile);
     add<ByteProgress>(UPLOAD_PROGRESS_TOTAL, setTotal);
     add<QueueSnapshotItem[]>(UPLOAD_QUEUE_CHANGED, setQueue);
@@ -187,10 +211,25 @@ export function UploadPanel({ className, compact = false }: Props) {
     }
   }
 
+  async function onTogglePause() {
+    if (pausePhase === "running") {
+      setControl((prev) => ({ ...prev, paused: true, holding: false }));
+      await run(pauseUpload);
+      return;
+    }
+    setControl((prev) => ({
+      ...prev,
+      paused: false,
+      holding: false,
+    }));
+    await run(resumeUpload);
+  }
+
   async function onCancel() {
     const ok = await confirm("Laufenden Upload wirklich abbrechen?", {
       title: "Upload abbrechen",
-      primaryLabel: "Abbrechen",
+      primaryLabel: "Ja, abbrechen",
+      secondaryLabel: "Weiterlaufen lassen",
       destructive: true,
     });
     if (!ok) return;
@@ -206,9 +245,23 @@ export function UploadPanel({ className, compact = false }: Props) {
     queue.length === 0
       ? "Keine Aufträge"
       : `${queue.length} in Warteschlange`;
-  const chipLabel = active ? "Aktiv" : onlyHandoff ? "Neu" : hasPending ? "Wartet" : "Idle";
+  const chipLabel = active
+    ? pausePhase === "paused"
+      ? "Pausiert"
+      : pausePhase === "pausing"
+        ? "Pause…"
+        : "Aktiv"
+    : onlyHandoff
+      ? "Neu"
+      : hasPending
+        ? "Wartet"
+        : "Idle";
   const description = active
-    ? activeJob?.dir_name || "Upload läuft"
+    ? pausePhase === "paused"
+      ? "Upload pausiert"
+      : pausePhase === "pausing"
+        ? "Wird pausiert…"
+        : activeJob?.dir_name || "Upload läuft"
     : onlyHandoff
       ? handoffPending.length === 1
         ? "Neuer Auftrag…"
@@ -231,25 +284,29 @@ export function UploadPanel({ className, compact = false }: Props) {
         <span
           className={cn(
             "inline-flex items-center gap-1.5 rounded-md border px-2 py-0.5 text-[11px] font-medium",
-            active
-              ? "border-primary/35 bg-primary/10 text-primary"
-              : onlyHandoff
+            active && isPausedLike
+              ? "border-warning/35 bg-warning/10 text-warning"
+              : active
                 ? "border-primary/35 bg-primary/10 text-primary"
-                : hasPending
-                  ? "border-warning/35 bg-warning/10 text-warning"
-                  : "border-border bg-card-elevated/80 text-muted",
+                : onlyHandoff
+                  ? "border-primary/35 bg-primary/10 text-primary"
+                  : hasPending
+                    ? "border-warning/35 bg-warning/10 text-warning"
+                    : "border-border bg-card-elevated/80 text-muted",
           )}
         >
           <span
             className={cn(
               "h-1.5 w-1.5 rounded-full",
-              active
-                ? "bg-primary ams-chip-active"
-                : onlyHandoff
+              active && isPausedLike
+                ? "bg-warning ams-chip-active"
+                : active
                   ? "bg-primary ams-chip-active"
-                  : hasPending
-                    ? "bg-warning ams-chip-active"
-                    : "bg-muted",
+                  : onlyHandoff
+                    ? "bg-primary ams-chip-active"
+                    : hasPending
+                      ? "bg-warning ams-chip-active"
+                      : "bg-muted",
             )}
           />
           {chipLabel}
@@ -349,7 +406,7 @@ export function UploadPanel({ className, compact = false }: Props) {
             <span className="min-w-0 leading-snug">{status}</span>
           </div>
 
-          <div className="space-y-3">
+          <div className={cn("space-y-3", isPausedLike && "opacity-70")}>
             <ProgressBar
               percent={file.percent}
               label={`Datei · ${formatBytes(file.current)} / ${formatBytes(file.total)}`}
@@ -367,21 +424,25 @@ export function UploadPanel({ className, compact = false }: Props) {
               type="button"
               variant="secondary"
               size="sm"
-              disabled={busy}
-              onClick={() => run(pauseUpload)}
+              disabled={busy || pausePhase === "pausing"}
+              onClick={() => void onTogglePause()}
             >
-              <Pause className="h-3.5 w-3.5" />
-              Pause
-            </Button>
-            <Button
-              type="button"
-              variant="secondary"
-              size="sm"
-              disabled={busy}
-              onClick={() => run(resumeUpload)}
-            >
-              <Play className="h-3.5 w-3.5" />
-              Fortsetzen
+              {pausePhase === "running" ? (
+                <>
+                  <Pause className="h-3.5 w-3.5" />
+                  Pause
+                </>
+              ) : pausePhase === "pausing" ? (
+                <>
+                  <Pause className="h-3.5 w-3.5" />
+                  Wird pausiert…
+                </>
+              ) : (
+                <>
+                  <Play className="h-3.5 w-3.5" />
+                  Fortsetzen
+                </>
+              )}
             </Button>
             <Button
               type="button"

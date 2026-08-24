@@ -51,11 +51,14 @@ function isErrorStatus(lower: string): boolean {
     lower.includes("problem") ||
     lower.includes("fehler") ||
     lower.includes("fehlgeschlagen") ||
-    lower.includes("abgebrochen") ||
     lower.includes("abgelehnt") ||
     lower.includes("reject") ||
     lower.includes("notdelivered")
   );
+}
+
+function isCancelledStatus(lower: string): boolean {
+  return lower.includes("abgebrochen");
 }
 
 function isActiveStatus(lower: string): boolean {
@@ -85,6 +88,8 @@ export function overallStatusTone(
   if (lower === "übersprungen" || lower === "uebersprungen") {
     return "skipped";
   }
+  // User cancel: warning (ATS-parität), not danger.
+  if (isCancelledStatus(lower)) return "warning";
   if (isErrorStatus(lower)) return "error";
 
   // Exact / known labels first

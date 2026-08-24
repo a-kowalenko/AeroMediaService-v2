@@ -4,7 +4,9 @@
 use chrono::Local;
 use serde_json::{json, Map, Value};
 
-use crate::model::history_status::{build_overall_status, is_problem_status};
+use crate::model::history_status::{
+    build_overall_status, is_cancelled_status, is_problem_status,
+};
 
 pub const ACTION_MARK_COMPLETE: &str = "Komplett";
 pub const ACTION_MARK_SENT: &str = "Versendet";
@@ -129,7 +131,7 @@ fn target_sms_status(entry: &Value, delivered: bool) -> Option<&'static str> {
 
 fn apply_resolve_problem(entry: &Value, updates: &mut Map<String, Value>) {
     let upload_status = json_str(entry, "status").trim();
-    if is_problem_status(Some(upload_status)) || matches!(upload_status, "Fehler" | "Abgebrochen") {
+    if is_problem_status(Some(upload_status)) {
         updates.insert("status".into(), Value::String("Erfolgreich".into()));
         updates.insert("error_msg".into(), Value::String(String::new()));
     }
@@ -186,8 +188,7 @@ pub fn build_manual_status_update(
             if let Some(sms_target) = target_sms_status(entry, true) {
                 updates.insert("sms_status".into(), Value::String(sms_target.to_string()));
             }
-            if is_problem_status(Some(&before.status))
-                || matches!(before.status.as_str(), "Fehler" | "Abgebrochen")
+            if is_problem_status(Some(&before.status)) || is_cancelled_status(Some(&before.status))
             {
                 updates.insert("error_msg".into(), Value::String(String::new()));
             }
@@ -203,8 +204,7 @@ pub fn build_manual_status_update(
             if let Some(sms_target) = target_sms_status(entry, false) {
                 updates.insert("sms_status".into(), Value::String(sms_target.to_string()));
             }
-            if is_problem_status(Some(&before.status))
-                || matches!(before.status.as_str(), "Fehler" | "Abgebrochen")
+            if is_problem_status(Some(&before.status)) || is_cancelled_status(Some(&before.status))
             {
                 updates.insert("error_msg".into(), Value::String(String::new()));
             }

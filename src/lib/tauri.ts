@@ -200,6 +200,12 @@ export type QueueSnapshotItem = {
     wait_seconds: number;
 };
 
+export type UploadControlState = {
+    paused: boolean;
+    holding: boolean;
+    cancelled: boolean;
+};
+
 export function pauseUpload(): Promise<void> {
     return invoke("pause_upload");
 }
@@ -214,6 +220,10 @@ export function cancelUpload(): Promise<void> {
 
 export function getUploadQueue(): Promise<QueueSnapshotItem[]> {
     return invoke<QueueSnapshotItem[]>("get_upload_queue");
+}
+
+export function getUploadControlState(): Promise<UploadControlState> {
+    return invoke<UploadControlState>("get_upload_control_state");
 }
 
 export type HistoryEntry = {

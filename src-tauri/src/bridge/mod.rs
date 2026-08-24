@@ -7,7 +7,7 @@ mod presence;
 mod server;
 mod types;
 
-pub use server::{BridgeRuntime, BridgeStatus, MonitorWakeFn};
+pub use server::{BridgeRuntime, BridgeStatus, MonitorCancelFn, MonitorWakeFn};
 pub use types::{DEFAULT_BRIDGE_BIND, P3_CAPABILITIES};
 
 use std::sync::{Arc, Mutex};
@@ -23,14 +23,20 @@ pub struct BridgeState {
     inner: Arc<Mutex<Option<BridgeRuntime>>>,
     presence: AtsPresenceState,
     wake_monitor: MonitorWakeFn,
+    cancel_monitor: MonitorCancelFn,
 }
 
 impl BridgeState {
-    pub fn new(wake_monitor: MonitorWakeFn, presence: AtsPresenceState) -> Self {
+    pub fn new(
+        wake_monitor: MonitorWakeFn,
+        cancel_monitor: MonitorCancelFn,
+        presence: AtsPresenceState,
+    ) -> Self {
         Self {
             inner: Arc::new(Mutex::new(None)),
             presence,
             wake_monitor,
+            cancel_monitor,
         }
     }
 
@@ -98,6 +104,7 @@ impl BridgeState {
             config.clone(),
             self.presence.clone(),
             Arc::clone(&self.wake_monitor),
+            Arc::clone(&self.cancel_monitor),
         )
             .await?;
         let status = runtime.status();

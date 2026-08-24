@@ -141,6 +141,10 @@ fn is_problem(status_value: Option<&str>) -> bool {
     is_problem_status(status_value)
 }
 
+fn is_cancelled(status_value: Option<&str>) -> bool {
+    is_cancelled_status(status_value)
+}
+
 fn is_in_progress(status_value: Option<&str>) -> bool {
     let s = status_value.unwrap_or("").trim().to_lowercase();
     if s.is_empty() {
@@ -178,6 +182,11 @@ pub fn build_overall_status(item: &Value) -> String {
     let sms_problem = !phone_value.is_empty() && is_problem(Some(sms_status));
     if upload_problem || email_problem || sms_problem {
         return "Problem".into();
+    }
+
+    // Manueller Abbruch: warning, kein danger „Problem“ (ATS-parität).
+    if is_cancelled(Some(upload_status)) {
+        return "Abgebrochen".into();
     }
 
     // Nur Upload/E-Mail-Laufstatus blockiert; SMS-Zwischenstände (Übertragen …) = Versendet.
@@ -240,6 +249,12 @@ pub fn is_problem_status(status_value: Option<&str>) -> bool {
         return false;
     }
     s.contains("fehler") || s.contains("fehlgeschlagen") || s.contains("abgelehnt")
+}
+
+/// User-initiated cancel (upload/append) — distinct from technical failure.
+pub fn is_cancelled_status(status_value: Option<&str>) -> bool {
+    let s = status_value.unwrap_or("").trim().to_lowercase();
+    !s.is_empty() && s.contains("abgebrochen")
 }
 
 pub fn normalize_phone_digits(phone: Option<&str>) -> String {
@@ -417,11 +432,33 @@ mod tests {
         );
         assert_eq!(
             build_overall_status(&json!({
+                "status": "Abgebrochen",
+            })),
+            "Abgebrochen"
+        );
+        assert_eq!(
+            build_overall_status(&json!({
+                "status": "Abgebrochen",
+                "email": "a@b.de",
+                "email_status": "Fehler: SMTP",
+            })),
+            "Problem"
+        );
+        assert_eq!(
+            build_overall_status(&json!({
                 "status": "Gestartet",
             })),
             "In Bearbeitung"
         );
         assert_eq!(build_overall_status(&json!({})), "Unbekannt");
+    }
+
+    #[test]
+    fn test_cancelled_is_not_problem_status() {
+        assert!(is_cancelled_status(Some("Abgebrochen")));
+        assert!(!is_problem_status(Some("Abgebrochen")));
+        assert!(is_problem_status(Some("Fehler")));
+        assert!(!is_cancelled_status(Some("Fehler")));
     }
 
     #[test]

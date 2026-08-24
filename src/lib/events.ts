@@ -14,6 +14,7 @@ export const UPLOAD_STARTED = "upload-started";
 export const UPLOAD_PROGRESS = "upload-progress";
 export const UPLOAD_FINISHED = "upload-finished";
 export const UPLOAD_FAILED = "upload-failed";
+export const UPLOAD_CONTROL_CHANGED = "upload-control-changed";
 export const CONNECTION_STATUS_CHANGED = "connection-status-changed";
 export const UPLOAD_HISTORY_UPDATE = "upload-history-update";
 export const UPDATE_INSTALL_PROGRESS = "update-install-progress";

@@ -29,6 +29,8 @@ pub const UPLOAD_STARTED: &str = "upload-started";
 pub const UPLOAD_PROGRESS: &str = "upload-progress";
 pub const UPLOAD_FINISHED: &str = "upload-finished";
 pub const UPLOAD_FAILED: &str = "upload-failed";
+/// Cooperative pause/resume flags (`paused` requested, `holding` actually blocked).
+pub const UPLOAD_CONTROL_CHANGED: &str = "upload-control-changed";
 pub const MONITORING_STATUS_CHANGED: &str = "monitoring-status-changed";
 /// Folders waiting for unchanged content before claim (left-panel snapshot).
 pub const STABILITY_PENDING_CHANGED: &str = "stability-pending-changed";
@@ -116,6 +118,10 @@ pub fn emit_connection_status(status: impl Into<String>) {
     emit(CONNECTION_STATUS_CHANGED, status.into());
 }
 
+pub fn emit_upload_control(payload: impl Serialize) {
+    emit(UPLOAD_CONTROL_CHANGED, payload);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -134,6 +140,7 @@ mod tests {
         assert_eq!(UPLOAD_PROGRESS, "upload-progress");
         assert_eq!(UPLOAD_FINISHED, "upload-finished");
         assert_eq!(UPLOAD_FAILED, "upload-failed");
+        assert_eq!(UPLOAD_CONTROL_CHANGED, "upload-control-changed");
         assert_eq!(MONITORING_STATUS_CHANGED, "monitoring-status-changed");
         assert_eq!(STABILITY_PENDING_CHANGED, "stability-pending-changed");
         assert_eq!(CONNECTION_STATUS_CHANGED, "connection-status-changed");

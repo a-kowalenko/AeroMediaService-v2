@@ -195,6 +195,21 @@ fn note_handoff_entry(
     });
 }
 
+fn remove_handoff_entries(
+    store: &Mutex<Vec<HandoffPendingEntry>>,
+    folder_name: &str,
+    correlation_id: &str,
+) {
+    let dir = folder_name.trim();
+    let cid = correlation_id.trim();
+    let mut guard = store.lock().unwrap_or_else(|e| e.into_inner());
+    guard.retain(|e| {
+        let by_name = !dir.is_empty() && e.dir_name.eq_ignore_ascii_case(dir);
+        let by_cid = !cid.is_empty() && e.correlation_id.eq_ignore_ascii_case(cid);
+        !(by_name || by_cid)
+    });
+}
+
 fn prune_handoff_entries(
     store: &Mutex<Vec<HandoffPendingEntry>>,
     scan_path: &Path,
@@ -313,6 +328,20 @@ impl MonitorState {
         let stability_pending = Arc::clone(&self.stability_pending);
         Arc::new(move |folder_name: String, correlation_id: String| {
             note_handoff_entry(&handoff_pending, &folder_name, &correlation_id);
+            publish_incoming(&stability_pending, &handoff_pending, None);
+            scan_requested.store(true, Ordering::SeqCst);
+            wake.notify_waiters();
+        })
+    }
+
+    /// Shared cancel callback for Bridge `POST /v1/handoff/cancel` (ATS upload abort).
+    pub fn cancel_fn(&self) -> Arc<dyn Fn(String, String) + Send + Sync> {
+        let wake = Arc::clone(&self.wake);
+        let scan_requested = Arc::clone(&self.scan_requested);
+        let handoff_pending = Arc::clone(&self.handoff_pending);
+        let stability_pending = Arc::clone(&self.stability_pending);
+        Arc::new(move |folder_name: String, correlation_id: String| {
+            remove_handoff_entries(&handoff_pending, &folder_name, &correlation_id);
             publish_incoming(&stability_pending, &handoff_pending, None);
             scan_requested.store(true, Ordering::SeqCst);
             wake.notify_waiters();

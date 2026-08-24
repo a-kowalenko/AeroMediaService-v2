@@ -145,7 +145,9 @@ function historyErrorDetail(item: HistoryEntry): ErrorDetail {
     return { label: "Fehlertext", text: current, tone: "current" };
   }
   const last = item.error_msg.trim();
-  if (last && overallStatusTone(item.status, "upload") !== "error") {
+  const uploadTone = overallStatusTone(item.status, "upload");
+  // Cancelled is warning, not a resolved failure — don't surface stale error_msg as „Letzter Fehler“.
+  if (last && uploadTone !== "error" && uploadTone !== "warning") {
     return { label: "Letzter Fehler", text: last, tone: "resolved" };
   }
   return { label: "Fehlertext", text: "—", tone: "none" };

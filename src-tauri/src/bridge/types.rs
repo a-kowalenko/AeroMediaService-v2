@@ -12,14 +12,16 @@ pub const CAPABILITY_MANIFEST_V1: &str = "manifest-v1";
 pub const CAPABILITY_STATUS_OUTBOX: &str = "status-outbox";
 pub const CAPABILITY_LOOKUP: &str = "lookup";
 pub const CAPABILITY_READY: &str = "ready";
+pub const CAPABILITY_HANDOFF_CANCEL: &str = "handoff-cancel";
 pub const CAPABILITY_APPEND_V1: &str = "append-v1";
 
-/// Capabilities advertised by AMS (P3 + append).
-pub const P3_CAPABILITIES: [&str; 5] = [
+/// Capabilities advertised by AMS (P3 + append + handoff cancel).
+pub const P3_CAPABILITIES: [&str; 6] = [
     CAPABILITY_MANIFEST_V1,
     CAPABILITY_STATUS_OUTBOX,
     CAPABILITY_LOOKUP,
     CAPABILITY_READY,
+    CAPABILITY_HANDOFF_CANCEL,
     CAPABILITY_APPEND_V1,
 ];
 
@@ -179,6 +181,35 @@ impl HandoffReadyResponse {
     }
 }
 
+/// `POST /v1/handoff/cancel` — ATS aborted upload; drop pending handoff.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct HandoffCancelRequest {
+    #[serde(default)]
+    pub correlation_id: String,
+    #[serde(default)]
+    pub folder_name: String,
+    #[serde(default)]
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HandoffCancelResponse {
+    pub ok: bool,
+    pub cancelled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<LookupErrorBody>,
+}
+
+impl HandoffCancelResponse {
+    pub fn cancelled() -> Self {
+        Self {
+            ok: true,
+            cancelled: true,
+            error: None,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -189,9 +220,17 @@ mod tests {
         assert!(h.online);
         assert_eq!(
             h.capabilities,
-            vec!["manifest-v1", "status-outbox", "lookup", "ready", "append-v1",]
+            vec![
+                "manifest-v1",
+                "status-outbox",
+                "lookup",
+                "ready",
+                "handoff-cancel",
+                "append-v1",
+            ]
         );
         assert!(h.capabilities.iter().any(|c| c == "ready"));
+        assert!(h.capabilities.iter().any(|c| c == "handoff-cancel"));
     }
 
     #[test]
