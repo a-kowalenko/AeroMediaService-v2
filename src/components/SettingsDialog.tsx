@@ -131,6 +131,7 @@ type SettingsFormSnapshot = {
         folder_stability_seconds: string;
         bridge_enabled: boolean;
         bridge_bind: string;
+        bridge_display_name: string;
         bridge_token: string;
     };
     cloudService: "dropbox" | "custom_api";
@@ -320,6 +321,22 @@ function boolFromSetting(value: string, fallback = false): boolean {
     return v !== "false" && v !== "0" && v !== "no";
 }
 
+function formatBridgeStatusLabel(status: {
+    running: boolean;
+    bind_addr: string;
+    display_name: string;
+    last_error: string | null;
+}): string {
+    if (status.running) {
+        const name = status.display_name.trim();
+        return name ? `${name} · ${status.bind_addr}` : `Aktiv auf ${status.bind_addr}`;
+    }
+    if (status.last_error) {
+        return `Inaktiv (${status.last_error})`;
+    }
+    return "Inaktiv";
+}
+
 /** Persist a secret only when non-empty — empty bulk-save must not wipe the keyring. */
 async function persistSecret(key: string, value: string): Promise<void> {
     const trimmed = value.trim();
@@ -402,9 +419,11 @@ export function SettingsDialog({
         folder_stability_seconds: "15",
         bridge_enabled: false,
         bridge_bind: "0.0.0.0:8787",
+        bridge_display_name: "",
         bridge_token: "",
     });
     const [bridgeStatusLabel, setBridgeStatusLabel] = useState("—");
+    const [bridgeInstanceId, setBridgeInstanceId] = useState("");
     const [bridgeBusy, setBridgeBusy] = useState(false);
     const [bridgeStatusLoading, setBridgeStatusLoading] = useState(false);
     const [bridgeView, setBridgeView] = useState<"monitoring" | "clients">("monitoring");
@@ -663,6 +682,7 @@ export function SettingsDialog({
                 folder_stability_seconds,
                 bridge_enabled,
                 bridge_bind,
+                bridge_display_name,
                 selected_cloud_service,
                 custom_api_upload_endpoint,
                 custom_api_share_endpoint,
@@ -693,6 +713,7 @@ export function SettingsDialog({
                 getSetting("folder_stability_seconds", "15"),
                 getSetting("bridge_enabled", "false"),
                 getSetting("bridge_bind", "0.0.0.0:8787"),
+                getSetting("bridge_display_name", ""),
                 getSetting("selected_cloud_service", "dropbox"),
                 getSetting("custom_api_upload_endpoint", "/upload"),
                 getSetting("custom_api_share_endpoint", "/share"),
@@ -725,18 +746,14 @@ export function SettingsDialog({
                 folder_stability_seconds,
                 bridge_enabled: boolFromSetting(bridge_enabled),
                 bridge_bind: bridge_bind || "0.0.0.0:8787",
+                bridge_display_name: bridge_display_name ?? "",
                 bridge_token: "",
             });
             setBridgeStatusLoading(true);
             void getBridgeStatus()
                 .then((status) => {
-                    setBridgeStatusLabel(
-                        status.running
-                            ? `Aktiv auf ${status.bind_addr}`
-                            : status.last_error
-                                ? `Inaktiv (${status.last_error})`
-                                : "Inaktiv",
-                    );
+                    setBridgeStatusLabel(formatBridgeStatusLabel(status));
+                    setBridgeInstanceId(status.instance_id ?? "");
                 })
                 .catch(() => {
                     setBridgeStatusLabel("—");
@@ -883,6 +900,7 @@ export function SettingsDialog({
                             folder_stability_seconds,
                             bridge_enabled: boolFromSetting(bridge_enabled),
                             bridge_bind: bridge_bind || "0.0.0.0:8787",
+                            bridge_display_name: bridge_display_name ?? "",
                             bridge_token: bridge_token ?? "",
                         },
                         cloudService:
@@ -1054,6 +1072,10 @@ export function SettingsDialog({
                 "bridge_bind",
                 general.bridge_bind.trim() || "0.0.0.0:8787",
             );
+            await saveSetting(
+                "bridge_display_name",
+                general.bridge_display_name.trim(),
+            );
             await saveSetting("ui_theme", themeMode);
             await saveSetting("selected_cloud_service", cloudService);
             await saveSetting(
@@ -1121,11 +1143,8 @@ export function SettingsDialog({
 
             try {
                 const status = await applyBridgeConfig();
-                setBridgeStatusLabel(
-                    status.running
-                        ? `Aktiv auf ${status.bind_addr}`
-                        : "Inaktiv",
-                );
+                setBridgeStatusLabel(formatBridgeStatusLabel(status));
+                setBridgeInstanceId(status.instance_id ?? "");
             } catch (bridgeErr) {
                 bridgeWarning = String(bridgeErr);
                 setBridgeStatusLabel(`Fehler: ${bridgeErr}`);
@@ -1528,6 +1547,28 @@ export function SettingsDialog({
                                                     />
                                                     Bridge-Server aktivieren
                                                 </label>
+                                                <Field label="Anzeigename im LAN (für ATS)">
+                                                    <Input
+                                                        value={general.bridge_display_name}
+                                                        disabled={!general.bridge_enabled}
+                                                        onChange={(e) =>
+                                                            setGeneral((p) => ({
+                                                                ...p,
+                                                                bridge_display_name: e.target.value,
+                                                            }))
+                                                        }
+                                                        placeholder="z. B. Landebahn Nord (leer = PC-Name)"
+                                                        maxLength={64}
+                                                    />
+                                                </Field>
+                                                {bridgeInstanceId ? (
+                                                    <p className="text-[11px] text-muted">
+                                                        Instanz-ID:{" "}
+                                                        <span className="font-mono text-foreground/80">
+                                                            {bridgeInstanceId}
+                                                        </span>
+                                                    </p>
+                                                ) : null}
                                                 <Field label="Bind-Adresse (LAN, z. B. 0.0.0.0:8787)">
                                                     <Input
                                                         value={general.bridge_bind}
@@ -1572,19 +1613,20 @@ export function SettingsDialog({
                                                                         "bridge_bind",
                                                                         general.bridge_bind.trim() || "0.0.0.0:8787",
                                                                     );
+                                                                    await saveSetting(
+                                                                        "bridge_display_name",
+                                                                        general.bridge_display_name.trim(),
+                                                                    );
                                                                     await persistSecret(
                                                                         "bridge_token",
                                                                         general.bridge_token,
                                                                     );
                                                                     const status = await applyBridgeConfig();
-                                                                    setBridgeStatusLabel(
-                                                                        status.running
-                                                                            ? `Aktiv auf ${status.bind_addr}`
-                                                                            : "Inaktiv",
-                                                                    );
+                                                                    setBridgeStatusLabel(formatBridgeStatusLabel(status));
+                                                                    setBridgeInstanceId(status.instance_id ?? "");
                                                                     showAppToast(
                                                                         status.running
-                                                                            ? `Bridge gestartet: ${status.bind_addr}`
+                                                                            ? `Bridge gestartet: ${formatBridgeStatusLabel(status)}`
                                                                             : "Bridge gestoppt.",
                                                                         {
                                                                             tone: "success",
@@ -1602,6 +1644,8 @@ export function SettingsDialog({
                                                                                     bridge_bind:
                                                                                         general.bridge_bind.trim() ||
                                                                                         "0.0.0.0:8787",
+                                                                                    bridge_display_name:
+                                                                                        general.bridge_display_name.trim(),
                                                                                     bridge_token:
                                                                                         general.bridge_token,
                                                                                 },

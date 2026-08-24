@@ -50,6 +50,8 @@ pub fn setting_default(key: &str) -> Option<&'static str> {
         "manifest_required" => Some("false"),
         "bridge_enabled" => Some("false"),
         "bridge_bind" => Some("0.0.0.0:8787"),
+        "bridge_display_name" => Some(""),
+        "bridge_instance_id" => Some(""),
         "selected_cloud_service" => Some("dropbox"),
         "custom_api_upload_mode" => Some("proxied_session"),
         "custom_api_upload_endpoint" => Some("/upload"),

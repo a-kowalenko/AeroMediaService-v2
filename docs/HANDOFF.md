@@ -228,14 +228,21 @@ Beispiel:
   - `X-Ats-Version` = ATS-Version
   - `X-Ats-App` = App-Name (z. B. `AeroTandemStudio`)
 - Discovery (mDNS): **P4** — Service-Typ `_ams-bridge._tcp.local.`; Token bleibt manuell; Fallback = manuelle URL.
+- mDNS TXT (P5+): `name` = Anzeigename, `id` = stabile AMS-`bridge_instance_id` (zusätzlich zu `app`, `ver`, `caps`, `path`).
 - Credentials der Customer-API bleiben bei AMS.
 
 | Methode | Pfad | Zweck |
 |---------|------|--------|
-| `GET` | `/v1/health` | online, Version, `monitor_path`, `capabilities[]` |
+| `GET` | `/v1/health` | online, Version, `display_name`, `instance_id`, `monitor_path`, `capabilities[]` |
 | `POST` | `/v1/customer/lookup` | Preflight; AMS → bestehende Customer-API |
 | `GET` | `/v1/jobs/{correlation_id}` | Status (Spiegel Outbox / History) |
 | `POST` | `/v1/handoff/ready` | Monitor wake / Priorität — **kein** Upload-Bypass |
+
+### 9.2 AMS-Server-Identität (P5+)
+
+- AMS Settings: `bridge_display_name` (Anzeige, Fallback PC-Name), `bridge_instance_id` (UUID, einmal generiert).
+- ATS persistiert bei Health/Discovery: `ams_bridge_display_name`, `ams_bridge_server_instance_id` (≠ `ams_bridge_instance_id`, das ist die ATS-eigene ID).
+- Mehrere AMS im LAN: Disambiguator = `instance_id` + IP:Port; gleicher Anzeigename erlaubt.
 
 ### 9.1 Presence / Host-Aktivität (P5+)
 
@@ -274,6 +281,7 @@ Breaking Changes → `/v2`; additive Felder in `/v1` erlaubt.
 - `speicherort` = UNC des `aktuell`-Shares
 - Manifest schreiben (Feature an, sobald P1)
 - optional Bridge-URL + Token
+- `ams_bridge_display_name` / `ams_bridge_server_instance_id` (vom AMS, persistiert)
 
 ### AMS
 
@@ -281,10 +289,10 @@ Breaking Changes → `/v2`; additive Felder in `/v1` erlaubt.
 - Ignore `.ams-handoff`
 - `manifest_required` = `false` (Default)
 - optional Bridge enable + Token
+- `bridge_display_name` (Default leer → PC-Name)
+- `bridge_instance_id` (automatisch)
 
-### Betrieb
-
-Gleiche UNC in beiden Apps. Health/Preflight kann Abweichung nur warnen — das ist ein Betriebsfehler, kein Protokollfehler.
+### Betrieb Health/Preflight kann Abweichung nur warnen — das ist ein Betriebsfehler, kein Protokollfehler.
 
 Windows-Config: UNC (`\\host\aktuell`), nicht nur `smb://`.
 
@@ -301,7 +309,8 @@ Windows-Config: UNC (`\\host\aktuell`), nicht nur `smb://`.
 | **P3** ✅ | Bridge: job status + handoff/ready | beide |
 | **P4** ✅ | Bridge mDNS Discovery only (`_ams-bridge._tcp.local.`) | beide |
 | **L4 UX** ✅ | ATS Historie: Status-Chips/Stepper, Last-Known in SQLite, Poll stoppt bei Terminal | ATS |
-| **P5+** | optional / nach Bedarf: SHA-256, strict extras, Bridge-Presence/Host-Aktivität | nach Bedarf |
+| **P5+** | optional: AMS-Anzeigename + Instance-ID (mDNS TXT + `/v1/health`); ATS persistiert + UI | AMS + ATS |
+| **P5+ (alt)** | SHA-256, strict extras, Bridge-Presence/Host-Aktivität | nach Bedarf |
 | **Phase 15** ✅ | Append/Nachreichen: `kind=append` + Parent-Gate + Worker-Route | AMS + ATS |
 
 **Eine Teilphase pro Agent-Session.** Upload-Worker nicht anfassen außer Status-Spiegel für Outbox, wo nötig.

@@ -28,6 +28,7 @@ use crate::model::marker::{normalize_marker_type, ApiMarkerQuery};
 use crate::storage::ats_presence::AtsPresenceState;
 use crate::storage::logging;
 use super::presence::{record_bridge_event, BridgeEventKind};
+use super::{ensure_instance_id, resolve_display_name};
 
 /// Callback to interrupt the monitor wait loop (no upload enqueue).
 /// Args: folder_name, correlation_id (either may be empty).
@@ -51,11 +52,16 @@ struct AppState {
 pub struct BridgeStatus {
     pub running: bool,
     pub bind_addr: String,
+    pub display_name: String,
+    pub instance_id: String,
+    pub mdns_active: bool,
     pub last_error: Option<String>,
 }
 
 pub struct BridgeRuntime {
     bind_addr: String,
+    display_name: String,
+    instance_id: String,
     shutdown_tx: Option<oneshot::Sender<()>>,
     join: Option<tauri::async_runtime::JoinHandle<()>>,
     mdns: Option<super::mdns::MdnsAdvertiser>,
@@ -66,6 +72,9 @@ impl BridgeRuntime {
         BridgeStatus {
             running: self.shutdown_tx.is_some(),
             bind_addr: self.bind_addr.clone(),
+            display_name: self.display_name.clone(),
+            instance_id: self.instance_id.clone(),
+            mdns_active: self.mdns.is_some(),
             last_error: None,
         }
     }
@@ -103,6 +112,9 @@ impl BridgeRuntime {
             .local_addr()
             .map_err(|e| format!("Bridge local_addr: {e}"))?;
 
+        let display_name = resolve_display_name(&config);
+        let instance_id = ensure_instance_id(&config)?;
+
         let state = AppState {
             token: Arc::new(token),
             version: version.clone(),
@@ -134,10 +146,18 @@ impl BridgeRuntime {
             }
         });
 
-        let mdns = super::mdns::MdnsAdvertiser::start(local, &version, &monitor_path_initial);
+        let mdns = super::mdns::MdnsAdvertiser::start(
+            local,
+            &version,
+            &monitor_path_initial,
+            &display_name,
+            &instance_id,
+        );
 
         Ok(Self {
             bind_addr: local.to_string(),
+            display_name,
+            instance_id,
             shutdown_tx: Some(shutdown_tx),
             join: Some(join),
             mdns,
@@ -176,7 +196,14 @@ async fn health(State(state): State<AppState>, headers: HeaderMap) -> Json<Healt
         .config
         .get("monitor_path", Some(""))
         .unwrap_or_default();
-    let response = Json(HealthResponse::p3(&state.version, monitor_path));
+    let display_name = resolve_display_name(&state.config);
+    let instance_id = ensure_instance_id(&state.config).unwrap_or_default();
+    let response = Json(HealthResponse::p3(
+        &state.version,
+        monitor_path,
+        display_name,
+        instance_id,
+    ));
     record_bridge_event(
         &state.presence,
         &headers,

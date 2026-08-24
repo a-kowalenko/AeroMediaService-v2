@@ -78,6 +78,9 @@ export function stopMonitoring(): Promise<void> {
 export type BridgeStatus = {
     running: boolean;
     bind_addr: string;
+    display_name: string;
+    instance_id: string;
+    mdns_active: boolean;
     last_error: string | null;
 };
 

@@ -31,15 +31,26 @@ pub type BridgeCapabilities = Vec<String>;
 pub struct HealthResponse {
     pub online: bool,
     pub version: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub display_name: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub instance_id: String,
     pub monitor_path: String,
     pub capabilities: BridgeCapabilities,
 }
 
 impl HealthResponse {
-    pub fn p3(version: impl Into<String>, monitor_path: impl Into<String>) -> Self {
+    pub fn p3(
+        version: impl Into<String>,
+        monitor_path: impl Into<String>,
+        display_name: impl Into<String>,
+        instance_id: impl Into<String>,
+    ) -> Self {
         Self {
             online: true,
             version: version.into(),
+            display_name: display_name.into(),
+            instance_id: instance_id.into(),
             monitor_path: monitor_path.into(),
             capabilities: P3_CAPABILITIES.iter().map(|s| (*s).to_string()).collect(),
         }
@@ -216,7 +227,9 @@ mod tests {
 
     #[test]
     fn health_advertises_p3_capabilities_including_ready() {
-        let h = HealthResponse::p3("0.1.0", r"\\host\aktuell");
+        let h = HealthResponse::p3("0.1.0", r"\\host\aktuell", "Dropzone", "id-1");
+        assert_eq!(h.display_name, "Dropzone");
+        assert_eq!(h.instance_id, "id-1");
         assert!(h.online);
         assert_eq!(
             h.capabilities,

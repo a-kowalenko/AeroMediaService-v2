@@ -20,7 +20,13 @@ pub struct MdnsAdvertiser {
 
 impl MdnsAdvertiser {
     /// Publish bridge on LAN. Soft-fail: returns `None` if mDNS cannot start (bridge HTTP still runs).
-    pub fn start(local_addr: SocketAddr, version: &str, monitor_path: &str) -> Option<Self> {
+    pub fn start(
+        local_addr: SocketAddr,
+        version: &str,
+        monitor_path: &str,
+        display_name: &str,
+        instance_id: &str,
+    ) -> Option<Self> {
         let daemon = match ServiceDaemon::new() {
             Ok(d) => d,
             Err(e) => {
@@ -32,9 +38,9 @@ impl MdnsAdvertiser {
         };
 
         let port = local_addr.port();
-        let instance = instance_name();
+        let instance = super::identity::instance_dns_label(display_name);
         let host = host_name_dns();
-        let props = txt_properties(version, monitor_path);
+        let props = txt_properties(version, monitor_path, display_name, instance_id);
 
         let service = match build_service_info(local_addr.ip(), port, &instance, &host, props) {
             Ok(s) => s,
@@ -97,11 +103,25 @@ fn build_service_info(
     }
 }
 
-fn txt_properties(version: &str, monitor_path: &str) -> HashMap<String, String> {
+fn txt_properties(
+    version: &str,
+    monitor_path: &str,
+    display_name: &str,
+    instance_id: &str,
+) -> HashMap<String, String> {
     let mut map = HashMap::new();
     map.insert("app".into(), TXT_APP.into());
     map.insert("ver".into(), version.chars().take(32).collect());
     map.insert("caps".into(), P3_CAPABILITIES.join(","));
+    let name = display_name.trim();
+    if !name.is_empty() {
+        let truncated: String = name.chars().take(180).collect();
+        map.insert("name".into(), truncated);
+    }
+    let id = instance_id.trim();
+    if !id.is_empty() {
+        map.insert("id".into(), id.chars().take(64).collect());
+    }
     let path = monitor_path.trim();
     if !path.is_empty() {
         // TXT value length budget — keep short for UNC paths.
@@ -109,16 +129,6 @@ fn txt_properties(version: &str, monitor_path: &str) -> HashMap<String, String> 
         map.insert("path".into(), truncated);
     }
     map
-}
-
-fn instance_name() -> String {
-    let host = hostname_raw();
-    let safe = sanitize_dns_label(&host);
-    if safe.is_empty() {
-        "AeroMediaService".into()
-    } else {
-        format!("AMS-{safe}")
-    }
 }
 
 fn host_name_dns() -> String {

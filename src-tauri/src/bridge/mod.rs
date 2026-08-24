@@ -2,10 +2,13 @@
 //! Spec: `docs/HANDOFF.md` §9 — health, lookup, jobs, ready + mDNS advertise.
 //! File handoff (Manifest + Outbox) must work without this module.
 
+mod identity;
 mod mdns;
 mod presence;
 mod server;
 mod types;
+
+pub use identity::{ensure_instance_id, resolve_display_name};
 
 pub use server::{BridgeRuntime, BridgeStatus, MonitorCancelFn, MonitorWakeFn};
 pub use types::{DEFAULT_BRIDGE_BIND, P3_CAPABILITIES};
@@ -47,6 +50,9 @@ impl BridgeState {
             None => BridgeStatus {
                 running: false,
                 bind_addr: String::new(),
+                display_name: String::new(),
+                instance_id: String::new(),
+                mdns_active: false,
                 last_error: None,
             },
         }
