@@ -1,6 +1,6 @@
 import { Toaster } from "react-hot-toast";
 
-/** Non-blocking toasts — bottom-right, above main content, under dialogs. */
+/** Non-blocking toasts — bottom-right, above main content (z-index above modal dialogs). */
 export function ToastHost() {
   return (
     <Toaster

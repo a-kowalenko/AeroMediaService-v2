@@ -1,8 +1,8 @@
 import toast from "react-hot-toast";
-import { CheckCircle2, Info, XCircle } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Info, XCircle } from "lucide-react";
 import { cn } from "@/lib/utils";
 
-type ToastTone = "success" | "error" | "info";
+type ToastTone = "success" | "error" | "info" | "warning";
 
 function ToastCard({
   visible,
@@ -18,7 +18,13 @@ function ToastCard({
   onDismiss: () => void;
 }) {
   const Icon =
-    tone === "success" ? CheckCircle2 : tone === "error" ? XCircle : Info;
+    tone === "success"
+      ? CheckCircle2
+      : tone === "error"
+        ? XCircle
+        : tone === "warning"
+          ? AlertTriangle
+          : Info;
   return (
     <div
       className={cn(
@@ -26,6 +32,7 @@ function ToastCard({
         visible ? "opacity-100 translate-y-0" : "opacity-0 translate-y-1",
         tone === "success" && "border-l-4 border-l-success",
         tone === "error" && "border-l-4 border-l-destructive",
+        tone === "warning" && "border-l-4 border-l-warning",
         tone === "info" && "border-l-4 border-l-primary",
       )}
       role="status"
@@ -35,6 +42,7 @@ function ToastCard({
           "mt-0.5 h-4 w-4 shrink-0",
           tone === "success" && "text-success",
           tone === "error" && "text-destructive",
+          tone === "warning" && "text-warning",
           tone === "info" && "text-primary",
         )}
         aria-hidden
@@ -63,7 +71,8 @@ export function showAppToast(
   opts?: { title?: string; tone?: ToastTone; durationMs?: number; id?: string },
 ) {
   const tone = opts?.tone ?? "info";
-  const durationMs = opts?.durationMs ?? (tone === "error" ? 6000 : 4500);
+  const durationMs =
+    opts?.durationMs ?? (tone === "error" || tone === "warning" ? 6000 : 4500);
   toast.custom(
     (t) => (
       <ToastCard

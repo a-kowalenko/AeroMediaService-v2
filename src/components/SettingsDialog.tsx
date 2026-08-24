@@ -120,6 +120,97 @@ function normalizeCustomApiUploadMode(raw: string | null | undefined): string {
     return CUSTOM_API_UPLOAD_MODE_PROXIED;
 }
 
+type SettingsFormSnapshot = {
+    themeMode: ThemeMode;
+    general: {
+        monitor_path: string;
+        archive_path: string;
+        log_file_path: string;
+        scan_interval: string;
+        folder_stability_enabled: boolean;
+        folder_stability_seconds: string;
+        bridge_enabled: boolean;
+        bridge_bind: string;
+        bridge_token: string;
+    };
+    cloudService: "dropbox" | "custom_api";
+    dropbox: { db_app_key: string; db_app_secret: string };
+    customApi: {
+        custom_api_url: string;
+        custom_api_bearer_token: string;
+        aero_customer_base_url: string;
+        aero_customer_api_token: string;
+        custom_api_upload_endpoint: string;
+        custom_api_share_endpoint: string;
+        custom_api_health_endpoint: string;
+        custom_api_upload_mode: string;
+        custom_db_app_key: string;
+        custom_db_app_secret: string;
+    };
+    email: {
+        smtp_host: string;
+        smtp_port: string;
+        smtp_user: string;
+        smtp_pass: string;
+        smtp_sender_addr: string;
+        smtp_sender_name: string;
+        smtp_fallback_recipient: string;
+        smtp_sandbox_mode: boolean;
+        imap_save_sent_enabled: boolean;
+        imap_host: string;
+        imap_port: string;
+        imap_sent_folder: string;
+        imap_same_credentials: boolean;
+        imap_user: string;
+        imap_pass: string;
+    };
+    sms: {
+        seven_api_key: string;
+        seven_sandbox_api_key: string;
+        seven_sender: string;
+        seven_sandbox_mode: boolean;
+    };
+    shortener: {
+        link_shortener_enabled: boolean;
+        shortener_base_url: string;
+        shortener_api_key: string;
+        shortener_expires_preset: string;
+    };
+    whatsapp: {
+        twilio_account_sid: string;
+        twilio_auth_token: string;
+        twilio_whatsapp_from: string;
+    };
+};
+
+function captureSettingsFormSnapshot(input: SettingsFormSnapshot): SettingsFormSnapshot {
+    return JSON.parse(JSON.stringify(input)) as SettingsFormSnapshot;
+}
+
+function settingsSnapshotsEqual(
+    a: SettingsFormSnapshot | null,
+    b: SettingsFormSnapshot | null,
+): boolean {
+    if (!a || !b) return false;
+    return JSON.stringify(a) === JSON.stringify(b);
+}
+
+function monitorSettingsChanged(
+    snapshot: SettingsFormSnapshot | null,
+    general: SettingsFormSnapshot["general"],
+    scan: string,
+    stability: string,
+): boolean {
+    if (!snapshot) return false;
+    const prev = snapshot.general;
+    return (
+        prev.monitor_path.trim() !== general.monitor_path.trim() ||
+        prev.scan_interval !== scan ||
+        prev.folder_stability_enabled !== general.folder_stability_enabled ||
+        prev.folder_stability_seconds !== stability
+    );
+}
+
 function Field({label, children}: { label: string; children: ReactNode }) {
     return (
         <div className="space-y-1.5">
@@ -293,8 +384,8 @@ export function SettingsDialog({
     const confirm = useUiStore((s) => s.confirm);
     const [tab, setTab] = useState<TabId>("general");
     const [busy, setBusy] = useState(false);
-    const [status, setStatus] = useState("");
-    const [error, setError] = useState("");
+    const [loadError, setLoadError] = useState("");
+    const [savedSnapshot, setSavedSnapshot] = useState<SettingsFormSnapshot | null>(null);
 
     const [updaterMessage, setUpdaterMessage] = useState("—");
     const [releases, setReleases] = useState<AvailableRelease[]>([]);
@@ -391,6 +482,42 @@ export function SettingsDialog({
         twilio_auth_token: "",
         twilio_whatsapp_from: "",
     });
+
+    const currentSnapshot = useMemo(
+        (): SettingsFormSnapshot =>
+            captureSettingsFormSnapshot({
+                themeMode,
+                general,
+                cloudService,
+                dropbox,
+                customApi,
+                email,
+                sms,
+                shortener,
+                whatsapp,
+            }),
+        [themeMode, general, cloudService, dropbox, customApi, email, sms, shortener, whatsapp],
+    );
+
+    const isDirty =
+        savedSnapshot !== null && !settingsSnapshotsEqual(currentSnapshot, savedSnapshot);
+
+    const requestClose = useCallback(async () => {
+        if (busy) return;
+        if (isDirty) {
+            const discard = await confirm(
+                "Ungespeicherte Änderungen verwerfen?",
+                {
+                    title: "Einstellungen",
+                    primaryLabel: "Verwerfen",
+                    secondaryLabel: "Abbrechen",
+                    destructive: true,
+                },
+            );
+            if (!discard) return;
+        }
+        onClose();
+    }, [busy, isDirty, confirm, onClose]);
 
     const filteredReleases = useMemo(() => {
         if (showPrereleases) return releases;
@@ -524,8 +651,8 @@ export function SettingsDialog({
     }, [appVersion, isOpen, releases, showPrereleases, tab]);
 
     const loadAll = useCallback(async () => {
-        setError("");
-        setStatus("");
+        setLoadError("");
+        setSavedSnapshot(null);
         try {
             const [
                 monitor_path,
@@ -744,6 +871,75 @@ export function SettingsDialog({
                     twilio_auth_token: twilio_auth_token ?? "",
                 }));
 
+                setSavedSnapshot(
+                    captureSettingsFormSnapshot({
+                        themeMode: useThemeStore.getState().mode,
+                        general: {
+                            monitor_path,
+                            archive_path,
+                            log_file_path,
+                            scan_interval,
+                            folder_stability_enabled: boolFromSetting(stability_enabled, true),
+                            folder_stability_seconds,
+                            bridge_enabled: boolFromSetting(bridge_enabled),
+                            bridge_bind: bridge_bind || "0.0.0.0:8787",
+                            bridge_token: bridge_token ?? "",
+                        },
+                        cloudService:
+                            selected_cloud_service === "custom_api" ? "custom_api" : "dropbox",
+                        dropbox: {
+                            db_app_key: db_app_key ?? "",
+                            db_app_secret: db_app_secret ?? "",
+                        },
+                        customApi: {
+                            custom_api_url: custom_api_url ?? "",
+                            custom_api_bearer_token: custom_api_bearer_token ?? "",
+                            aero_customer_base_url: aero_customer_base_url ?? "",
+                            aero_customer_api_token: aero_customer_api_token ?? "",
+                            custom_api_upload_endpoint: custom_api_upload_endpoint || "/upload",
+                            custom_api_share_endpoint: custom_api_share_endpoint || "/share",
+                            custom_api_health_endpoint: custom_api_health_endpoint || "/health",
+                            custom_api_upload_mode: normalizeCustomApiUploadMode(custom_api_upload_mode),
+                            custom_db_app_key: custom_db_app_key ?? "",
+                            custom_db_app_secret: custom_db_app_secret ?? "",
+                        },
+                        email: {
+                            smtp_host,
+                            smtp_port,
+                            smtp_user: smtp_user ?? "",
+                            smtp_pass: smtp_pass ?? "",
+                            smtp_sender_addr,
+                            smtp_sender_name,
+                            smtp_fallback_recipient,
+                            smtp_sandbox_mode: boolFromSetting(smtp_sandbox_mode),
+                            imap_save_sent_enabled: boolFromSetting(imap_save_sent_enabled, true),
+                            imap_host,
+                            imap_port,
+                            imap_sent_folder,
+                            imap_same_credentials: boolFromSetting(imap_same_credentials, true),
+                            imap_user: imap_user ?? "",
+                            imap_pass: imap_pass ?? "",
+                        },
+                        sms: {
+                            seven_api_key: seven_api_key ?? "",
+                            seven_sandbox_api_key: seven_sandbox_api_key ?? "",
+                            seven_sender,
+                            seven_sandbox_mode: boolFromSetting(seven_sandbox_mode),
+                        },
+                        shortener: {
+                            link_shortener_enabled: boolFromSetting(link_shortener_enabled),
+                            shortener_base_url: base,
+                            shortener_api_key: shortener_api_key || skylink_api_key || "",
+                            shortener_expires_preset: shortener_expires_preset || "permanent",
+                        },
+                        whatsapp: {
+                            twilio_account_sid: twilio_account_sid ?? "",
+                            twilio_auth_token: twilio_auth_token ?? "",
+                            twilio_whatsapp_from,
+                        },
+                    }),
+                );
+
                 const sandbox = boolFromSetting(seven_sandbox_mode);
                 const balanceKey = sandbox ? seven_sandbox_api_key : seven_api_key;
                 setDbStatusLoading(true);
@@ -788,13 +984,13 @@ export function SettingsDialog({
                     setSmsBalanceLoading(false);
                 }
             } catch (err) {
-                setError(
+                setLoadError(
                     `Geheimnisse konnten nicht geladen werden (Keyring): ${err}. ` +
                     "API-URLs und Tokens werden ggf. leer angezeigt — bitte nicht speichern, sonst bleiben sie leer.",
                 );
             }
         } catch (err) {
-            setError(`Einstellungen konnten nicht geladen werden: ${err}`);
+            setLoadError(`Einstellungen konnten nicht geladen werden: ${err}`);
         }
     }, []);
 
@@ -823,8 +1019,8 @@ export function SettingsDialog({
     async function saveAll(event: FormEvent) {
         event.preventDefault();
         setBusy(true);
-        setStatus("");
-        setError("");
+        setLoadError("");
+        let bridgeWarning: string | null = null;
         try {
             const interval = Number.parseInt(general.scan_interval, 10);
             const scan = Number.isFinite(interval)
@@ -834,6 +1030,12 @@ export function SettingsDialog({
             const stability = Number.isFinite(stabilitySecs)
                 ? String(Math.min(3600, Math.max(0, stabilitySecs)))
                 : "15";
+            const monitorChanged = monitorSettingsChanged(
+                savedSnapshot,
+                general,
+                scan,
+                stability,
+            );
 
             await saveSetting("monitor_path", general.monitor_path.trim());
             await saveSetting("archive_path", general.archive_path.trim());
@@ -925,18 +1127,58 @@ export function SettingsDialog({
                         : "Inaktiv",
                 );
             } catch (bridgeErr) {
+                bridgeWarning = String(bridgeErr);
                 setBridgeStatusLabel(`Fehler: ${bridgeErr}`);
             }
 
-            setGeneral((prev) => ({
-                ...prev,
+            const savedGeneral = {
+                ...general,
                 scan_interval: scan,
                 folder_stability_seconds: stability,
-            }));
-            setStatus("Gespeichert.");
+            };
+            setGeneral(savedGeneral);
+            setSavedSnapshot(
+                captureSettingsFormSnapshot({
+                    themeMode,
+                    general: savedGeneral,
+                    cloudService,
+                    dropbox,
+                    customApi,
+                    email,
+                    sms,
+                    shortener,
+                    whatsapp,
+                }),
+            );
+
+            let successMessage = "Einstellungen gespeichert.";
+            if (monitorChanged) {
+                successMessage +=
+                    "\n\nMonitor-Einstellungen gelten ab dem nächsten Scan.";
+            }
+            showAppToast(successMessage, {
+                tone: "success",
+                title: "Einstellungen",
+                id: "settings-save",
+            });
+            onClose();
+            if (bridgeWarning) {
+                showAppToast(
+                    `Einstellungen gespeichert, aber die Bridge konnte nicht gestartet werden:\n${bridgeWarning}`,
+                    {
+                        tone: "warning",
+                        title: "Bridge",
+                        durationMs: 7000,
+                        id: "settings-bridge-warning",
+                    },
+                );
+            }
         } catch (err) {
-            setError(`Speichern fehlgeschlagen: ${err}`);
-            showError(String(err), "Speichern");
+            showAppToast(String(err), {
+                tone: "error",
+                title: "Speichern fehlgeschlagen",
+                id: "settings-save-error",
+            });
         } finally {
             setBusy(false);
         }
@@ -944,7 +1186,6 @@ export function SettingsDialog({
 
     async function toggleDropbox() {
         setDbBusy(true);
-        setError("");
         try {
             await persistSecret("db_app_key", dropbox.db_app_key);
             await persistSecret("db_app_secret", dropbox.db_app_secret);
@@ -1109,7 +1350,7 @@ export function SettingsDialog({
         <Dialog
             open={isOpen}
             onOpenChange={(v) => {
-                if (!v) onClose();
+                if (!v) void requestClose();
             }}
         >
             <DialogContent
@@ -1341,14 +1582,38 @@ export function SettingsDialog({
                                                                             ? `Aktiv auf ${status.bind_addr}`
                                                                             : "Inaktiv",
                                                                     );
-                                                                    setStatus(
+                                                                    showAppToast(
                                                                         status.running
                                                                             ? `Bridge gestartet: ${status.bind_addr}`
                                                                             : "Bridge gestoppt.",
+                                                                        {
+                                                                            tone: "success",
+                                                                            title: "Bridge",
+                                                                        },
+                                                                    );
+                                                                    setSavedSnapshot((prev) =>
+                                                                        prev
+                                                                            ? {
+                                                                                ...prev,
+                                                                                general: {
+                                                                                    ...prev.general,
+                                                                                    bridge_enabled:
+                                                                                        general.bridge_enabled,
+                                                                                    bridge_bind:
+                                                                                        general.bridge_bind.trim() ||
+                                                                                        "0.0.0.0:8787",
+                                                                                    bridge_token:
+                                                                                        general.bridge_token,
+                                                                                },
+                                                                            }
+                                                                            : prev,
                                                                     );
                                                                 } catch (err) {
                                                                     setBridgeStatusLabel(`Fehler: ${err}`);
-                                                                    setError(`Bridge: ${err}`);
+                                                                    showAppToast(String(err), {
+                                                                        tone: "error",
+                                                                        title: "Bridge",
+                                                                    });
                                                                 } finally {
                                                                     setBridgeBusy(false);
                                                                 }
@@ -1546,6 +1811,9 @@ export function SettingsDialog({
                                                 onClick={() => {
                                                     setThemeMode(mode);
                                                     void saveSetting("ui_theme", mode);
+                                                    setSavedSnapshot((prev) =>
+                                                        prev ? {...prev, themeMode: mode} : prev,
+                                                    );
                                                 }}
                                             >
                                                 {mode === "dark" ? (
@@ -2407,15 +2675,18 @@ export function SettingsDialog({
 
                     <div className="flex shrink-0 flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                         <div className="min-h-[1.25rem] text-sm">
-                            {status ? (
-                                <span className="text-muted">{status}</span>
-                            ) : null}
-                            {error ? (
-                                <span className="text-destructive">{error}</span>
+                            {loadError ? (
+                                <span className="text-destructive">{loadError}</span>
+                            ) : isDirty ? (
+                                <span className="text-muted">Ungespeicherte Änderungen</span>
                             ) : null}
                         </div>
                         <DialogFooter className="gap-2 sm:justify-end">
-                            <Button type="button" variant="secondary" onClick={onClose}>
+                            <Button
+                                type="button"
+                                variant="secondary"
+                                onClick={() => void requestClose()}
+                            >
                                 Schließen
                             </Button>
                             <Button type="submit" disabled={busy}>
