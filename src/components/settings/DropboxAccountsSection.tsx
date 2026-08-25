@@ -60,9 +60,22 @@ type Props = {
 
 type CredDraft = {
   label: string;
+  appFolderName: string;
   appKey: string;
   appSecret: string;
 };
+
+type EditDraft = {
+  label: string;
+  appFolderName: string;
+};
+
+function displayAppFolderName(
+  row: DropboxAccountRow,
+  info: DropboxAccountInfo | null | undefined,
+): string {
+  return row.app_folder_name.trim() || info?.app_name.trim() || "";
+}
 
 function formatDropboxBytes(bytes: number): string {
   if (!Number.isFinite(bytes) || bytes < 0) return "—";
@@ -160,11 +173,13 @@ function accountSubtitle(
 
 function DropboxAccountPanel({
   info,
+  appFolderName,
   loading,
   error,
   credentials,
 }: {
   info: DropboxAccountInfo | null;
+  appFolderName: string;
   loading: boolean;
   error: string | null;
   credentials: ReactNode;
@@ -179,7 +194,6 @@ function DropboxAccountPanel({
       ? `${formatDropboxBytes(info.used_bytes)} / ${formatDropboxBytes(allocated)}`
       : `${formatDropboxBytes(info.used_bytes)} verwendet`
     : null;
-  const appLabel = info?.app_name.trim() ?? "";
   const photoUrl = info?.profile_photo_url.trim() ?? "";
   const initial =
     (info?.display_name || "?").trim().charAt(0).toUpperCase() || "?";
@@ -226,7 +240,7 @@ function DropboxAccountPanel({
           <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
             <span className="text-muted">App-Ordner</span>
             <span className="text-right text-foreground">
-              {appLabel || "—"}
+              {appFolderName || "—"}
               {info.app_key_hint ? (
                 <span className="block font-mono text-muted">{info.app_key_hint}</span>
               ) : null}
@@ -334,6 +348,16 @@ function AccountCredentialsDialog({
             />
           </div>
           <div className="space-y-1.5">
+            <Label htmlFor="dbx-acc-app-folder">App-Ordner (optional)</Label>
+            <Input
+              id="dbx-acc-app-folder"
+              value={draft.appFolderName}
+              disabled={busy}
+              placeholder="z. B. AeroMediaService"
+              onChange={(e) => onChange({ appFolderName: e.target.value })}
+            />
+          </div>
+          <div className="space-y-1.5">
             <Label htmlFor="dbx-acc-key">App Key</Label>
             <PasswordInput
               id="dbx-acc-key"
@@ -372,9 +396,74 @@ function AccountCredentialsDialog({
   );
 }
 
+function EditAccountDialog({
+  open,
+  draft,
+  busy,
+  onChange,
+  onOpenChange,
+  onSubmit,
+}: {
+  open: boolean;
+  draft: EditDraft;
+  busy: boolean;
+  onChange: (patch: Partial<EditDraft>) => void;
+  onOpenChange: (open: boolean) => void;
+  onSubmit: () => void;
+}) {
+  const canSubmit = draft.label.trim().length > 0 && !busy;
+
+  return (
+    <Dialog open={open} onOpenChange={(v) => !busy && onOpenChange(v)}>
+      <DialogContent className="z-[60] max-w-md" overlayClassName="z-[60]">
+        <DialogHeader>
+          <DialogTitle>Konto bearbeiten</DialogTitle>
+          <DialogDescription>
+            Bezeichnung und App-Ordner für dieses Dropbox-Profil.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-3 py-1">
+          <div className="space-y-1.5">
+            <Label htmlFor="dbx-edit-label">Bezeichnung</Label>
+            <Input
+              id="dbx-edit-label"
+              value={draft.label}
+              disabled={busy}
+              placeholder="z. B. Gera"
+              onChange={(e) => onChange({ label: e.target.value })}
+            />
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="dbx-edit-app-folder">App-Ordner</Label>
+            <Input
+              id="dbx-edit-app-folder"
+              value={draft.appFolderName}
+              disabled={busy}
+              placeholder="z. B. AeroMediaService"
+              onChange={(e) => onChange({ appFolderName: e.target.value })}
+            />
+          </div>
+        </div>
+        <DialogFooter>
+          <Button
+            type="button"
+            variant="secondary"
+            disabled={busy}
+            onClick={() => onOpenChange(false)}
+          >
+            Abbrechen
+          </Button>
+          <Button type="button" disabled={!canSubmit} onClick={onSubmit}>
+            {busy ? "…" : "Speichern"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 export function DropboxAccountsSection({ open, pool }: Props) {
   const confirm = useUiStore((s) => s.confirm);
-  const prompt = useUiStore((s) => s.prompt);
   const showError = useUiStore((s) => s.showError);
 
   const which = dropboxPoolWhich(pool);
@@ -395,9 +484,16 @@ export function DropboxAccountsSection({ open, pool }: Props) {
   const [addOpen, setAddOpen] = useState(false);
   const [addDraft, setAddDraft] = useState<CredDraft>({
     label: "",
+    appFolderName: "",
     appKey: "",
     appSecret: "",
   });
+  const [editOpen, setEditOpen] = useState(false);
+  const [editDraft, setEditDraft] = useState<EditDraft>({
+    label: "",
+    appFolderName: "",
+  });
+  const [editRowId, setEditRowId] = useState<string | null>(null);
   const [credsExpanded, setCredsExpanded] = useState<Record<string, boolean>>({});
   const [credEdits, setCredEdits] = useState<Record<string, CredEdit>>({});
   const [credSavingId, setCredSavingId] = useState<string | null>(null);
@@ -450,6 +546,16 @@ export function DropboxAccountsSection({ open, pool }: Props) {
             if (isConnectedStatus(status)) {
               try {
                 info = await getDropboxAccountInfo(which, row.id);
+                if (info?.app_name.trim() && !row.app_folder_name.trim()) {
+                  const discovered = info.app_name.trim();
+                  setRows((prev) =>
+                    prev.map((r) =>
+                      r.id === row.id && !r.app_folder_name.trim()
+                        ? { ...r, app_folder_name: discovered }
+                        : r,
+                    ),
+                  );
+                }
               } catch (e) {
                 infoError = String(e);
               }
@@ -486,8 +592,17 @@ export function DropboxAccountsSection({ open, pool }: Props) {
   }, [open, pool, reload]);
 
   async function openAddDialog() {
-    setAddDraft({ label: "", appKey: "", appSecret: "" });
+    setAddDraft({ label: "", appFolderName: "", appKey: "", appSecret: "" });
     setAddOpen(true);
+  }
+
+  function openEditDialog(row: DropboxAccountRow) {
+    setEditRowId(row.id);
+    setEditDraft({
+      label: row.label.trim() || accountTitle(row),
+      appFolderName: row.app_folder_name.trim(),
+    });
+    setEditOpen(true);
   }
 
   async function loadCredEdits(amsId: string) {
@@ -591,7 +706,11 @@ export function DropboxAccountsSection({ open, pool }: Props) {
     }
     setAdding(true);
     try {
-      const row = await createDropboxAccount(pool, addDraft.label.trim() || null);
+      const row = await createDropboxAccount(
+        pool,
+        addDraft.label.trim() || null,
+        addDraft.appFolderName.trim() || null,
+      );
       await seedAppCredentials(pool, row.id, addDraft.appKey, addDraft.appSecret);
       setAddOpen(false);
       showAppToast(
@@ -728,16 +847,25 @@ export function DropboxAccountsSection({ open, pool }: Props) {
   }
 
   async function onRename(row: DropboxAccountRow) {
-    setBusyId(row.id);
+    openEditDialog(row);
+  }
+
+  async function submitEditAccount() {
+    if (!editRowId) return;
+    const label = editDraft.label.trim();
+    if (!label) {
+      showError("Bezeichnung darf nicht leer sein.", `Dropbox (${poolLabel})`);
+      return;
+    }
+    setBusyId(editRowId);
     try {
-      const next = await prompt("Neue Bezeichnung:", {
-        title: "Konto umbenennen",
-        placeholder: accountTitle(row),
-        defaultValue: row.label,
-        primaryLabel: "Speichern",
-      });
-      if (next === null) return;
-      await renameDropboxAccount(row.id, next.trim());
+      await renameDropboxAccount(
+        editRowId,
+        label,
+        editDraft.appFolderName.trim(),
+      );
+      setEditOpen(false);
+      setEditRowId(null);
       await refreshList();
     } catch (err) {
       showError(String(err), `Dropbox (${poolLabel})`);
@@ -823,6 +951,7 @@ export function DropboxAccountsSection({ open, pool }: Props) {
           const credsOpen = Boolean(credsExpanded[row.id]);
           const credEdit = credEdits[row.id];
           const subtitle = accountSubtitle(row, live, connected);
+          const appFolderName = displayAppFolderName(row, live?.info);
 
           const credentialsBlock = (
             <div
@@ -948,6 +1077,7 @@ export function DropboxAccountsSection({ open, pool }: Props) {
 
               <DropboxAccountPanel
                 info={live?.info ?? null}
+                appFolderName={appFolderName}
                 loading={Boolean(live?.loading)}
                 error={live?.infoError ?? null}
                 credentials={credentialsBlock}
@@ -1006,6 +1136,20 @@ export function DropboxAccountsSection({ open, pool }: Props) {
         onChange={(patch) => setAddDraft((d) => ({ ...d, ...patch }))}
         onOpenChange={setAddOpen}
         onSubmit={() => void submitAddAccount()}
+      />
+
+      <EditAccountDialog
+        open={editOpen}
+        draft={editDraft}
+        busy={editRowId !== null && busyId === editRowId}
+        onChange={(patch) => setEditDraft((d) => ({ ...d, ...patch }))}
+        onOpenChange={(open) => {
+          if (!open) {
+            setEditOpen(false);
+            setEditRowId(null);
+          }
+        }}
+        onSubmit={() => void submitEditAccount()}
       />
     </div>
   );

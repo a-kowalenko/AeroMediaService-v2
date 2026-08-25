@@ -623,6 +623,7 @@ export type DropboxAccountRow = {
     email: string;
     display_name: string;
     app_key_hint: string;
+    app_folder_name: string;
     created_at: string;
     updated_at: string;
 };
@@ -646,10 +647,12 @@ export function listDropboxAccounts(
 export function createDropboxAccount(
     pool: DropboxAccountPool,
     label?: string | null,
+    appFolderName?: string | null,
 ): Promise<DropboxAccountRow> {
     return invoke<DropboxAccountRow>("create_dropbox_account", {
         pool,
         label: label ?? null,
+        appFolderName: appFolderName ?? null,
     });
 }
 
@@ -666,10 +669,22 @@ export function setActiveDropboxAccount(
 export function renameDropboxAccount(
     accountId: string,
     label: string,
+    appFolderName?: string | null,
 ): Promise<DropboxAccountRow> {
     return invoke<DropboxAccountRow>("rename_dropbox_account", {
         accountId,
         label,
+        appFolderName: appFolderName ?? null,
+    });
+}
+
+export function setDropboxAppFolderName(
+    accountId: string,
+    appFolderName: string,
+): Promise<DropboxAccountRow> {
+    return invoke<DropboxAccountRow>("set_dropbox_app_folder_name", {
+        accountId,
+        appFolderName,
     });
 }
 

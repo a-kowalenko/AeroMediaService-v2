@@ -16,7 +16,7 @@ pub use cloud::{
     create_dropbox_account, delete_dropbox_account, disconnect_active_cloud, disconnect_custom_api,
     disconnect_dropbox, finish_dropbox_oauth, get_cloud_connection_status, get_dropbox_account_info,
     get_sms_balance, list_dropbox_accounts, rename_dropbox_account, set_active_dropbox_account,
-    start_dropbox_oauth, test_link_shortener, verify_dropbox_status,
+    set_dropbox_app_folder_name, start_dropbox_oauth, test_link_shortener, verify_dropbox_status,
 };
 pub use customers::{
     assign_customer_to_folder, assign_customers_batch, delete_customer, get_assignment_history,

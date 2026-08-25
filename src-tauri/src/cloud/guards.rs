@@ -139,6 +139,7 @@ pub fn apply_oauth_account_identity(
                     &info.app_key_hint,
                 )
                 .map_err(|e| e.to_string())?;
+            let _ = accounts.maybe_set_app_folder_name_from_discovery(&other.id, &info.app_name);
             logging::log_info(&format!(
                 "OAuth: Dropbox-Konto {got} → bestehendes Profil {} (statt {ams_id})",
                 other.id
@@ -159,6 +160,7 @@ pub fn apply_oauth_account_identity(
             &info.app_key_hint,
         )
         .map_err(|e| e.to_string())?;
+    let _ = accounts.maybe_set_app_folder_name_from_discovery(ams_id, &info.app_name);
     Ok(OauthIdentityOutcome::Updated {
         ams_id: ams_id.to_string(),
     })

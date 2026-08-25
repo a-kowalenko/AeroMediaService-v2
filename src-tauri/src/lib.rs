@@ -33,7 +33,7 @@ use commands::{
     remove_inactive_long_ats_hosts, rename_dropbox_account, resend_history_notifications,
     reset_setup, resolve_history_booking_flags, resume_upload, retry_upload, save_customer,
     save_history_contact, save_secret, save_setting, set_active_dropbox_account,
-    set_customer_processed, set_manual_status, start_dropbox_oauth, start_monitoring,
+    set_customer_processed, set_dropbox_app_folder_name, set_manual_status, start_dropbox_oauth, start_monitoring,
     stop_monitoring, sync_sms_journal, test_link_shortener, update_customer, verify_dropbox_status,
     ensure_default_app_root_cmd, ensure_default_dir_cmd, ConfigState,
 };
@@ -170,6 +170,7 @@ pub fn run() {
             create_dropbox_account,
             set_active_dropbox_account,
             rename_dropbox_account,
+            set_dropbox_app_folder_name,
             delete_dropbox_account,
             start_dropbox_oauth,
             finish_dropbox_oauth,

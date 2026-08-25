@@ -158,12 +158,31 @@ pub async fn verify_dropbox_status(
 #[tauri::command]
 pub async fn get_dropbox_account_info(
     cloud: State<'_, CloudState>,
+    accounts: State<'_, DropboxAccountState>,
     which: String,
     account_id: Option<String>,
 ) -> Result<DropboxAccountInfo, String> {
     let pool = parse_pool(&which)?;
-    let client = resolve_client(&cloud, pool, account_id.as_deref());
-    client.account_info().await.map_err(|e| e.to_string())
+    let ams_id = account_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    let client = resolve_client(&cloud, pool, ams_id.as_deref());
+    let mut info = client.account_info().await.map_err(|e| e.to_string())?;
+    if let Some(id) = ams_id.as_deref() {
+        if let Ok(Some(row)) = accounts.with_store(|store| store.get(id)) {
+            let stored = row.app_folder_name.trim();
+            if !stored.is_empty() {
+                info.app_name = stored.to_string();
+            } else if !info.app_name.trim().is_empty() {
+                let _ = accounts.with_store(|store| {
+                    store.maybe_set_app_folder_name_from_discovery(id, &info.app_name)
+                });
+            }
+        }
+    }
+    Ok(info)
 }
 
 #[tauri::command]
@@ -539,9 +558,19 @@ pub fn create_dropbox_account(
     config: State<'_, ConfigState>,
     pool: String,
     label: Option<String>,
+    app_folder_name: Option<String>,
 ) -> Result<DropboxAccountRow, String> {
     let pool = parse_pool(&pool)?;
     let row = accounts.with_store(|store| store.create(pool, label.as_deref().unwrap_or("")))?;
+    if let Some(name) = app_folder_name {
+        let trimmed = name.trim();
+        if !trimmed.is_empty() {
+            let _ = accounts.with_store(|store| store.set_app_folder_name(&row.id, trimmed));
+        }
+    }
+    let row = accounts
+        .with_store(|store| store.get(&row.id))?
+        .ok_or_else(|| "Profil konnte nicht gelesen werden.".to_string())?;
     // Seed app key/secret from active/legacy so OAuth can start without re-entry.
     let seed_from = cloud
         .active_account_id(pool)
@@ -616,8 +645,21 @@ pub fn rename_dropbox_account(
     accounts: State<'_, DropboxAccountState>,
     account_id: String,
     label: String,
+    app_folder_name: Option<String>,
 ) -> Result<DropboxAccountRow, String> {
-    accounts.with_store(|store| store.rename(&account_id, &label))
+    accounts.with_store(|store| {
+        store.rename(&account_id, &label)?;
+        store.set_app_folder_name(&account_id, app_folder_name.as_deref().unwrap_or(""))
+    })
+}
+
+#[tauri::command]
+pub fn set_dropbox_app_folder_name(
+    accounts: State<'_, DropboxAccountState>,
+    account_id: String,
+    app_folder_name: String,
+) -> Result<DropboxAccountRow, String> {
+    accounts.with_store(|store| store.set_app_folder_name(&account_id, &app_folder_name))
 }
 
 #[tauri::command]

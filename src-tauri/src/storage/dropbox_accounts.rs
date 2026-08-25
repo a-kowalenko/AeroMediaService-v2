@@ -42,6 +42,8 @@ pub struct DropboxAccountRow {
     pub email: String,
     pub display_name: String,
     pub app_key_hint: String,
+    /// Manual or auto-discovered Dropbox app folder name under `/Apps/…`.
+    pub app_folder_name: String,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -88,6 +90,7 @@ impl DropboxAccountStore {
                 email TEXT NOT NULL DEFAULT '',
                 display_name TEXT NOT NULL DEFAULT '',
                 app_key_hint TEXT NOT NULL DEFAULT '',
+                app_folder_name TEXT NOT NULL DEFAULT '',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
@@ -95,31 +98,35 @@ impl DropboxAccountStore {
                 ON dropbox_accounts(pool, dropbox_account_id)
                 WHERE dropbox_account_id != '';",
         )?;
+        ensure_column(&conn, "dropbox_accounts", "app_folder_name", "TEXT NOT NULL DEFAULT ''")?;
         Ok(())
+    }
+
+    fn row_from_query(row: &rusqlite::Row<'_>) -> rusqlite::Result<DropboxAccountRow> {
+        Ok(DropboxAccountRow {
+            id: row.get(0)?,
+            pool: row.get(1)?,
+            label: row.get(2)?,
+            dropbox_account_id: row.get(3)?,
+            email: row.get(4)?,
+            display_name: row.get(5)?,
+            app_key_hint: row.get(6)?,
+            app_folder_name: row.get(7)?,
+            created_at: row.get(8)?,
+            updated_at: row.get(9)?,
+        })
     }
 
     pub fn list(&self, pool: DropboxPool) -> Result<Vec<DropboxAccountRow>, DropboxAccountError> {
         let conn = self.connect()?;
         let mut stmt = conn.prepare(
             "SELECT id, pool, label, dropbox_account_id, email, display_name, app_key_hint,
-                    created_at, updated_at
+                    app_folder_name, created_at, updated_at
              FROM dropbox_accounts
              WHERE pool = ?1
              ORDER BY created_at ASC, id ASC",
         )?;
-        let rows = stmt.query_map(params![pool.as_str()], |row| {
-            Ok(DropboxAccountRow {
-                id: row.get(0)?,
-                pool: row.get(1)?,
-                label: row.get(2)?,
-                dropbox_account_id: row.get(3)?,
-                email: row.get(4)?,
-                display_name: row.get(5)?,
-                app_key_hint: row.get(6)?,
-                created_at: row.get(7)?,
-                updated_at: row.get(8)?,
-            })
-        })?;
+        let rows = stmt.query_map(params![pool.as_str()], Self::row_from_query)?;
         let mut out = Vec::new();
         for row in rows {
             out.push(row?);
@@ -132,22 +139,10 @@ impl DropboxAccountStore {
         let row = conn
             .query_row(
                 "SELECT id, pool, label, dropbox_account_id, email, display_name, app_key_hint,
-                        created_at, updated_at
+                        app_folder_name, created_at, updated_at
                  FROM dropbox_accounts WHERE id = ?1",
                 params![ams_id.trim()],
-                |row| {
-                    Ok(DropboxAccountRow {
-                        id: row.get(0)?,
-                        pool: row.get(1)?,
-                        label: row.get(2)?,
-                        dropbox_account_id: row.get(3)?,
-                        email: row.get(4)?,
-                        display_name: row.get(5)?,
-                        app_key_hint: row.get(6)?,
-                        created_at: row.get(7)?,
-                        updated_at: row.get(8)?,
-                    })
-                },
+                Self::row_from_query,
             )
             .optional()?;
         Ok(row)
@@ -170,8 +165,8 @@ impl DropboxAccountStore {
         conn.execute(
             "INSERT INTO dropbox_accounts
                 (id, pool, label, dropbox_account_id, email, display_name, app_key_hint,
-                 created_at, updated_at)
-             VALUES (?1, ?2, ?3, '', '', '', '', ?4, ?4)",
+                 app_folder_name, created_at, updated_at)
+             VALUES (?1, ?2, ?3, '', '', '', '', '', ?4, ?4)",
             params![id, pool.as_str(), label, now],
         )?;
         self.get(&id)?
@@ -212,6 +207,47 @@ impl DropboxAccountStore {
         }
         self.get(ams_id)?
             .ok_or_else(|| DropboxAccountError::Message("Profil konnte nicht gelesen werden.".into()))
+    }
+
+    pub fn set_app_folder_name(
+        &self,
+        ams_id: &str,
+        app_folder_name: &str,
+    ) -> Result<DropboxAccountRow, DropboxAccountError> {
+        let now = Utc::now().to_rfc3339();
+        let name = app_folder_name.trim();
+        let conn = self.connect()?;
+        let changed = conn.execute(
+            "UPDATE dropbox_accounts SET app_folder_name = ?2, updated_at = ?3 WHERE id = ?1",
+            params![ams_id.trim(), name, now],
+        )?;
+        if changed == 0 {
+            return Err(DropboxAccountError::Message(format!(
+                "Dropbox-Profil nicht gefunden: {ams_id}"
+            )));
+        }
+        self.get(ams_id)?
+            .ok_or_else(|| DropboxAccountError::Message("Profil konnte nicht gelesen werden.".into()))
+    }
+
+    /// Fill app folder name from OAuth/API when the profile has none yet.
+    pub fn maybe_set_app_folder_name_from_discovery(
+        &self,
+        ams_id: &str,
+        discovered: &str,
+    ) -> Result<(), DropboxAccountError> {
+        let discovered = discovered.trim();
+        if discovered.is_empty() {
+            return Ok(());
+        }
+        let Some(row) = self.get(ams_id)? else {
+            return Ok(());
+        };
+        if !row.app_folder_name.trim().is_empty() {
+            return Ok(());
+        }
+        let _ = self.set_app_folder_name(ams_id, discovered)?;
+        Ok(())
     }
 
     pub fn rename(&self, ams_id: &str, label: &str) -> Result<DropboxAccountRow, DropboxAccountError> {
@@ -265,27 +301,36 @@ impl DropboxAccountStore {
         let row = conn
             .query_row(
                 "SELECT id, pool, label, dropbox_account_id, email, display_name, app_key_hint,
-                        created_at, updated_at
+                        app_folder_name, created_at, updated_at
                  FROM dropbox_accounts
                  WHERE pool = ?1 AND dropbox_account_id = ?2",
                 params![pool.as_str(), id],
-                |row| {
-                    Ok(DropboxAccountRow {
-                        id: row.get(0)?,
-                        pool: row.get(1)?,
-                        label: row.get(2)?,
-                        dropbox_account_id: row.get(3)?,
-                        email: row.get(4)?,
-                        display_name: row.get(5)?,
-                        app_key_hint: row.get(6)?,
-                        created_at: row.get(7)?,
-                        updated_at: row.get(8)?,
-                    })
-                },
+                Self::row_from_query,
             )
             .optional()?;
         Ok(row)
     }
+}
+
+fn ensure_column(
+    conn: &Connection,
+    table: &str,
+    column: &str,
+    definition: &str,
+) -> Result<(), DropboxAccountError> {
+    let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+    let mut rows = stmt.query([])?;
+    while let Some(row) = rows.next()? {
+        let name: String = row.get(1)?;
+        if name == column {
+            return Ok(());
+        }
+    }
+    conn.execute(
+        &format!("ALTER TABLE {table} ADD COLUMN {column} {definition}"),
+        [],
+    )?;
+    Ok(())
 }
 
 fn default_label(pool: DropboxPool) -> String {
