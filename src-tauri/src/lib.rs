@@ -18,23 +18,28 @@ use bridge::BridgeState;
 use cloud::CloudState;
 use commands::{
     apply_bridge_config, assign_customer_to_folder, assign_customers_batch, auto_connect_cloud,
-    append_history_files, append_history_media, cancel_upload, channels_delivered, clear_history, connect_active_cloud, connect_custom_api,
-    connect_dropbox, delete_customer, delete_history_items, disconnect_active_cloud,
-    disconnect_custom_api, disconnect_dropbox, finish_dropbox_oauth, get_app_version,
-    get_assignment_history, get_ats_host_details, get_ats_hosts_summary, get_ats_jobs_by_host,
-    get_bridge_status, get_cloud_connection_status, get_history, get_history_entry,
-    get_manual_status_warnings, get_monitoring_status, get_recent_logs,
-    get_sandbox_warnings, get_secret, get_setting, get_sms_balance, get_stability_pending,
-    get_upload_control_state, get_upload_queue, list_customers, list_media_folders_cmd,
-    lookup_share_link, migrate_legacy_settings, pause_upload, propose_customer_assignments,
-    resend_history_notifications, reset_setup, resume_upload, retry_upload, save_customer,
-    save_history_contact, save_secret, save_setting, set_customer_processed, set_manual_status,
-    start_dropbox_oauth, start_monitoring, stop_monitoring, sync_sms_journal, test_link_shortener,
-    update_customer, verify_dropbox_status, resolve_history_booking_flags, expand_append_media_paths, ConfigState,
+    append_history_files, append_history_media, cancel_upload, channels_delivered, clear_history,
+    connect_active_cloud, connect_custom_api, connect_dropbox, create_dropbox_account,
+    delete_customer, delete_dropbox_account, delete_history_items, disconnect_active_cloud,
+    disconnect_custom_api, disconnect_dropbox, expand_append_media_paths, finish_dropbox_oauth,
+    get_app_version, get_assignment_history, get_ats_host_activity, get_ats_host_details,
+    get_ats_hosts_summary, get_ats_jobs_by_host, get_bridge_status, get_cloud_connection_status,
+    get_dropbox_account_info,
+    get_history, get_history_entry, get_manual_status_warnings, get_monitoring_status,
+    get_recent_logs, get_sandbox_warnings, get_secret, get_setting, get_sms_balance,
+    get_stability_pending, get_upload_control_state, get_upload_queue, list_customers,
+    list_dropbox_accounts, list_media_folders_cmd, lookup_share_link, migrate_legacy_settings,
+    pause_upload, propose_customer_assignments, remove_ats_host, remove_inactive_long_ats_hosts,
+    rename_dropbox_account, resend_history_notifications, reset_setup, resolve_history_booking_flags,
+    resume_upload, retry_upload, save_customer, save_history_contact, save_secret, save_setting,
+    set_active_dropbox_account, set_customer_processed, set_manual_status, start_dropbox_oauth,
+    start_monitoring, stop_monitoring, sync_sms_journal, test_link_shortener, update_customer,
+    verify_dropbox_status, ConfigState,
 };
 use monitor::MonitorState;
 use storage::ats_presence::AtsPresenceState;
 use storage::customers::CustomerState;
+use storage::dropbox_accounts::{self, DropboxAccountState};
 use storage::history::HistoryState;
 use storage::logging::{init_logging, log_info, log_warn, set_log_emitter};
 use tauri::{Emitter, Listener, Manager};
@@ -55,7 +60,21 @@ pub fn run() {
         .filter(|s| !s.trim().is_empty());
 
     let upload_state = UploadState::new();
-    let cloud_state = CloudState::new();
+    let dropbox_account_state = DropboxAccountState::new().unwrap_or_else(|e| {
+        panic!("failed to initialize dropbox account store: {e}");
+    });
+    // Import legacy secrets before creating Dropbox profiles (idempotent).
+    let _ = config_state.with_store_mut(|store| {
+        storage::legacy_migrate::migrate_from_legacy(store, false).map_err(|e| e.to_string())
+    });
+    let dropbox_migrate_report = config_state.with_store_mut(|store| {
+        dropbox_account_state.with_store(|accounts| {
+            dropbox_accounts::ensure_migrated(accounts, store)
+        })
+    });
+    let cloud_state = config_state
+        .with_store_mut(|store| Ok::<_, String>(CloudState::from_config(store)))
+        .unwrap_or_else(|_| CloudState::new());
     let monitor_state = MonitorState::new(
         Arc::clone(&upload_state.registry),
         upload_state.jobs.clone(),
@@ -80,6 +99,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .manage(config_state.clone())
         .manage(cloud_state.clone())
+        .manage(dropbox_account_state)
         .manage(bridge_state.clone())
         .manage(ats_presence_state)
         .manage(monitor_state)
@@ -104,6 +124,9 @@ pub fn run() {
             get_ats_hosts_summary,
             get_ats_host_details,
             get_ats_jobs_by_host,
+            get_ats_host_activity,
+            remove_ats_host,
+            remove_inactive_long_ats_hosts,
             pause_upload,
             resume_upload,
             cancel_upload,
@@ -138,6 +161,12 @@ pub fn run() {
             get_assignment_history,
             get_cloud_connection_status,
             verify_dropbox_status,
+            get_dropbox_account_info,
+            list_dropbox_accounts,
+            create_dropbox_account,
+            set_active_dropbox_account,
+            rename_dropbox_account,
+            delete_dropbox_account,
             start_dropbox_oauth,
             finish_dropbox_oauth,
             connect_dropbox,
@@ -189,6 +218,13 @@ pub fn run() {
                 Ok(report) => log_info(&report.message),
                 Err(e) => log_warn(&format!(
                     "Legacy-QSettings/Keyring-Migration fehlgeschlagen: {e}"
+                )),
+            }
+            match &dropbox_migrate_report {
+                Ok(report) if report.skipped => {}
+                Ok(report) => log_info(&report.message),
+                Err(e) => log_warn(&format!(
+                    "Dropbox-Multi-Account-Migration fehlgeschlagen: {e}"
                 )),
             }
             events::set_event_emitter({

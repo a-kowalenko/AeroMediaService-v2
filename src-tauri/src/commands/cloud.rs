@@ -3,12 +3,21 @@
 use serde::Serialize;
 use tauri::State;
 
-use crate::cloud::{oauth::OauthStart, CloudClient, CloudState, DropboxSecretKeys};
+use crate::cloud::{
+    guards::{self, OauthIdentityOutcome},
+    oauth::OauthStart, CloudClient, CloudState, DropboxAccountInfo, DropboxPool, DropboxSecretKeys,
+};
 use crate::commands::ConfigState;
 use crate::notify::sms;
+use crate::storage::dropbox_accounts::{
+    self, DropboxAccountRow, DropboxAccountState,
+};
 use crate::storage::logging;
 use crate::storage::secrets;
+use crate::upload::UploadState;
 use crate::util::link_shortener;
+use std::sync::Arc;
+use crate::cloud::DropboxClient;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ConnectResult {
@@ -63,11 +72,62 @@ fn selected_cloud(config: &ConfigState) -> String {
         .to_ascii_lowercase()
 }
 
-fn parse_which(which: &str) -> Result<&'static str, String> {
-    match which.trim().to_ascii_lowercase().as_str() {
-        "native" | "dropbox" => Ok("native"),
-        "custom" | "custom_dropbox" | "custom_api" => Ok("custom"),
-        other => Err(format!("Unbekanntes Dropbox-Ziel: {other}")),
+fn parse_pool(which: &str) -> Result<DropboxPool, String> {
+    DropboxPool::parse(which).map_err(|e| e.to_string())
+}
+
+fn active_client(cloud: &CloudState, pool: DropboxPool) -> Arc<DropboxClient> {
+    match pool {
+        DropboxPool::Native => cloud.dropbox(),
+        DropboxPool::CustomApi => cloud.custom_dropbox(),
+    }
+}
+
+fn resolve_client(
+    cloud: &CloudState,
+    pool: DropboxPool,
+    account_id: Option<&str>,
+) -> Arc<DropboxClient> {
+    match account_id.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(id) => cloud.client_for(pool, id),
+        None => active_client(cloud, pool),
+    }
+}
+
+/// Apply Dropbox account_id semantics after OAuth/connect (16c D5).
+fn apply_identity_after_connect(
+    accounts: &DropboxAccountState,
+    config: &ConfigState,
+    pool: DropboxPool,
+    ams_id: &str,
+    info: &DropboxAccountInfo,
+) -> Result<OauthIdentityOutcome, String> {
+    let outcome = accounts.with_store(|store| {
+        guards::apply_oauth_account_identity(store, pool, ams_id, info)
+            .map_err(crate::storage::dropbox_accounts::DropboxAccountError::Message)
+    })?;
+    if outcome.is_ok() {
+        let _ = config.with_store_mut(|store| {
+            dropbox_accounts::sync_active_secrets_with_legacy(store, pool).map_err(|e| e.to_string())
+        });
+    }
+    Ok(outcome)
+}
+
+fn connect_result_from_identity(
+    outcome: OauthIdentityOutcome,
+    default_ok_message: &str,
+) -> ConnectResult {
+    match &outcome {
+        OauthIdentityOutcome::Updated { .. } => {
+            ConnectResult::ok("Verbunden", default_ok_message)
+        }
+        OauthIdentityOutcome::AppliedToExisting { .. } => {
+            ConnectResult::ok("Verbunden", outcome.message())
+        }
+        OauthIdentityOutcome::RejectedMismatch { .. } => {
+            ConnectResult::fail("Konto-Konflikt", outcome.message())
+        }
     }
 }
 
@@ -79,7 +139,7 @@ pub fn get_cloud_connection_status(
     if selected_cloud(&config) == "custom_api" {
         cloud.custom_api.connection_status()
     } else {
-        cloud.dropbox.connection_status()
+        cloud.dropbox().connection_status()
     }
 }
 
@@ -87,54 +147,86 @@ pub fn get_cloud_connection_status(
 pub async fn verify_dropbox_status(
     cloud: State<'_, CloudState>,
     which: String,
+    account_id: Option<String>,
 ) -> Result<String, String> {
-    match parse_which(&which)? {
-        "custom" => Ok(cloud.custom_api.dropbox_connection_status_verified().await),
-        _ => Ok(cloud.dropbox.connection_status_verified().await),
-    }
+    let pool = parse_pool(&which)?;
+    let client = resolve_client(&cloud, pool, account_id.as_deref());
+    Ok(client.connection_status_verified().await)
+}
+
+#[tauri::command]
+pub async fn get_dropbox_account_info(
+    cloud: State<'_, CloudState>,
+    which: String,
+    account_id: Option<String>,
+) -> Result<DropboxAccountInfo, String> {
+    let pool = parse_pool(&which)?;
+    let client = resolve_client(&cloud, pool, account_id.as_deref());
+    client.account_info().await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub fn start_dropbox_oauth(
     cloud: State<'_, CloudState>,
     which: String,
+    account_id: Option<String>,
 ) -> Result<OauthStart, String> {
-    match parse_which(&which)? {
-        "custom" => cloud
-            .custom_api
-            .start_dropbox_oauth()
-            .map_err(|e| e.to_string()),
-        _ => cloud.dropbox.start_oauth().map_err(|e| e.to_string()),
-    }
+    let pool = parse_pool(&which)?;
+    let client = resolve_client(&cloud, pool, account_id.as_deref());
+    client.start_oauth().map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub async fn finish_dropbox_oauth(
     cloud: State<'_, CloudState>,
+    accounts: State<'_, DropboxAccountState>,
+    config: State<'_, ConfigState>,
     which: String,
     auth_code: String,
     code_verifier: String,
+    account_id: Option<String>,
 ) -> Result<ConnectResult, String> {
-    let which = parse_which(&which)?;
-    let result = match which {
-        "custom" => {
-            cloud
-                .custom_api
-                .finish_dropbox_oauth(&auth_code, &code_verifier)
-                .await
+    let pool = parse_pool(&which)?;
+    let ams_id = account_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .or_else(|| cloud.active_account_id(pool));
+    let client = resolve_client(&cloud, pool, ams_id.as_deref());
+    let emit = pool == DropboxPool::Native;
+    match client
+        .finish_oauth(&auth_code, &code_verifier, emit)
+        .await
+    {
+        Ok(true) => {
+            if let Some(id) = ams_id.as_deref() {
+                match client.account_info().await {
+                    Ok(info) => {
+                        let outcome =
+                            apply_identity_after_connect(&accounts, &config, pool, id, &info)?;
+                        Ok(connect_result_from_identity(
+                            outcome,
+                            "Dropbox-Verbindung hergestellt.",
+                        ))
+                    }
+                    Err(e) => {
+                        logging::log_warn(&format!(
+                            "OAuth ok, account_info fehlgeschlagen: {e}"
+                        ));
+                        Ok(ConnectResult::ok(
+                            "Verbunden",
+                            "Dropbox-Verbindung hergestellt.",
+                        ))
+                    }
+                }
+            } else {
+                Ok(ConnectResult::ok(
+                    "Verbunden",
+                    "Dropbox-Verbindung hergestellt.",
+                ))
+            }
         }
-        _ => {
-            cloud
-                .dropbox
-                .finish_oauth(&auth_code, &code_verifier, true)
-                .await
-        }
-    };
-    match result {
-        Ok(true) => Ok(ConnectResult::ok(
-            "Verbunden",
-            "Dropbox-Verbindung hergestellt.",
-        )),
         Ok(false) => Ok(ConnectResult::fail(
             "Nicht verbunden",
             "OAuth fehlgeschlagen.",
@@ -146,16 +238,40 @@ pub async fn finish_dropbox_oauth(
 #[tauri::command]
 pub async fn connect_dropbox(
     cloud: State<'_, CloudState>,
+    accounts: State<'_, DropboxAccountState>,
+    config: State<'_, ConfigState>,
     which: String,
+    account_id: Option<String>,
 ) -> Result<ConnectResult, String> {
-    let which = parse_which(&which)?;
-    let connect_result = match which {
-        "custom" => cloud.custom_api.connect_dropbox().await,
-        _ => cloud.dropbox.connect_session(true).await,
-    };
-
-    match connect_result {
-        Ok(true) => Ok(ConnectResult::ok("Verbunden", "Dropbox verbunden.")),
+    let pool = parse_pool(&which)?;
+    let ams_id = account_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .or_else(|| cloud.active_account_id(pool));
+    let client = resolve_client(&cloud, pool, ams_id.as_deref());
+    let emit = pool == DropboxPool::Native;
+    match client.connect_session(emit).await {
+        Ok(true) => {
+            if let Some(id) = ams_id.as_deref() {
+                match client.account_info().await {
+                    Ok(info) => {
+                        let outcome =
+                            apply_identity_after_connect(&accounts, &config, pool, id, &info)?;
+                        Ok(connect_result_from_identity(outcome, "Dropbox verbunden."))
+                    }
+                    Err(e) => {
+                        logging::log_warn(&format!(
+                            "Connect ok, account_info fehlgeschlagen: {e}"
+                        ));
+                        Ok(ConnectResult::ok("Verbunden", "Dropbox verbunden."))
+                    }
+                }
+            } else {
+                Ok(ConnectResult::ok("Verbunden", "Dropbox verbunden."))
+            }
+        }
         Ok(false) => Ok(ConnectResult::fail(
             "Nicht verbunden",
             "Verbindung fehlgeschlagen.",
@@ -163,11 +279,7 @@ pub async fn connect_dropbox(
         Err(e) => {
             let text = e.to_string();
             if text.contains("Refresh-Token") {
-                let oauth = match which {
-                    "custom" => cloud.custom_api.start_dropbox_oauth(),
-                    _ => cloud.dropbox.start_oauth(),
-                };
-                match oauth {
+                match client.start_oauth() {
                     Ok(start) => Ok(ConnectResult::needs_oauth(start)),
                     Err(e2) => Ok(ConnectResult::fail("Nicht verbunden", e2.to_string())),
                 }
@@ -181,29 +293,38 @@ pub async fn connect_dropbox(
 #[tauri::command]
 pub async fn disconnect_dropbox(
     cloud: State<'_, CloudState>,
+    config: State<'_, ConfigState>,
+    upload: State<'_, UploadState>,
     which: String,
+    account_id: Option<String>,
 ) -> Result<ConnectResult, String> {
-    match parse_which(&which)? {
-        "custom" => {
-            cloud
-                .custom_api
-                .disconnect_dropbox()
-                .await
-                .map_err(|e| e.to_string())?;
-            Ok(ConnectResult::ok(
-                "Nicht verbunden",
-                "Custom-Dropbox getrennt.",
-            ))
-        }
-        _ => {
-            cloud
-                .dropbox
-                .disconnect_session(true, true)
-                .await
-                .map_err(|e| e.to_string())?;
-            Ok(ConnectResult::ok("Nicht verbunden", "Dropbox getrennt."))
-        }
+    let pool = parse_pool(&which)?;
+    let ams_id = account_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .or_else(|| cloud.active_account_id(pool));
+    if let Some(id) = ams_id.as_deref() {
+        guards::assert_can_delete_or_disconnect(&upload.registry, id)?;
     }
+    let client = resolve_client(&cloud, pool, ams_id.as_deref());
+    let emit = pool == DropboxPool::Native;
+    client
+        .disconnect_session(emit, emit)
+        .await
+        .map_err(|e| e.to_string())?;
+    let _ = config.with_store_mut(|store| {
+        dropbox_accounts::sync_active_secrets_with_legacy(store, pool).map_err(|e| e.to_string())
+    });
+    Ok(ConnectResult::ok(
+        "Nicht verbunden",
+        if pool == DropboxPool::CustomApi {
+            "Custom-Dropbox getrennt."
+        } else {
+            "Dropbox getrennt."
+        },
+    ))
 }
 
 #[tauri::command]
@@ -229,7 +350,7 @@ pub async fn connect_active_cloud(
     if selected_cloud(&config) == "custom_api" {
         connect_custom_api_inner(&cloud).await
     } else {
-        match cloud.dropbox.connect_session(true).await {
+        match cloud.dropbox().connect_session(true).await {
             Ok(true) => Ok(ConnectResult::ok("Verbunden", "Dropbox verbunden.")),
             Ok(false) => Ok(ConnectResult::fail(
                 "Nicht verbunden",
@@ -254,20 +375,20 @@ async fn connect_custom_api_inner(cloud: &CloudState) -> Result<ConnectResult, S
     }
 }
 
-fn has_dropbox_refresh_token(keys: DropboxSecretKeys) -> bool {
-    secrets::get_secret(keys.refresh_token)
+fn has_dropbox_refresh_token(keys: &DropboxSecretKeys) -> bool {
+    secrets::get_secret(&keys.refresh_token)
         .ok()
         .flatten()
         .filter(|s| !s.trim().is_empty())
         .is_some()
 }
 
-fn has_dropbox_app_credentials(keys: DropboxSecretKeys) -> bool {
-    let app_key = secrets::get_secret(keys.app_key)
+fn has_dropbox_app_credentials(keys: &DropboxSecretKeys) -> bool {
+    let app_key = secrets::get_secret(&keys.app_key)
         .ok()
         .flatten()
         .filter(|s| !s.is_empty());
-    let app_secret = secrets::get_secret(keys.app_secret)
+    let app_secret = secrets::get_secret(&keys.app_secret)
         .ok()
         .flatten()
         .filter(|s| !s.is_empty());
@@ -277,8 +398,11 @@ fn has_dropbox_app_credentials(keys: DropboxSecretKeys) -> bool {
 /// Legacy `StartupConnectWorker._connect_dropbox_for_contact_markers`: when Custom API
 /// is active, also connect Dropbox upload accounts used for pure-contact markers.
 async fn connect_dropbox_for_pure_contact_markers(cloud: &CloudState) {
-    let custom_keys = DropboxSecretKeys::custom_api();
-    if has_dropbox_app_credentials(custom_keys) && has_dropbox_refresh_token(custom_keys) {
+    let custom_keys = match cloud.active_account_id(DropboxPool::CustomApi) {
+        Some(id) => DropboxSecretKeys::for_account(DropboxPool::CustomApi, &id),
+        None => DropboxSecretKeys::custom_api(),
+    };
+    if has_dropbox_app_credentials(&custom_keys) && has_dropbox_refresh_token(&custom_keys) {
         match cloud.custom_api.connect_dropbox().await {
             Ok(true) => {
                 logging::log_info(
@@ -298,17 +422,20 @@ async fn connect_dropbox_for_pure_contact_markers(cloud: &CloudState) {
         }
     }
 
-    let native_keys = DropboxSecretKeys::native();
-    if !has_dropbox_refresh_token(native_keys) {
+    let native_keys = match cloud.active_account_id(DropboxPool::Native) {
+        Some(id) => DropboxSecretKeys::for_account(DropboxPool::Native, &id),
+        None => DropboxSecretKeys::native(),
+    };
+    if !has_dropbox_refresh_token(&native_keys) {
         logging::log_info(
             "Kein natives Dropbox Refresh-Token — optionaler Fallback für reine Kontakt-Marker entfällt.",
         );
         return;
     }
-    if cloud.dropbox.connection_status() == "Verbunden" {
+    if cloud.dropbox().connection_status() == "Verbunden" {
         return;
     }
-    match cloud.dropbox.connect_session(false).await {
+    match cloud.dropbox().connect_session(false).await {
         Ok(true) => {
             logging::log_info(
                 "Natives Dropbox parallel verbunden (Legacy-Fallback für reine Kontakt-Marker).",
@@ -326,6 +453,7 @@ async fn connect_dropbox_for_pure_contact_markers(cloud: &CloudState) {
 pub async fn disconnect_active_cloud(
     cloud: State<'_, CloudState>,
     config: State<'_, ConfigState>,
+    upload: State<'_, UploadState>,
 ) -> Result<ConnectResult, String> {
     if selected_cloud(&config) == "custom_api" {
         cloud
@@ -335,8 +463,11 @@ pub async fn disconnect_active_cloud(
             .map_err(|e| e.to_string())?;
         Ok(ConnectResult::ok("Nicht verbunden", "Custom API getrennt."))
     } else {
+        if let Some(id) = cloud.active_account_id(DropboxPool::Native) {
+            guards::assert_can_delete_or_disconnect(&upload.registry, &id)?;
+        }
         cloud
-            .dropbox
+            .dropbox()
             .disconnect_session(true, true)
             .await
             .map_err(|e| e.to_string())?;
@@ -361,11 +492,11 @@ pub async fn auto_connect_cloud(
             .filter(|s| !s.trim().is_empty());
         url.is_some() && token.is_some()
     } else {
-        secrets::get_secret("db_refresh_token")
-            .ok()
-            .flatten()
-            .filter(|s| !s.trim().is_empty())
-            .is_some()
+        let keys = match cloud.active_account_id(DropboxPool::Native) {
+            Some(id) => DropboxSecretKeys::for_account(DropboxPool::Native, &id),
+            None => DropboxSecretKeys::native(),
+        };
+        has_dropbox_refresh_token(&keys)
     };
 
     if !should {
@@ -378,6 +509,145 @@ pub async fn auto_connect_cloud(
 
     logging::log_info("Prüfe auf Auto-Verbindung...");
     connect_active_cloud(cloud, config).await
+}
+
+#[tauri::command]
+pub fn list_dropbox_accounts(
+    accounts: State<'_, DropboxAccountState>,
+    config: State<'_, ConfigState>,
+    pool: String,
+) -> Result<Vec<DropboxAccountRow>, String> {
+    let pool = parse_pool(&pool)?;
+    let mut rows = accounts.with_store(|store| store.list(pool))?;
+    let active = config
+        .get(pool.active_setting_key(), Some(""))
+        .unwrap_or_default();
+    // Active first for stable UI ordering (16d will use badge; keep deterministic here).
+    rows.sort_by(|a, b| {
+        let a_active = a.id == active;
+        let b_active = b.id == active;
+        b_active.cmp(&a_active).then(a.created_at.cmp(&b.created_at))
+    });
+    Ok(rows)
+}
+
+#[tauri::command]
+pub fn create_dropbox_account(
+    cloud: State<'_, CloudState>,
+    accounts: State<'_, DropboxAccountState>,
+    config: State<'_, ConfigState>,
+    pool: String,
+    label: Option<String>,
+) -> Result<DropboxAccountRow, String> {
+    let pool = parse_pool(&pool)?;
+    let row = accounts.with_store(|store| store.create(pool, label.as_deref().unwrap_or("")))?;
+    // Seed app key/secret from active/legacy so OAuth can start without re-entry.
+    let seed_from = cloud
+        .active_account_id(pool)
+        .map(|id| DropboxSecretKeys::for_account(pool, &id))
+        .unwrap_or_else(|| pool.legacy_keys());
+    let target = DropboxSecretKeys::for_account(pool, &row.id);
+    for (from, to) in [
+        (seed_from.app_key.as_str(), target.app_key.as_str()),
+        (seed_from.app_secret.as_str(), target.app_secret.as_str()),
+    ] {
+        if let Some(v) = secrets::get_secret(from)
+            .ok()
+            .flatten()
+            .filter(|s| !s.is_empty())
+        {
+            let _ = secrets::save_secret(to, &v);
+        }
+    }
+    cloud.client_for(pool, &row.id);
+    let active = config
+        .get(pool.active_setting_key(), Some(""))
+        .unwrap_or_default();
+    if active.trim().is_empty() {
+        config.with_store_mut(|store| {
+            store
+                .save(pool.active_setting_key(), &row.id)
+                .map_err(|e| e.to_string())
+        })?;
+        cloud.set_active_account(pool, Some(&row.id));
+    }
+    Ok(row)
+}
+
+#[tauri::command]
+pub fn set_active_dropbox_account(
+    cloud: State<'_, CloudState>,
+    accounts: State<'_, DropboxAccountState>,
+    config: State<'_, ConfigState>,
+    pool: String,
+    account_id: String,
+) -> Result<DropboxAccountRow, String> {
+    // Soft-Active (16c): only changes the default for *new* jobs. Queued / active jobs
+    // keep their frozen dropbox_binding and continue with that client.
+    let _ = guards::soft_active_switch_is_safe();
+    let pool = parse_pool(&pool)?;
+    let id = account_id.trim();
+    if id.is_empty() {
+        return Err("account_id fehlt.".into());
+    }
+    let row = accounts
+        .with_store(|store| store.get(id))?
+        .ok_or_else(|| format!("Dropbox-Profil nicht gefunden: {id}"))?;
+    if row.pool != pool.as_str() {
+        return Err(format!(
+            "Profil {id} gehört zu Pool '{}', nicht '{}'.",
+            row.pool,
+            pool.as_str()
+        ));
+    }
+    config.with_store_mut(|store| {
+        store
+            .save(pool.active_setting_key(), id)
+            .map_err(|e| e.to_string())?;
+        dropbox_accounts::sync_active_secrets_with_legacy(store, pool).map_err(|e| e.to_string())
+    })?;
+    cloud.set_active_account(pool, Some(id));
+    Ok(row)
+}
+
+#[tauri::command]
+pub fn rename_dropbox_account(
+    accounts: State<'_, DropboxAccountState>,
+    account_id: String,
+    label: String,
+) -> Result<DropboxAccountRow, String> {
+    accounts.with_store(|store| store.rename(&account_id, &label))
+}
+
+#[tauri::command]
+pub fn delete_dropbox_account(
+    cloud: State<'_, CloudState>,
+    accounts: State<'_, DropboxAccountState>,
+    config: State<'_, ConfigState>,
+    upload: State<'_, UploadState>,
+    account_id: String,
+) -> Result<(), String> {
+    let id = account_id.trim();
+    let row = accounts
+        .with_store(|store| store.get(id))?
+        .ok_or_else(|| format!("Dropbox-Profil nicht gefunden: {id}"))?;
+    let pool = parse_pool(&row.pool)?;
+    guards::assert_can_delete_or_disconnect(&upload.registry, id)?;
+    let was_active = cloud.active_account_id(pool).as_deref() == Some(id);
+    accounts.with_store(|store| store.delete(id))?;
+    cloud.forget_account(pool, id);
+    if was_active {
+        let remaining = accounts.with_store(|store| store.list(pool))?;
+        let next = remaining.first().map(|r| r.id.clone());
+        config.with_store_mut(|store| {
+            store
+                .save(pool.active_setting_key(), next.as_deref().unwrap_or(""))
+                .map_err(|e| e.to_string())?;
+            dropbox_accounts::sync_active_secrets_with_legacy(store, pool).map_err(|e| e.to_string())
+        })?;
+        cloud.set_active_account(pool, next.as_deref());
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -434,12 +704,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parse_which_accepts_aliases() {
-        assert_eq!(parse_which("native").unwrap(), "native");
-        assert_eq!(parse_which("dropbox").unwrap(), "native");
-        assert_eq!(parse_which("custom").unwrap(), "custom");
-        assert_eq!(parse_which("custom_dropbox").unwrap(), "custom");
-        assert!(parse_which("other").is_err());
+    fn parse_pool_accepts_aliases() {
+        assert_eq!(parse_pool("native").unwrap(), DropboxPool::Native);
+        assert_eq!(parse_pool("dropbox").unwrap(), DropboxPool::Native);
+        assert_eq!(parse_pool("custom").unwrap(), DropboxPool::CustomApi);
+        assert_eq!(parse_pool("custom_dropbox").unwrap(), DropboxPool::CustomApi);
+        assert!(parse_pool("other").is_err());
     }
 
     #[test]

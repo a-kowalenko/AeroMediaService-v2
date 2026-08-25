@@ -73,6 +73,39 @@ export function atsPresenceChipTone(
   return "inactive";
 }
 
+/** Connected hosts must not be forgotten while still polling. */
+export function canForgetAtsHost(host: Pick<AtsHostSummary, "presence_category">): boolean {
+  return host.presence_category !== "connected";
+}
+
+export function formatAtsHostSeenAt(value: string): string {
+  if (!value.trim()) return "—";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return new Intl.DateTimeFormat("de-DE", {
+    dateStyle: "short",
+    timeStyle: "short",
+  }).format(date);
+}
+
+export function forgetAtsHostConfirmMessage(host: Pick<AtsHostSummary, "hostname" | "last_seen_at">): string {
+  return [
+    `„${host.hostname}“ aus der Client-Liste entfernen?`,
+    "",
+    `Zuletzt gesehen: ${formatAtsHostSeenAt(host.last_seen_at)}`,
+    "",
+    "Entfernt nur Presence-Daten. Upload-Historie bleibt erhalten. Der Client erscheint erneut, wenn er sich mit gültigem Token verbindet.",
+  ].join("\n");
+}
+
+export function purgeInactiveLongAtsHostsConfirmMessage(count: number): string {
+  return [
+    `${count} länger inaktive ATS-Client${count === 1 ? "" : "s"} (>30 Tage) aus der Liste entfernen?`,
+    "",
+    "Entfernt nur Presence-Daten. Upload-Historie bleibt erhalten.",
+  ].join("\n");
+}
+
 /** Row container — avoids primary (brand green) for non-connected hosts. */
 export function atsPresenceRowClass(host: AtsHostSummary, selected: boolean): string {
   const base =

@@ -53,6 +53,9 @@ pub fn setting_default(key: &str) -> Option<&'static str> {
         "bridge_display_name" => Some(""),
         "bridge_instance_id" => Some(""),
         "selected_cloud_service" => Some("dropbox"),
+        "active_dropbox_account_id" => Some(""),
+        "active_custom_dropbox_account_id" => Some(""),
+        "dropbox_multi_account_migrated" => Some("false"),
         "custom_api_upload_mode" => Some("proxied_session"),
         "custom_api_upload_endpoint" => Some("/upload"),
         "custom_api_share_endpoint" => Some("/share"),
@@ -185,6 +188,9 @@ mod tests {
         assert_eq!(setting_default("bridge_enabled"), Some("false"));
         assert_eq!(setting_default("bridge_bind"), Some("0.0.0.0:8787"));
         assert_eq!(setting_default("selected_cloud_service"), Some("dropbox"));
+        assert_eq!(setting_default("active_dropbox_account_id"), Some(""));
+        assert_eq!(setting_default("active_custom_dropbox_account_id"), Some(""));
+        assert_eq!(setting_default("dropbox_multi_account_migrated"), Some("false"));
         assert_eq!(
             setting_default("custom_api_upload_mode"),
             Some("proxied_session")

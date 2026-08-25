@@ -12,6 +12,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use serde_json::Value;
 
+use crate::cloud::active_slot::ActiveDropboxSlot;
 use crate::cloud::dropbox::DropboxClient;
 use crate::cloud::traits::{CloudClient, CloudError};
 use crate::events;
@@ -36,7 +37,7 @@ pub struct CustomApiClient {
     last_order_id: Mutex<Option<String>>,
     last_kunde: Mutex<Option<Kunde>>,
     append_order_id: Mutex<Option<String>>,
-    dropbox: Arc<DropboxClient>,
+    dropbox: ActiveDropboxSlot,
 }
 
 impl Default for CustomApiClient {
@@ -51,6 +52,10 @@ impl CustomApiClient {
     }
 
     pub fn with_dropbox(dropbox: Arc<DropboxClient>) -> Self {
+        Self::with_dropbox_slot(ActiveDropboxSlot::new(dropbox))
+    }
+
+    pub fn with_dropbox_slot(dropbox: ActiveDropboxSlot) -> Self {
         let http = reqwest::Client::builder()
             .timeout(Duration::from_secs(600))
             .build()
@@ -67,6 +72,10 @@ impl CustomApiClient {
             append_order_id: Mutex::new(None),
             dropbox,
         }
+    }
+
+    fn dropbox_client(&self) -> Arc<DropboxClient> {
+        self.dropbox.get()
     }
 
     fn api_base(&self) -> Option<String> {
@@ -142,16 +151,16 @@ impl CustomApiClient {
     }
 
     #[allow(dead_code)]
-    pub fn dropbox(&self) -> &DropboxClient {
-        self.dropbox.as_ref()
+    pub fn dropbox(&self) -> Arc<DropboxClient> {
+        self.dropbox_client()
     }
 
     pub async fn connect_dropbox(&self) -> Result<bool, CloudError> {
-        self.dropbox.connect_session(false).await
+        self.dropbox_client().connect_session(false).await
     }
 
     pub fn start_dropbox_oauth(&self) -> Result<crate::cloud::OauthStart, CloudError> {
-        self.dropbox.start_oauth()
+        self.dropbox_client().start_oauth()
     }
 
     pub async fn finish_dropbox_oauth(
@@ -159,22 +168,24 @@ impl CustomApiClient {
         auth_code: &str,
         code_verifier: &str,
     ) -> Result<bool, CloudError> {
-        self.dropbox
+        self.dropbox_client()
             .finish_oauth(auth_code, code_verifier, false)
             .await
     }
 
     pub async fn disconnect_dropbox(&self) -> Result<(), CloudError> {
-        self.dropbox.disconnect_session(false, false).await
+        self.dropbox_client()
+            .disconnect_session(false, false)
+            .await
     }
 
     #[allow(dead_code)]
     pub fn dropbox_connection_status(&self) -> String {
-        self.dropbox.connection_status()
+        self.dropbox_client().connection_status()
     }
 
     pub async fn dropbox_connection_status_verified(&self) -> String {
-        self.dropbox.connection_status_verified().await
+        self.dropbox_client().connection_status_verified().await
     }
 }
 

@@ -25,7 +25,7 @@ pub enum SecretError {
 
 /// Keys that must never be written to the settings database.
 pub fn is_secret_key(key: &str) -> bool {
-    matches!(
+    if matches!(
         key,
         "db_app_key"
             | "db_app_secret"
@@ -52,7 +52,32 @@ pub fn is_secret_key(key: &str) -> bool {
             | "shortener_api_key"
             | "skylink_api_url"
             | "skylink_api_key"
-    )
+    ) {
+        return true;
+    }
+    // Phase 16 namespaced Dropbox keys: db_*_<ams_id> / custom_db_*_<ams_id>
+    is_namespaced_dropbox_secret(key)
+}
+
+fn is_namespaced_dropbox_secret(key: &str) -> bool {
+    const PREFIXES: &[&str] = &[
+        "db_app_key_",
+        "db_app_secret_",
+        "db_refresh_token_",
+        "custom_db_app_key_",
+        "custom_db_app_secret_",
+        "custom_db_refresh_token_",
+    ];
+    PREFIXES.iter().any(|p| {
+        key.strip_prefix(p)
+            .map(|id| !id.is_empty() && !id.contains('/'))
+            .unwrap_or(false)
+    })
+}
+
+#[cfg(test)]
+pub fn clear_test_secrets() {
+    with_test_map(|map| map.clear());
 }
 
 #[cfg(test)]
@@ -171,6 +196,9 @@ mod tests {
         assert!(is_secret_key("seven_api_key"));
         assert!(is_secret_key("aero_customer_api_token"));
         assert!(is_secret_key("bridge_token"));
+        assert!(is_secret_key("db_app_key_ams-1"));
+        assert!(is_secret_key("custom_db_refresh_token_ams-1"));
+        assert!(!is_secret_key("db_app_key_"));
         assert!(!is_secret_key("monitor_path"));
         assert!(!is_secret_key("scan_interval"));
         assert!(!is_secret_key("log_file_path"));

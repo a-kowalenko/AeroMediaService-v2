@@ -10,6 +10,7 @@ use crate::cloud::{CloudClient, DropboxClient};
 use crate::model::kunde::{normalize_phone, Kunde};
 use crate::model::validation::{is_valid_email, is_valid_share_link};
 use crate::notify::{email, setting_flag, setting_or_default, sms};
+use crate::storage::logging;
 use crate::util::link_shortener;
 
 pub const RESENDABLE_UPLOAD_STATUS: &str = "Erfolgreich";
@@ -178,7 +179,13 @@ async fn lookup_link_from_cloud(entry: &Value, selected_cloud: &str) -> Option<S
     if remote_path.is_empty() {
         return None;
     }
-    let client = DropboxClient::new();
+    let client = match resolve_dropbox_client_for_entry(entry) {
+        Ok(c) => c,
+        Err(e) => {
+            logging::log_warn(&format!("Share-Link Lookup: {e}"));
+            return None;
+        }
+    };
     if !client.connect().await.ok()? {
         return None;
     }
@@ -186,6 +193,25 @@ async fn lookup_link_from_cloud(entry: &Value, selected_cloud: &str) -> Option<S
         return None;
     }
     client.get_shareable_link(&remote_path).await.ok().flatten()
+}
+
+fn resolve_dropbox_client_for_entry(entry: &Value) -> Result<DropboxClient, String> {
+    use crate::cloud::binding::resolve_binding_for_history;
+    use crate::cloud::dropbox::{DropboxPool, DropboxSecretKeys};
+    use crate::storage::dropbox_accounts::DropboxAccountStore;
+
+    let accounts = DropboxAccountStore::open_default().map_err(|e| e.to_string())?;
+    let rows = accounts
+        .list(DropboxPool::Native)
+        .map_err(|e| e.to_string())?;
+    if rows.is_empty() {
+        return Ok(DropboxClient::new());
+    }
+    let binding = resolve_binding_for_history(entry, DropboxPool::Native, &accounts)?;
+    Ok(DropboxClient::with_keys(DropboxSecretKeys::for_account(
+        binding.pool,
+        &binding.ams_id,
+    )))
 }
 
 pub async fn lookup_share_link_from_cloud(

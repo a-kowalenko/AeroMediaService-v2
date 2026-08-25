@@ -8,14 +8,15 @@ pub mod settings;
 pub mod upload;
 
 pub use bridge::{
-    apply_bridge_config, get_ats_host_details, get_ats_hosts_summary, get_ats_jobs_by_host,
-    get_bridge_status,
+    apply_bridge_config, get_ats_host_activity, get_ats_host_details, get_ats_hosts_summary,
+    get_ats_jobs_by_host, get_bridge_status, remove_ats_host, remove_inactive_long_ats_hosts,
 };
 pub use cloud::{
     auto_connect_cloud, connect_active_cloud, connect_custom_api, connect_dropbox,
-    disconnect_active_cloud, disconnect_custom_api, disconnect_dropbox, finish_dropbox_oauth,
-    get_cloud_connection_status, get_sms_balance, start_dropbox_oauth, test_link_shortener,
-    verify_dropbox_status,
+    create_dropbox_account, delete_dropbox_account, disconnect_active_cloud, disconnect_custom_api,
+    disconnect_dropbox, finish_dropbox_oauth, get_cloud_connection_status, get_dropbox_account_info,
+    get_sms_balance, list_dropbox_accounts, rename_dropbox_account, set_active_dropbox_account,
+    start_dropbox_oauth, test_link_shortener, verify_dropbox_status,
 };
 pub use customers::{
     assign_customer_to_folder, assign_customers_batch, delete_customer, get_assignment_history,

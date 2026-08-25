@@ -189,6 +189,34 @@ export function getAtsJobsByHost(
     });
 }
 
+export type AtsActivityPage = {
+    items: AtsActivityEntry[];
+    total: number;
+    offset: number;
+    limit: number;
+    has_more: boolean;
+};
+
+export function getAtsHostActivity(
+    instanceId: string,
+    offset = 0,
+    limit = 10,
+): Promise<AtsActivityPage> {
+    return invoke<AtsActivityPage>("get_ats_host_activity", {
+        instanceId,
+        offset,
+        limit,
+    });
+}
+
+export function removeAtsHost(instanceId: string): Promise<boolean> {
+    return invoke<boolean>("remove_ats_host", {instanceId});
+}
+
+export function removeInactiveLongAtsHosts(): Promise<number> {
+    return invoke<number>("remove_inactive_long_ats_hosts");
+}
+
 export type ByteProgress = {
     percent: number;
     current: number;
@@ -450,32 +478,164 @@ export function getCloudConnectionStatus(): Promise<string> {
     return invoke<string>("get_cloud_connection_status");
 }
 
-export function verifyDropboxStatus(which: "native" | "custom"): Promise<string> {
-    return invoke<string>("verify_dropbox_status", {which});
+export type DropboxAccountInfo = {
+    account_id: string;
+    display_name: string;
+    email: string;
+    profile_photo_url: string;
+    app_name: string;
+    app_key_hint: string;
+    token_valid: boolean;
+    used_bytes: number;
+    allocated_bytes: number | null;
+};
+
+export type DropboxAccountPool = "native" | "custom_api";
+
+/** IPC `which` for connect/verify/oauth (`custom` aliases `custom_api`). */
+export function dropboxPoolWhich(
+    pool: DropboxAccountPool,
+): "native" | "custom" {
+    return pool === "native" ? "native" : "custom";
 }
 
-export function startDropboxOauth(which: "native" | "custom"): Promise<OauthStart> {
-    return invoke<OauthStart>("start_dropbox_oauth", {which});
+export function dropboxAccountSecretKeys(
+    pool: DropboxAccountPool,
+    amsId: string,
+): { app_key: string; app_secret: string } {
+    const id = amsId.trim();
+    if (pool === "native") {
+        return {
+            app_key: `db_app_key_${id}`,
+            app_secret: `db_app_secret_${id}`,
+        };
+    }
+    return {
+        app_key: `custom_db_app_key_${id}`,
+        app_secret: `custom_db_app_secret_${id}`,
+    };
+}
+
+export function dropboxActiveSettingKey(pool: DropboxAccountPool): string {
+    return pool === "native"
+        ? "active_dropbox_account_id"
+        : "active_custom_dropbox_account_id";
+}
+
+export type DropboxAccountRow = {
+    id: string;
+    pool: string;
+    label: string;
+    dropbox_account_id: string;
+    email: string;
+    display_name: string;
+    app_key_hint: string;
+    created_at: string;
+    updated_at: string;
+};
+
+export function getDropboxAccountInfo(
+    which: "native" | "custom",
+    accountId?: string | null,
+): Promise<DropboxAccountInfo> {
+    return invoke<DropboxAccountInfo>("get_dropbox_account_info", {
+        which,
+        accountId: accountId ?? null,
+    });
+}
+
+export function listDropboxAccounts(
+    pool: DropboxAccountPool,
+): Promise<DropboxAccountRow[]> {
+    return invoke<DropboxAccountRow[]>("list_dropbox_accounts", {pool});
+}
+
+export function createDropboxAccount(
+    pool: DropboxAccountPool,
+    label?: string | null,
+): Promise<DropboxAccountRow> {
+    return invoke<DropboxAccountRow>("create_dropbox_account", {
+        pool,
+        label: label ?? null,
+    });
+}
+
+export function setActiveDropboxAccount(
+    pool: DropboxAccountPool,
+    accountId: string,
+): Promise<DropboxAccountRow> {
+    return invoke<DropboxAccountRow>("set_active_dropbox_account", {
+        pool,
+        accountId,
+    });
+}
+
+export function renameDropboxAccount(
+    accountId: string,
+    label: string,
+): Promise<DropboxAccountRow> {
+    return invoke<DropboxAccountRow>("rename_dropbox_account", {
+        accountId,
+        label,
+    });
+}
+
+export function deleteDropboxAccount(accountId: string): Promise<void> {
+    return invoke("delete_dropbox_account", {accountId});
+}
+
+export function verifyDropboxStatus(
+    which: "native" | "custom",
+    accountId?: string | null,
+): Promise<string> {
+    return invoke<string>("verify_dropbox_status", {
+        which,
+        accountId: accountId ?? null,
+    });
+}
+
+export function startDropboxOauth(
+    which: "native" | "custom",
+    accountId?: string | null,
+): Promise<OauthStart> {
+    return invoke<OauthStart>("start_dropbox_oauth", {
+        which,
+        accountId: accountId ?? null,
+    });
 }
 
 export function finishDropboxOauth(
     which: "native" | "custom",
     authCode: string,
     codeVerifier: string,
+    accountId?: string | null,
 ): Promise<ConnectResult> {
     return invoke<ConnectResult>("finish_dropbox_oauth", {
         which,
         authCode,
         codeVerifier,
+        accountId: accountId ?? null,
     });
 }
 
-export function connectDropbox(which: "native" | "custom"): Promise<ConnectResult> {
-    return invoke<ConnectResult>("connect_dropbox", {which});
+export function connectDropbox(
+    which: "native" | "custom",
+    accountId?: string | null,
+): Promise<ConnectResult> {
+    return invoke<ConnectResult>("connect_dropbox", {
+        which,
+        accountId: accountId ?? null,
+    });
 }
 
-export function disconnectDropbox(which: "native" | "custom"): Promise<ConnectResult> {
-    return invoke<ConnectResult>("disconnect_dropbox", {which});
+export function disconnectDropbox(
+    which: "native" | "custom",
+    accountId?: string | null,
+): Promise<ConnectResult> {
+    return invoke<ConnectResult>("disconnect_dropbox", {
+        which,
+        accountId: accountId ?? null,
+    });
 }
 
 export function connectCustomApi(): Promise<ConnectResult> {

@@ -1,5 +1,5 @@
 ﻿import {useCallback, useEffect, useMemo, useState} from "react";
-import {AtsActivityEventCard} from "@/components/AtsActivityEventCard";
+import {AtsHostActivitySection} from "@/components/AtsHostActivitySection";
 import {Spinner} from "@/components/Spinner";
 import {StatusChip} from "@/components/StatusChip";
 import {
@@ -18,15 +18,23 @@ import {Button} from "@/components/ui/button";
 import {
   atsPresenceChipLabel,
   atsPresenceChipTone,
+  canForgetAtsHost,
   defaultAtsHostSelection,
   findAtsHost,
+  forgetAtsHostConfirmMessage,
+  formatAtsHostSeenAt,
+  groupAtsHostsByPresence,
+  purgeInactiveLongAtsHostsConfirmMessage,
 } from "@/lib/atsPresence";
 import {
   getAtsHostDetails,
   getAtsHostsSummary,
+  removeAtsHost,
+  removeInactiveLongAtsHosts,
   type AtsHostDetails,
 } from "@/lib/tauri";
 import {eventTypeLabel} from "@/lib/atsActivityDisplay";
+import {useUiStore} from "@/store/uiStore";
 
 function PresenceChip({
   label,
@@ -52,31 +60,28 @@ function PresenceChip({
   );
 }
 
-function formatTimestamp(value: string): string {
-  if (!value.trim()) return "-";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
-  return new Intl.DateTimeFormat("de-DE", {
-    dateStyle: "short",
-    timeStyle: "short",
-  }).format(date);
-}
-
 type Props = {
   open: boolean;
   onClose: () => void;
+  onHostsChanged?: () => void;
 };
 
-export function AtsClientsDialog({open, onClose}: Props) {
+export function AtsClientsDialog({open, onClose, onHostsChanged}: Props) {
+  const confirm = useUiStore((s) => s.confirm);
   const [hosts, setHosts] = useState<Awaited<ReturnType<typeof getAtsHostsSummary>>>([]);
   const [hostsLoading, setHostsLoading] = useState(false);
   const [hostsError, setHostsError] = useState("");
   const [selectedHostId, setSelectedHostId] = useState("");
   const [details, setDetails] = useState<AtsHostDetails | null>(null);
   const [detailsLoading, setDetailsLoading] = useState(false);
+  const [removalBusy, setRemovalBusy] = useState(false);
 
   const connectedHostsCount = useMemo(() => countConnectedAtsHosts(hosts), [hosts]);
   const activeHostsCount = useMemo(() => countActiveAtsHosts(hosts), [hosts]);
+  const inactiveLongCount = useMemo(
+    () => groupAtsHostsByPresence(hosts).inactiveLong.length,
+    [hosts],
+  );
 
   const selectedHost = useMemo(
     () => findAtsHost(hosts, selectedHostId),
@@ -133,7 +138,57 @@ export function AtsClientsDialog({open, onClose}: Props) {
     void loadDetails(selectedHostId);
   }, [open, selectedHostId, loadDetails]);
 
+  const notifyHostsChanged = useCallback(() => {
+    onHostsChanged?.();
+  }, [onHostsChanged]);
+
+  const onForgetSelected = useCallback(async () => {
+    if (!selectedHost || !canForgetAtsHost(selectedHost)) return;
+    const ok = await confirm(forgetAtsHostConfirmMessage(selectedHost), {
+      title: "ATS-Client entfernen",
+      primaryLabel: "Entfernen",
+      destructive: true,
+    });
+    if (!ok) return;
+    setRemovalBusy(true);
+    setHostsError("");
+    try {
+      await removeAtsHost(selectedHost.instance_id);
+      setDetails(null);
+      setSelectedHostId("");
+      await loadHosts();
+      notifyHostsChanged();
+    } catch (err) {
+      setHostsError(String(err));
+    } finally {
+      setRemovalBusy(false);
+    }
+  }, [selectedHost, confirm, loadHosts, notifyHostsChanged]);
+
+  const onPurgeInactiveLong = useCallback(async () => {
+    if (inactiveLongCount <= 0) return;
+    const ok = await confirm(purgeInactiveLongAtsHostsConfirmMessage(inactiveLongCount), {
+      title: "Länger inaktive entfernen",
+      primaryLabel: "Aufräumen",
+      destructive: true,
+    });
+    if (!ok) return;
+    setRemovalBusy(true);
+    setHostsError("");
+    try {
+      await removeInactiveLongAtsHosts();
+      setDetails(null);
+      await loadHosts();
+      notifyHostsChanged();
+    } catch (err) {
+      setHostsError(String(err));
+    } finally {
+      setRemovalBusy(false);
+    }
+  }, [inactiveLongCount, confirm, loadHosts, notifyHostsChanged]);
+
   const detailsChipHost = selectedHost;
+  const canForgetSelected = selectedHost ? canForgetAtsHost(selectedHost) : false;
 
   return (
     <Dialog open={open} onOpenChange={(next) => !next && onClose()}>
@@ -183,6 +238,8 @@ export function AtsClientsDialog({open, onClose}: Props) {
               hosts={hosts}
               selectedHostId={selectedHostId}
               onSelectHost={setSelectedHostId}
+              onPurgeInactiveLong={() => void onPurgeInactiveLong()}
+              purgeInactiveLongBusy={removalBusy}
             />
           </div>
 
@@ -199,13 +256,26 @@ export function AtsClientsDialog({open, onClose}: Props) {
             ) : (
               <div className="space-y-4">
                 <div className="space-y-3">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span className="text-base font-semibold text-foreground">{details.host.hostname}</span>
-                    {detailsChipHost ? (
-                      <PresenceChip
-                        label={atsPresenceChipLabel(detailsChipHost)}
-                        tone={atsPresenceChipTone(detailsChipHost)}
-                      />
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex min-w-0 flex-wrap items-center gap-2">
+                      <span className="text-base font-semibold text-foreground">{details.host.hostname}</span>
+                      {detailsChipHost ? (
+                        <PresenceChip
+                          label={atsPresenceChipLabel(detailsChipHost)}
+                          tone={atsPresenceChipTone(detailsChipHost)}
+                        />
+                      ) : null}
+                    </div>
+                    {canForgetSelected ? (
+                      <Button
+                        type="button"
+                        variant="destructive"
+                        size="sm"
+                        disabled={removalBusy}
+                        onClick={() => void onForgetSelected()}
+                      >
+                        Entfernen
+                      </Button>
                     ) : null}
                   </div>
                   <div className="grid gap-2 sm:grid-cols-2">
@@ -216,30 +286,16 @@ export function AtsClientsDialog({open, onClose}: Props) {
                     </div>
                     <div className="rounded-md border border-border/50 bg-background/80 p-3 text-xs text-muted">
                       <p className="font-medium text-foreground">Sichtbarkeit</p>
-                      <p className="mt-1">First seen: {formatTimestamp(details.host.first_seen_at)}</p>
-                      <p className="mt-1">Last seen: {formatTimestamp(details.host.last_seen_at)}</p>
+                      <p className="mt-1">First seen: {formatAtsHostSeenAt(details.host.first_seen_at)}</p>
+                      <p className="mt-1">Last seen: {formatAtsHostSeenAt(details.host.last_seen_at)}</p>
                     </div>
                   </div>
                   <div className="rounded-md border border-border/50 bg-background/80 p-3 text-xs text-muted">
-                    Letztes Event: {eventTypeLabel(details.host.last_event_type)} um {formatTimestamp(details.host.last_event_at)}
+                    Letztes Event: {eventTypeLabel(details.host.last_event_type)} um {formatAtsHostSeenAt(details.host.last_event_at)}
                   </div>
                 </div>
 
-                <div className="space-y-2">
-                  <p className="text-xs font-semibold uppercase tracking-wide text-muted">Letzte Events</p>
-                  {details.host.recent_events.length === 0 ? (
-                    <p className="text-sm text-muted">Keine Events im 60-Minuten-Fenster.</p>
-                  ) : (
-                    <div className="space-y-2">
-                      {details.host.recent_events.slice(0, 8).map((entry) => (
-                        <AtsActivityEventCard
-                          key={`${entry.occurred_at}-${entry.event_type}-${entry.correlation_id}-${entry.payload_json.slice(0, 24)}`}
-                          entry={entry}
-                        />
-                      ))}
-                    </div>
-                  )}
-                </div>
+                <AtsHostActivitySection instanceId={details.host.instance_id} />
 
                 <div className="space-y-2">
                   <p className="text-xs font-semibold uppercase tracking-wide text-muted">Letzte Vorgänge</p>
@@ -261,7 +317,7 @@ export function AtsClientsDialog({open, onClose}: Props) {
                           <div className="mt-2 space-y-0.5 text-muted">
                             <p>Correlation ID: {job.correlation_id}</p>
                             <p>Quelle: {eventTypeLabel(job.source_event_type)}</p>
-                            <p>Last seen: {formatTimestamp(job.last_seen_at)}</p>
+                            <p>Last seen: {formatAtsHostSeenAt(job.last_seen_at)}</p>
                           </div>
                         </div>
                       ))}

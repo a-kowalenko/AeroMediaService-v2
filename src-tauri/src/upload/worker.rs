@@ -7,11 +7,17 @@ use std::time::{Duration, Instant};
 
 use tokio::sync::mpsc::UnboundedReceiver;
 
-use crate::cloud::{CloudClient, CloudError};
+use crate::cloud::binding::{
+    client_for_binding, merge_binding_into_history, pool_for_new_job, CustomDropboxPin,
+    DropboxAccountBinding,
+};
+use crate::cloud::guards::assert_upload_has_binding_when_required;
+use crate::cloud::{CloudClient, CloudError, CloudState, DropboxPool};
 use crate::events;
 use crate::model::handoff::{write_job_outbox, OutboxError, OutboxState, CODE_CANCELLED};
 use crate::model::kunde::Kunde;
 use crate::model::marker::remove_upload_markers;
+use crate::storage::dropbox_accounts::DropboxAccountStore;
 use crate::storage::logging;
 use crate::upload::append::{
     build_append_parent_history_update, APPEND_EVENT_CANCELLED, APPEND_EVENT_COMPLETED,
@@ -47,6 +53,7 @@ pub fn uses_custom_dropbox_client(job: &UploadJob, selected_cloud: &str) -> bool
     selected_cloud.trim() == "custom_api" && job.use_dropbox_client
 }
 
+#[allow(dead_code)]
 pub fn select_upload_client<'a>(
     job: &UploadJob,
     selected_cloud: &str,
@@ -65,9 +72,7 @@ pub fn select_upload_client<'a>(
 
 pub async fn run_loop<F>(
     mut rx: UnboundedReceiver<UploadJob>,
-    dropbox: Arc<dyn CloudClient>,
-    custom_api: Arc<dyn CloudClient>,
-    custom_dropbox: Arc<dyn CloudClient>,
+    cloud: CloudState,
     control: UploadControl,
     registry: Arc<UploadQueueRegistry>,
     get_setting: F,
@@ -78,16 +83,93 @@ pub async fn run_loop<F>(
     while let Some(job) = rx.recv().await {
         let archive_path = get_setting("archive_path");
         let selected_cloud = get_setting("selected_cloud_service");
-        let client = select_upload_client(
-            &job,
-            &selected_cloud,
-            dropbox.as_ref(),
-            custom_api.as_ref(),
-            custom_dropbox.as_ref(),
-        );
-        process_job(&job, client, &control, &registry, &archive_path).await;
+        let (_pin, client) = match resolve_job_cloud_client(&cloud, &job, &selected_cloud) {
+            Ok(v) => v,
+            Err(e) => {
+                logging::log_error(&format!(
+                    "Upload abgebrochen — Dropbox-Konto-Auflösung: {e}"
+                ));
+                let dir_name = job
+                    .dir_path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("unbekannt");
+                events::emit(
+                    events::UPLOAD_HISTORY_UPDATE,
+                    failure_history(dir_name, &e, job.dropbox_binding.as_ref()),
+                );
+                registry.unregister(Some(&job.dir_path));
+                continue;
+            }
+        };
+        process_job(&job, client.as_ref(), &control, &registry, &archive_path).await;
     }
     logging::log_info("Uploader-Thread beendet.");
+}
+
+/// Resolve Dropbox clients from job binding (or active/legacy when unbound).
+/// Returns an optional pin (Custom-API Direct-Dropbox) that must outlive the upload.
+fn resolve_job_cloud_client(
+    cloud: &CloudState,
+    job: &UploadJob,
+    selected_cloud: &str,
+) -> Result<(Option<CustomDropboxPin>, Arc<dyn CloudClient>), String> {
+    let pool = pool_for_new_job(selected_cloud, job.use_dropbox_client);
+    // Invariant (16c): no multi-account upload without frozen binding (Settings-Verify exempt).
+    if let Ok(accounts) = DropboxAccountStore::open_default() {
+        assert_upload_has_binding_when_required(
+            pool,
+            job.dropbox_binding.as_ref().map(|b| b.ams_id.as_str()),
+            &accounts,
+        )?;
+    }
+
+    if uses_custom_api_client(job, selected_cloud) {
+        let pin = match &job.dropbox_binding {
+            Some(b) if b.pool == DropboxPool::CustomApi => {
+                // Temporary slot pin only with job binding (history already carries it).
+                Some(CustomDropboxPin::pin(cloud, &b.ams_id))
+            }
+            Some(b) => {
+                return Err(format!(
+                    "Job ist an Pool „{}“ gebunden, Custom-API-Pfad erwartet „custom_api“.",
+                    b.pool.as_str()
+                ));
+            }
+            None => None,
+        };
+        let client: Arc<dyn CloudClient> = cloud.custom_api.clone();
+        return Ok((pin, client));
+    }
+
+    if uses_custom_dropbox_client(job, selected_cloud) {
+        let client: Arc<dyn CloudClient> = match &job.dropbox_binding {
+            Some(b) => client_for_binding(cloud, b),
+            None => cloud.custom_dropbox(),
+        };
+        return Ok((None, client));
+    }
+
+    // Native Dropbox path
+    let client: Arc<dyn CloudClient> = match &job.dropbox_binding {
+        Some(b) => client_for_binding(cloud, b),
+        None => cloud.dropbox(),
+    };
+    Ok((None, client))
+}
+
+fn failure_history(
+    dir_name: &str,
+    error: &str,
+    binding: Option<&DropboxAccountBinding>,
+) -> serde_json::Value {
+    let mut history = serde_json::json!({
+        "dir_name": dir_name,
+        "status": "Fehler",
+        "error_msg": error,
+    });
+    merge_binding_into_history(&mut history, binding);
+    history
 }
 
 pub async fn process_job(
@@ -151,6 +233,7 @@ pub async fn process_job(
                     notify.sms_id.as_deref(),
                     client.last_order_id().as_deref(),
                     job.correlation_id.as_deref(),
+                    job.dropbox_binding.as_ref(),
                 ),
             );
             // Final outbox status before archive move (P1b); outbox file stays on share.
@@ -174,7 +257,7 @@ pub async fn process_job(
             events::emit_status(format!("Abgebrochen: {dir_name}"));
             events::emit(
                 events::UPLOAD_HISTORY_UPDATE,
-                kunde_history(dir_name, "Abgebrochen", kunde),
+                kunde_history(dir_name, "Abgebrochen", kunde, job.dropbox_binding.as_ref()),
             );
             write_job_outbox(
                 local_dir_path,
@@ -201,11 +284,7 @@ pub async fn process_job(
             events::emit_failed(err.clone());
             events::emit(
                 events::UPLOAD_HISTORY_UPDATE,
-                serde_json::json!({
-                    "dir_name": dir_name,
-                    "status": "Fehler",
-                    "error_msg": err,
-                }),
+                failure_history(dir_name, &err, job.dropbox_binding.as_ref()),
             );
             write_job_outbox(
                 local_dir_path,
@@ -427,7 +506,7 @@ async fn run_single_job(
     events::emit_progress_total(0, 0, 0);
     events::emit(
         events::UPLOAD_HISTORY_UPDATE,
-        kunde_history(dir_name, "Gestartet", kunde),
+        kunde_history(dir_name, "Gestartet", kunde, None),
     );
 
     let remote_path = format!("/{dir_name}");
@@ -543,7 +622,12 @@ async fn sleep_cancellable(control: &UploadControl, secs: u64) -> Result<(), Upl
     }
 }
 
-fn kunde_history(dir_name: &str, status: &str, kunde: &Kunde) -> serde_json::Value {
+fn kunde_history(
+    dir_name: &str,
+    status: &str,
+    kunde: &Kunde,
+    binding: Option<&DropboxAccountBinding>,
+) -> serde_json::Value {
     let mut history = serde_json::json!({
         "dir_name": dir_name,
         "status": status,
@@ -553,6 +637,7 @@ fn kunde_history(dir_name: &str, status: &str, kunde: &Kunde) -> serde_json::Val
         "phone": kunde.phone.clone().unwrap_or_default(),
     });
     crate::model::marker::merge_kunde_media_flags(&mut history, kunde);
+    merge_binding_into_history(&mut history, binding);
     history
 }
 
@@ -565,6 +650,7 @@ fn success_history(
     sms_id: Option<&str>,
     order_id: Option<&str>,
     correlation_id: Option<&str>,
+    binding: Option<&DropboxAccountBinding>,
 ) -> serde_json::Value {
     let mut history = serde_json::json!({
         "dir_name": dir_name,
@@ -585,6 +671,7 @@ fn success_history(
     if let Some(cid) = correlation_id.map(str::trim).filter(|s| !s.is_empty()) {
         history["correlation_id"] = serde_json::Value::String(cid.to_string());
     }
+    merge_binding_into_history(&mut history, binding);
     history
 }
 
@@ -691,6 +778,7 @@ mod tests {
             use_dropbox_client: false,
             correlation_id: None,
             append: None,
+            dropbox_binding: None,
         }
     }
 
@@ -836,6 +924,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
         assert_eq!(without_id["email_status"], "Gesendet");
         assert_eq!(without_id["sms_status"], "Gesendet");
@@ -852,6 +941,7 @@ mod tests {
             Some("12345"),
             Some("order_abc"),
             Some("cid-1"),
+            None,
         );
         assert_eq!(with_id["sms_id"], "12345");
         assert_eq!(with_id["email_status"], "Fehler: Versand fehlgeschlagen");

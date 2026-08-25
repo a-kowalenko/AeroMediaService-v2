@@ -21,6 +21,12 @@ const DEFAULT_DETAILS_LIMIT: u32 = 100;
 const MAX_DETAILS_LIMIT: u32 = 500;
 const DEFAULT_JOBS_PAGE_SIZE: u32 = 50;
 const MAX_JOBS_PAGE_SIZE: u32 = 200;
+const DEFAULT_ACTIVITY_PAGE_SIZE: u32 = 10;
+const MAX_ACTIVITY_PAGE_SIZE: u32 = 200;
+/// Raw rows fetched per DB round-trip while filling a display page.
+const ACTIVITY_FETCH_CHUNK: u32 = 100;
+/// Safety cap so a pathological health flood cannot unbounded-load one page.
+const MAX_ACTIVITY_RAW_PER_PAGE: u32 = 5_000;
 const ACTIVITY_RETENTION_HOURS: i64 = 24 * 7;
 const PRUNE_INTERVAL_SECONDS: i64 = 5 * 60;
 const MAX_ACTIVITY_PAYLOAD_CHARS: usize = 8192;
@@ -35,6 +41,8 @@ pub enum AtsPresenceError {
     Io(#[from] std::io::Error),
     #[error("sqlite error: {0}")]
     Sqlite(#[from] rusqlite::Error),
+    #[error("ATS-Client ist noch verbunden und kann nicht entfernt werden")]
+    HostStillConnected,
 }
 
 impl From<ConfigError> for AtsPresenceError {
@@ -138,6 +146,15 @@ pub struct AtsJobsPage {
     pub page_size: u32,
 }
 
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct AtsActivityPage {
+    pub items: Vec<AtsActivityEntry>,
+    pub total: u32,
+    pub offset: u32,
+    pub limit: u32,
+    pub has_more: bool,
+}
+
 #[derive(Clone)]
 pub struct AtsPresenceState {
     store: Arc<Mutex<AtsPresenceStore>>,
@@ -191,6 +208,32 @@ impl AtsPresenceState {
         let store = self.store.lock().map_err(|e| e.to_string())?;
         store
             .get_jobs_by_host(instance_id, ttl_minutes, page, page_size)
+            .map_err(|e| e.to_string())
+    }
+
+    pub fn get_host_activity(
+        &self,
+        instance_id: &str,
+        offset: u32,
+        limit: u32,
+    ) -> Result<AtsActivityPage, String> {
+        let store = self.store.lock().map_err(|e| e.to_string())?;
+        store
+            .get_host_activity(instance_id, offset, limit)
+            .map_err(|e| e.to_string())
+    }
+
+    /// Removes a host and related presence rows. Refuses currently connected hosts.
+    pub fn remove_host(&self, instance_id: &str) -> Result<bool, String> {
+        let store = self.store.lock().map_err(|e| e.to_string())?;
+        store.remove_host(instance_id).map_err(|e| e.to_string())
+    }
+
+    /// Removes all hosts with `last_seen` older than the recent window (30 days).
+    pub fn remove_inactive_long_hosts(&self) -> Result<u32, String> {
+        let store = self.store.lock().map_err(|e| e.to_string())?;
+        store
+            .remove_inactive_long_hosts()
             .map_err(|e| e.to_string())
     }
 
@@ -622,6 +665,153 @@ impl AtsPresenceStore {
         })
     }
 
+    /// Paginated activity within the retention window (7 days).
+    ///
+    /// `limit` is a **display** budget: consecutive `health` events count as one slot
+    /// (same run). Raw rows are fetched until that budget is filled (or data ends),
+    /// so a health flood does not hide Ready/Lookup/Job on the first page.
+    /// `offset` is still a raw row offset for “load more”.
+    pub fn get_host_activity(
+        &self,
+        instance_id: &str,
+        offset: u32,
+        limit: u32,
+    ) -> Result<AtsActivityPage, AtsPresenceError> {
+        let id = instance_id.trim();
+        let page_size = clamp_activity_page_size(limit);
+        if id.is_empty() {
+            return Ok(AtsActivityPage {
+                items: Vec::new(),
+                total: 0,
+                offset: 0,
+                limit: page_size,
+                has_more: false,
+            });
+        }
+        let cutoff = activity_retention_cutoff();
+        let conn = self.connect()?;
+        let total = conn.query_row(
+            "SELECT COUNT(*) FROM ats_activity
+             WHERE instance_id = ?1 AND occurred_at >= ?2",
+            params![id, cutoff],
+            |row| row.get::<_, i64>(0),
+        )?;
+        let total = total.max(0) as u32;
+        let offset = offset.min(total);
+
+        let mut items: Vec<AtsActivityEntry> = Vec::new();
+        let mut display_slots = 0u32;
+        let mut raw_taken = 0u32;
+        let mut stop = false;
+
+        while !stop && display_slots < page_size && raw_taken < MAX_ACTIVITY_RAW_PER_PAGE {
+            let batch = self.load_activity_batch(
+                &conn,
+                id,
+                &cutoff,
+                offset.saturating_add(raw_taken),
+                ACTIVITY_FETCH_CHUNK,
+            )?;
+            if batch.is_empty() {
+                break;
+            }
+            let batch_len = batch.len() as u32;
+            for entry in batch {
+                let continues_health_run = entry.event_type == "health"
+                    && items
+                        .last()
+                        .map(|prev| prev.event_type == "health")
+                        .unwrap_or(false);
+                if display_slots >= page_size && !continues_health_run {
+                    stop = true;
+                    break;
+                }
+                if !continues_health_run {
+                    display_slots = display_slots.saturating_add(1);
+                }
+                items.push(entry);
+                raw_taken = raw_taken.saturating_add(1);
+                if raw_taken >= MAX_ACTIVITY_RAW_PER_PAGE {
+                    stop = true;
+                    break;
+                }
+            }
+            if batch_len < ACTIVITY_FETCH_CHUNK {
+                break;
+            }
+        }
+
+        // Finish an open health run so the collapsed row is complete.
+        while !stop && raw_taken < MAX_ACTIVITY_RAW_PER_PAGE {
+            let Some(next) = self
+                .load_activity_batch(
+                    &conn,
+                    id,
+                    &cutoff,
+                    offset.saturating_add(raw_taken),
+                    1,
+                )?
+                .into_iter()
+                .next()
+            else {
+                break;
+            };
+            let continues_health_run = next.event_type == "health"
+                && items
+                    .last()
+                    .map(|prev| prev.event_type == "health")
+                    .unwrap_or(false);
+            if !continues_health_run {
+                break;
+            }
+            items.push(next);
+            raw_taken = raw_taken.saturating_add(1);
+        }
+
+        let loaded = offset.saturating_add(items.len() as u32);
+        Ok(AtsActivityPage {
+            items,
+            total,
+            offset,
+            limit: page_size,
+            has_more: loaded < total,
+        })
+    }
+
+    fn load_activity_batch(
+        &self,
+        conn: &Connection,
+        instance_id: &str,
+        cutoff: &str,
+        offset: u32,
+        limit: u32,
+    ) -> Result<Vec<AtsActivityEntry>, AtsPresenceError> {
+        let mut stmt = conn.prepare(
+            "SELECT occurred_at, event_type, route, method, status_code_class, correlation_id, folder_name, payload_json
+             FROM ats_activity
+             WHERE instance_id = ?1 AND occurred_at >= ?2
+             ORDER BY occurred_at DESC, id DESC
+             LIMIT ?3 OFFSET ?4",
+        )?;
+        let rows = stmt.query_map(params![instance_id, cutoff, limit, offset], |row| {
+            Ok(AtsActivityEntry {
+                occurred_at: row.get(0)?,
+                event_type: row.get(1)?,
+                route: row.get(2)?,
+                method: row.get(3)?,
+                status_code_class: row.get(4)?,
+                correlation_id: row.get(5)?,
+                folder_name: row.get(6)?,
+                payload_json: row.get(7)?,
+            })
+        })?;
+        let mut items = Vec::new();
+        for row in rows {
+            items.push(row?);
+        }
+        Ok(items)
+    }
+
     fn load_jobs_for_host(
         &self,
         conn: &Connection,
@@ -652,6 +842,65 @@ impl AtsPresenceStore {
         }
         Ok(items)
     }
+
+    /// Deletes presence rows for one host. Connected hosts are refused.
+    pub fn remove_host(&self, instance_id: &str) -> Result<bool, AtsPresenceError> {
+        let id = instance_id.trim();
+        if id.is_empty() {
+            return Ok(false);
+        }
+        let conn = self.connect()?;
+        let last_seen_at: Option<String> = conn
+            .query_row(
+                "SELECT last_seen_at FROM ats_hosts WHERE instance_id = ?1",
+                params![id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let Some(last_seen_at) = last_seen_at else {
+            return Ok(false);
+        };
+        if last_seen_at >= connected_cutoff() {
+            return Err(AtsPresenceError::HostStillConnected);
+        }
+        let tx = conn.unchecked_transaction()?;
+        tx.execute(
+            "DELETE FROM ats_activity WHERE instance_id = ?1",
+            params![id],
+        )?;
+        tx.execute(
+            "DELETE FROM ats_job_origin WHERE instance_id = ?1",
+            params![id],
+        )?;
+        let deleted = tx.execute("DELETE FROM ats_hosts WHERE instance_id = ?1", params![id])?;
+        tx.commit()?;
+        Ok(deleted > 0)
+    }
+
+    /// Deletes all hosts classified as „länger inaktiv“ (>30 Tage).
+    pub fn remove_inactive_long_hosts(&self) -> Result<u32, AtsPresenceError> {
+        let recent_cutoff = recent_window_cutoff();
+        let conn = self.connect()?;
+        let tx = conn.unchecked_transaction()?;
+        tx.execute(
+            "DELETE FROM ats_activity WHERE instance_id IN (
+                SELECT instance_id FROM ats_hosts WHERE last_seen_at < ?1
+             )",
+            params![&recent_cutoff],
+        )?;
+        tx.execute(
+            "DELETE FROM ats_job_origin WHERE instance_id IN (
+                SELECT instance_id FROM ats_hosts WHERE last_seen_at < ?1
+             )",
+            params![&recent_cutoff],
+        )?;
+        let deleted = tx.execute(
+            "DELETE FROM ats_hosts WHERE last_seen_at < ?1",
+            params![&recent_cutoff],
+        )?;
+        tx.commit()?;
+        Ok(deleted as u32)
+    }
 }
 
 fn clamp_ttl(ttl_minutes: u32) -> u32 {
@@ -674,8 +923,20 @@ fn clamp_jobs_page_size(page_size: u32) -> u32 {
     }
 }
 
+fn clamp_activity_page_size(page_size: u32) -> u32 {
+    if page_size == 0 {
+        DEFAULT_ACTIVITY_PAGE_SIZE
+    } else {
+        page_size.clamp(1, MAX_ACTIVITY_PAGE_SIZE)
+    }
+}
+
 fn ttl_cutoff(ttl_minutes: u32) -> String {
     (Utc::now() - Duration::minutes(clamp_ttl(ttl_minutes) as i64)).to_rfc3339()
+}
+
+fn activity_retention_cutoff() -> String {
+    (Utc::now() - Duration::hours(ACTIVITY_RETENTION_HOURS)).to_rfc3339()
 }
 
 fn connected_cutoff() -> String {
@@ -909,5 +1170,177 @@ mod tests {
         assert_eq!(jobs.total, 1);
         assert_eq!(jobs.items[0].source_event_type, "handoff_ready");
         assert!(store.get_jobs_by_host("inst-b", 60, 0, 50).unwrap().items.is_empty());
+    }
+
+    #[test]
+    fn remove_host_deletes_activity_and_job_origin() {
+        let (_dir, mut store) = open_tmp();
+        store
+            .record_event(
+                &host("11111111-2222-3333-4444-555555555555", false),
+                &event("handoff_ready", "cid-rm", "Flug_RM"),
+            )
+            .unwrap();
+        // Make host disconnected so removal is allowed.
+        let conn = store.connect().unwrap();
+        let stale = (Utc::now() - Duration::minutes(5)).to_rfc3339();
+        conn.execute(
+            "UPDATE ats_hosts SET last_seen_at = ?1, last_event_at = ?1, updated_at = ?1
+             WHERE instance_id = ?2",
+            params![&stale, "11111111-2222-3333-4444-555555555555"],
+        )
+        .unwrap();
+        drop(conn);
+
+        assert!(store
+            .remove_host("11111111-2222-3333-4444-555555555555")
+            .unwrap());
+        assert!(store.get_hosts_summary(60).unwrap().is_empty());
+        assert!(store
+            .get_host_details("11111111-2222-3333-4444-555555555555", 60, 20)
+            .unwrap()
+            .is_none());
+        let conn = store.connect().unwrap();
+        let activity_left: i64 = conn
+            .query_row("SELECT COUNT(*) FROM ats_activity", [], |row| row.get(0))
+            .unwrap();
+        let jobs_left: i64 = conn
+            .query_row("SELECT COUNT(*) FROM ats_job_origin", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(activity_left, 0);
+        assert_eq!(jobs_left, 0);
+    }
+
+    #[test]
+    fn remove_host_refuses_connected() {
+        let (_dir, mut store) = open_tmp();
+        store
+            .record_event(
+                &host("11111111-2222-3333-4444-555555555555", false),
+                &event("health", "", ""),
+            )
+            .unwrap();
+        let err = store
+            .remove_host("11111111-2222-3333-4444-555555555555")
+            .unwrap_err();
+        assert!(matches!(err, AtsPresenceError::HostStillConnected));
+        assert_eq!(store.get_hosts_summary(60).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn remove_inactive_long_hosts_keeps_recent() {
+        let (_dir, store) = open_tmp();
+        let conn = store.connect().unwrap();
+        let recent = (Utc::now() - Duration::days(2)).to_rfc3339();
+        let long_inactive = (Utc::now() - Duration::days(40)).to_rfc3339();
+        conn.execute(
+            "INSERT INTO ats_hosts (
+                instance_id, display_hostname, ats_version, ats_app,
+                first_seen_at, last_seen_at, last_event_at, last_event_type,
+                last_route, degraded_identity, created_at, updated_at
+             ) VALUES (?1, ?2, '', '', ?3, ?3, ?3, 'health', '/v1/health', 0, ?3, ?3)",
+            params!["recent-host", "ATS-Recent", &recent],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO ats_hosts (
+                instance_id, display_hostname, ats_version, ats_app,
+                first_seen_at, last_seen_at, last_event_at, last_event_type,
+                last_route, degraded_identity, created_at, updated_at
+             ) VALUES (?1, ?2, '', '', ?3, ?3, ?3, 'health', '/v1/health', 0, ?3, ?3)",
+            params!["old-host", "ATS-Old", &long_inactive],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO ats_activity (
+                instance_id, occurred_at, event_type, route, method, status_code_class,
+                correlation_id, folder_name, hostname_snapshot, ats_version_snapshot,
+                ats_app_snapshot, degraded_identity, payload_json
+             ) VALUES ('old-host', ?1, 'health', '/v1/health', 'GET', '2xx', '', '', 'ATS-Old', '', '', 0, '')",
+            params![&long_inactive],
+        )
+        .unwrap();
+        drop(conn);
+
+        assert_eq!(store.remove_inactive_long_hosts().unwrap(), 1);
+        let summary = store.get_hosts_summary(60).unwrap();
+        assert_eq!(summary.len(), 1);
+        assert_eq!(summary[0].instance_id, "recent-host");
+        let conn = store.connect().unwrap();
+        let activity_left: i64 = conn
+            .query_row("SELECT COUNT(*) FROM ats_activity", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(activity_left, 0);
+    }
+
+    #[test]
+    fn host_activity_paginates_within_retention() {
+        let (_dir, mut store) = open_tmp();
+        let identity = host("act-host", false);
+        for i in 0..5 {
+            let mut activity = event("health", "", "");
+            activity.route = format!("/v1/health/{i}");
+            store.record_event(&identity, &activity).unwrap();
+        }
+        store
+            .record_event(&identity, &event("handoff_ready", "cid-act", "Flug_A"))
+            .unwrap();
+
+        // Display budget 2: Ready + one Health-Run (all 5 health rows).
+        let page1 = store.get_host_activity("act-host", 0, 2).unwrap();
+        assert_eq!(page1.total, 6);
+        assert_eq!(page1.items.len(), 6);
+        assert!(!page1.has_more);
+        assert_eq!(page1.items[0].event_type, "handoff_ready");
+        assert!(page1.items[1..].iter().all(|e| e.event_type == "health"));
+    }
+
+    #[test]
+    fn host_activity_display_slots_skip_health_flood() {
+        let (_dir, mut store) = open_tmp();
+        let identity = host("act-host-2", false);
+        for i in 0..40 {
+            let mut activity = event("health", "", "");
+            activity.route = format!("/v1/health/{i}");
+            store.record_event(&identity, &activity).unwrap();
+        }
+        store
+            .record_event(&identity, &event("customer_lookup", "", ""))
+            .unwrap();
+        for i in 40..50 {
+            let mut activity = event("health", "", "");
+            activity.route = format!("/v1/health/{i}");
+            store.record_event(&identity, &activity).unwrap();
+        }
+        store
+            .record_event(&identity, &event("handoff_ready", "cid-b", "Flug_B"))
+            .unwrap();
+
+        // Newest-first: ready, 10 health, lookup, 40 health.
+        // Display budget 3 → ready + health-run + lookup (+ trailing health absorbed into run? 
+        // After ready (1), health run starts (2), then lookup (3) stops before older health.
+        let page1 = store.get_host_activity("act-host-2", 0, 3).unwrap();
+        assert_eq!(page1.items[0].event_type, "handoff_ready");
+        assert!(page1.items[1].event_type == "health");
+        assert!(page1.has_more);
+        let health_in_page: Vec<_> = page1
+            .items
+            .iter()
+            .skip(1)
+            .take_while(|e| e.event_type == "health")
+            .collect();
+        assert_eq!(health_in_page.len(), 10);
+        assert_eq!(
+            page1.items[1 + health_in_page.len()].event_type,
+            "customer_lookup"
+        );
+        assert_eq!(page1.items.len(), 12); // ready + 10 health + lookup
+
+        let page2 = store
+            .get_host_activity("act-host-2", page1.items.len() as u32, 2)
+            .unwrap();
+        assert!(page2.items.iter().all(|e| e.event_type == "health"));
+        assert_eq!(page2.items.len(), 40);
+        assert!(!page2.has_more);
     }
 }

@@ -217,6 +217,48 @@ export function formatManualStatusSummary(entry: {
   return note ? `${action} (${atDisplay}) — ${note}` : `${action} (${atDisplay})`;
 }
 
+/** History Dropbox binding snapshot (Phase 16). */
+export function historyDropboxBinding(entry: {
+  extra?: Record<string, unknown>;
+}): {
+  amsId: string;
+  pool: string;
+  email: string;
+  dropboxAccountId: string;
+} {
+  return {
+    amsId: extraString(entry, "dropbox_account_ams_id").trim(),
+    pool: extraString(entry, "dropbox_account_pool").trim(),
+    email: extraString(entry, "dropbox_account_email").trim(),
+    dropboxAccountId: extraString(entry, "dropbox_account_id").trim(),
+  };
+}
+
+export function formatHistoryDropboxAccount(
+  entry: {
+    extra?: Record<string, unknown>;
+  },
+  labelHint?: string,
+): string {
+  const { amsId, pool, email } = historyDropboxBinding(entry);
+  if (!amsId && !email && !pool && !labelHint?.trim()) return "—";
+  const poolLabel =
+    pool === "custom_api" ? "Custom-API" : pool === "native" ? "Native" : pool || "—";
+  const parts: string[] = [];
+  const label = labelHint?.trim();
+  if (label) parts.push(label);
+  if (email) parts.push(email);
+  else if (amsId && !label) parts.push(amsId);
+  parts.push(poolLabel);
+  return parts.join(" · ");
+}
+
+export function dropboxPoolActiveSettingKey(pool: string): string {
+  return pool === "custom_api"
+    ? "active_custom_dropbox_account_id"
+    : "active_dropbox_account_id";
+}
+
 export type HistoryBookingFlags = {
   handcam_foto: boolean;
   handcam_video: boolean;

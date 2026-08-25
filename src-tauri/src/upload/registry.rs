@@ -9,6 +9,7 @@ use std::time::Instant;
 use serde::Serialize;
 use tokio::sync::mpsc::UnboundedSender;
 
+use crate::cloud::DropboxAccountBinding;
 use crate::events;
 use crate::model::kunde::Kunde;
 use crate::monitor::stability::folder_key;
@@ -24,6 +25,8 @@ pub struct UploadJob {
     pub correlation_id: Option<String>,
     /// When set, worker appends into the parent order instead of creating a new one.
     pub append: Option<AppendTarget>,
+    /// Dropbox profile frozen at claim/enqueue (native or custom_api pool).
+    pub dropbox_binding: Option<DropboxAccountBinding>,
 }
 
 /// Existing successful upload that an ATS Nachreichung should merge into.
@@ -33,6 +36,11 @@ pub struct AppendTarget {
     pub remote_path: String,
     pub order_id: Option<String>,
     pub share_link: Option<String>,
+    /// Parent job's bound AMS Dropbox profile (Phase 16b).
+    pub dropbox_account_ams_id: Option<String>,
+    pub dropbox_account_pool: Option<String>,
+    pub dropbox_account_id: Option<String>,
+    pub dropbox_account_email: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -57,6 +65,8 @@ pub struct QueueEntry {
     pub customer_label: String,
     pub enqueued_at: Instant,
     pub state: QueueState,
+    /// AMS Dropbox profile frozen on the job (Hard-Guard / Soft-Active).
+    pub dropbox_binding: Option<DropboxAccountBinding>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -208,7 +218,39 @@ impl UploadQueueRegistry {
             customer_label: format_customer_label(Some(&job.kunde)),
             enqueued_at: Instant::now(),
             state: QueueState::Waiting,
+            dropbox_binding: job.dropbox_binding.clone(),
         });
+    }
+
+    /// Waiting + active jobs bound to this AMS Dropbox profile (any pool).
+    pub fn bound_job_count(&self, ams_id: &str) -> usize {
+        let id = ams_id.trim();
+        if id.is_empty() {
+            return 0;
+        }
+        self.with_lock(|inner| {
+            inner
+                .entries
+                .iter()
+                .filter(|e| {
+                    e.dropbox_binding
+                        .as_ref()
+                        .is_some_and(|b| b.ams_id == id)
+                })
+                .count()
+        })
+    }
+
+    /// Hard-Guard: block delete/disconnect while queue still holds jobs for this profile.
+    pub fn assert_can_remove_account(&self, ams_id: &str) -> Result<(), String> {
+        let n = self.bound_job_count(ams_id);
+        if n == 0 {
+            return Ok(());
+        }
+        Err(format!(
+            "Dropbox-Profil kann nicht gelöscht/getrennt werden: {n} offene(r) Upload-Job(s) sind daran gebunden. \
+             Bitte Uploads abwarten oder abbrechen."
+        ))
     }
 
     /// Register (unless already reserved), send to the worker, and append a snapshot row.
@@ -273,6 +315,7 @@ mod tests {
             use_dropbox_client: false,
             correlation_id: None,
             append: None,
+            dropbox_binding: None,
         }
     }
 
@@ -334,5 +377,25 @@ mod tests {
         assert!(!registry.enqueue(&tx, job(dir.path(), "A"), true));
         assert!(registry.register(dir.path()));
         assert!(registry.enqueue(&tx, job(dir.path(), "A"), true));
+    }
+
+    #[test]
+    fn bound_job_count_tracks_ams_binding() {
+        use crate::cloud::dropbox::DropboxPool;
+        let dir = tempdir().unwrap();
+        let registry = UploadQueueRegistry::new();
+        let (tx, _rx) = unbounded_channel();
+        let mut item = job(dir.path(), "Anna");
+        item.dropbox_binding = Some(DropboxAccountBinding {
+            ams_id: "ams-bound".into(),
+            pool: DropboxPool::Native,
+            dropbox_account_id: String::new(),
+            email: String::new(),
+        });
+        assert!(registry.enqueue(&tx, item, false));
+        assert_eq!(registry.bound_job_count("ams-bound"), 1);
+        assert_eq!(registry.bound_job_count("other"), 0);
+        assert!(registry.assert_can_remove_account("ams-bound").is_err());
+        assert!(registry.assert_can_remove_account("other").is_ok());
     }
 }

@@ -10,10 +10,13 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use uuid::Uuid;
 
+use crate::cloud::binding::{
+    client_for_binding, merge_binding_into_history, resolve_binding_for_history, CustomDropboxPin,
+};
 use crate::cloud::dropbox::DropboxClient;
 use crate::cloud::manifest::STANDARD_CATEGORIES;
 use crate::cloud::traits::CloudClient;
-use crate::cloud::{CloudState, CustomApiClient};
+use crate::cloud::{CloudState, CustomApiClient, DropboxPool};
 use crate::constants::is_direct_dropbox_upload_mode;
 use crate::events;
 use crate::model::handoff::{
@@ -23,6 +26,7 @@ use crate::model::handoff::{
 use crate::model::marker::merge_kunde_media_flags;
 use crate::model::kunde::Kunde;
 use crate::monitor::stability::has_uploadable_files;
+use crate::storage::dropbox_accounts::DropboxAccountStore;
 use crate::notify::resend::remote_path_for_entry;
 use crate::storage::config::runtime_setting;
 use crate::storage::history::{HistoryEntry, HistoryStore};
@@ -442,6 +446,10 @@ pub fn append_target_from_parent_entry(entry: &HistoryEntry) -> Result<AppendTar
         return Err("Historieneintrag ohne Dropbox-Pfad (remote_path / dir_name).".into());
     }
     let share = json_str(&json, "share_link").trim();
+    let ams = json_str(&json, "dropbox_account_ams_id").trim();
+    let pool = json_str(&json, "dropbox_account_pool").trim();
+    let dbid = json_str(&json, "dropbox_account_id").trim();
+    let email = json_str(&json, "dropbox_account_email").trim();
     Ok(AppendTarget {
         parent_dir_name: entry.dir_name.clone(),
         remote_path,
@@ -450,6 +458,26 @@ pub fn append_target_from_parent_entry(entry: &HistoryEntry) -> Result<AppendTar
             None
         } else {
             Some(share.to_string())
+        },
+        dropbox_account_ams_id: if ams.is_empty() {
+            None
+        } else {
+            Some(ams.to_string())
+        },
+        dropbox_account_pool: if pool.is_empty() {
+            None
+        } else {
+            Some(pool.to_string())
+        },
+        dropbox_account_id: if dbid.is_empty() {
+            None
+        } else {
+            Some(dbid.to_string())
+        },
+        dropbox_account_email: if email.is_empty() {
+            None
+        } else {
+            Some(email.to_string())
         },
     })
 }
@@ -741,6 +769,17 @@ pub async fn append_media_from_history(
     let kunde = resolve_kunde_from_history_entry(history_entry).await?;
     let order_id = existing_order_id(history_entry);
     let use_custom = selected_cloud.trim() == "custom_api";
+    let pool = if use_custom {
+        DropboxPool::CustomApi
+    } else {
+        DropboxPool::Native
+    };
+    let accounts = DropboxAccountStore::open_default().map_err(|e| e.to_string())?;
+    let binding = if accounts.list(pool).map_err(|e| e.to_string())?.is_empty() {
+        None
+    } else {
+        Some(resolve_binding_for_history(history_entry, pool, &accounts)?)
+    };
 
     if use_custom && !is_direct_dropbox_upload_mode(&runtime_setting("custom_api_upload_mode")) {
         return Err(
@@ -757,6 +796,13 @@ pub async fn append_media_from_history(
 
     control.reset_for_new_job();
 
+    let _pin = if use_custom {
+        binding
+            .as_ref()
+            .map(|b| CustomDropboxPin::pin(cloud, &b.ams_id))
+    } else {
+        None
+    };
     let ok = if use_custom {
         append_via_custom_api(
             &cloud.custom_api,
@@ -768,7 +814,11 @@ pub async fn append_media_from_history(
         )
         .await?
     } else {
-        append_via_dropbox(&cloud.dropbox, local_dir, &remote_path, control, &kunde).await?
+        let dropbox = match &binding {
+            Some(b) => client_for_binding(cloud, b),
+            None => cloud.dropbox(),
+        };
+        append_via_dropbox(&dropbox, local_dir, &remote_path, control, &kunde).await?
     };
 
     if !ok {
@@ -784,6 +834,7 @@ pub async fn append_media_from_history(
         "last_append_at": now,
         "append_count": append_count,
     });
+    merge_binding_into_history(&mut updates, binding.as_ref());
     let stored_link = json_str(history_entry, "share_link").trim();
     if !stored_link.is_empty() {
         updates["share_link"] = json!(stored_link);
@@ -884,10 +935,16 @@ mod tests {
             ..HistoryEntry::default()
         };
         entry.extra.insert("order_id".into(), json!("ord-1"));
+        entry.extra.insert("dropbox_account_ams_id".into(), json!("ams-parent"));
+        entry.extra.insert("dropbox_account_pool".into(), json!("native"));
+        entry.extra.insert("dropbox_account_email".into(), json!("p@x.de"));
         let target = append_target_from_parent_entry(&entry).unwrap();
         assert_eq!(target.parent_dir_name, "Flug_001");
         assert_eq!(target.remote_path, "/Flug_001");
         assert_eq!(target.order_id.as_deref(), Some("ord-1"));
+        assert_eq!(target.dropbox_account_ams_id.as_deref(), Some("ams-parent"));
+        assert_eq!(target.dropbox_account_pool.as_deref(), Some("native"));
+        assert_eq!(target.dropbox_account_email.as_deref(), Some("p@x.de"));
 
         entry.status = "Fehler".into();
         assert!(append_target_from_parent_entry(&entry).is_err());

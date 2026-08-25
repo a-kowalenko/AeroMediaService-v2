@@ -12,8 +12,10 @@ use std::time::Duration;
 use async_trait::async_trait;
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
 use reqwest::StatusCode;
+use serde::Serialize;
 use serde_json::{json, Value};
 
+use crate::cloud::guards::{assert_checkpoint_binding_matches, merge_checkpoint_binding};
 use crate::cloud::oauth::{self, OauthStart};
 use crate::cloud::traits::{should_skip_upload_file, CloudClient, CloudError};
 use crate::events;
@@ -41,28 +43,128 @@ pub struct UploadFile {
     pub rel_norm: String,
 }
 
-#[derive(Debug, Clone, Copy)]
+/// Which Dropbox credential pool (never mix tokens across pools).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DropboxPool {
+    Native,
+    CustomApi,
+}
+
+impl DropboxPool {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Native => "native",
+            Self::CustomApi => "custom_api",
+        }
+    }
+
+    pub fn parse(raw: &str) -> Result<Self, CloudError> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "native" | "dropbox" => Ok(Self::Native),
+            "custom" | "custom_api" | "custom_dropbox" => Ok(Self::CustomApi),
+            other => Err(CloudError::Message(format!(
+                "Unbekannter Dropbox-Pool: {other}"
+            ))),
+        }
+    }
+
+    pub fn active_setting_key(self) -> &'static str {
+        match self {
+            Self::Native => "active_dropbox_account_id",
+            Self::CustomApi => "active_custom_dropbox_account_id",
+        }
+    }
+
+    pub fn legacy_keys(self) -> DropboxSecretKeys {
+        match self {
+            Self::Native => DropboxSecretKeys::native(),
+            Self::CustomApi => DropboxSecretKeys::custom_api(),
+        }
+    }
+}
+
+/// Live account snapshot for Settings (native or Custom-API Dropbox).
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct DropboxAccountInfo {
+    /// Dropbox `account_id` from `users/get_current_account`.
+    pub account_id: String,
+    pub display_name: String,
+    pub email: String,
+    /// Profile photo URL from Dropbox (`profile_photo_url`), if set.
+    pub profile_photo_url: String,
+    /// App-folder name under `/Apps/…` when discoverable (Full Dropbox).
+    pub app_name: String,
+    /// Truncated App Key (fallback when `app_name` is empty).
+    pub app_key_hint: String,
+    pub token_valid: bool,
+    pub used_bytes: u64,
+    /// `None` when Dropbox does not report a fixed quota.
+    pub allocated_bytes: Option<u64>,
+}
+
+/// Keyring key names for a Dropbox credential set (legacy pool-wide or per AMS profile).
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DropboxSecretKeys {
-    pub app_key: &'static str,
-    pub app_secret: &'static str,
-    pub refresh_token: &'static str,
+    pub app_key: String,
+    pub app_secret: String,
+    pub refresh_token: String,
 }
 
 impl DropboxSecretKeys {
     pub fn native() -> Self {
         Self {
-            app_key: "db_app_key",
-            app_secret: "db_app_secret",
-            refresh_token: "db_refresh_token",
+            app_key: "db_app_key".into(),
+            app_secret: "db_app_secret".into(),
+            refresh_token: "db_refresh_token".into(),
         }
     }
 
     pub fn custom_api() -> Self {
         Self {
-            app_key: "custom_db_app_key",
-            app_secret: "custom_db_app_secret",
-            refresh_token: "custom_db_refresh_token",
+            app_key: "custom_db_app_key".into(),
+            app_secret: "custom_db_app_secret".into(),
+            refresh_token: "custom_db_refresh_token".into(),
         }
+    }
+
+    /// Namespaced keys for one AMS Dropbox profile (`db_*_<ams_id>` / `custom_db_*_<ams_id>`).
+    pub fn for_account(pool: DropboxPool, ams_id: &str) -> Self {
+        let id = ams_id.trim();
+        match pool {
+            DropboxPool::Native => Self {
+                app_key: format!("db_app_key_{id}"),
+                app_secret: format!("db_app_secret_{id}"),
+                refresh_token: format!("db_refresh_token_{id}"),
+            },
+            DropboxPool::CustomApi => Self {
+                app_key: format!("custom_db_app_key_{id}"),
+                app_secret: format!("custom_db_app_secret_{id}"),
+                refresh_token: format!("custom_db_refresh_token_{id}"),
+            },
+        }
+    }
+
+    /// Pool inferred from keyring key prefix (`custom_db_*` vs `db_*`).
+    pub fn pool_from_keys(keys: &DropboxSecretKeys) -> DropboxPool {
+        if keys.app_key.starts_with("custom_db_") {
+            DropboxPool::CustomApi
+        } else {
+            DropboxPool::Native
+        }
+    }
+
+    /// AMS profile id from namespaced keys (`db_app_key_<ams_id>`), if any.
+    pub fn ams_id_from_keys(keys: &DropboxSecretKeys) -> Option<String> {
+        for prefix in ["custom_db_app_key_", "db_app_key_"] {
+            if let Some(rest) = keys.app_key.strip_prefix(prefix) {
+                let id = rest.trim();
+                if !id.is_empty() {
+                    return Some(id.to_string());
+                }
+            }
+        }
+        None
     }
 }
 
@@ -130,13 +232,13 @@ impl DropboxClient {
     /// `connection_status_verified` (Settings checks both native and custom)
     /// and mid-upload `ensure_token` must not overwrite the active cloud status.
     async fn refresh_access_token(&self) -> Result<String, CloudError> {
-        let app_key = secrets::get_secret(self.keys.app_key)
+        let app_key = secrets::get_secret(&self.keys.app_key)
             .map_err(|e| CloudError::Message(e.to_string()))?
             .filter(|s| !s.is_empty());
-        let app_secret = secrets::get_secret(self.keys.app_secret)
+        let app_secret = secrets::get_secret(&self.keys.app_secret)
             .map_err(|e| CloudError::Message(e.to_string()))?
             .filter(|s| !s.is_empty());
-        let refresh_token = secrets::get_secret(self.keys.refresh_token)
+        let refresh_token = secrets::get_secret(&self.keys.refresh_token)
             .map_err(|e| CloudError::Message(e.to_string()))?
             .filter(|s| !s.is_empty());
 
@@ -171,7 +273,7 @@ impl DropboxClient {
             let body = response.text().await.unwrap_or_default();
             if status == StatusCode::UNAUTHORIZED || status == StatusCode::BAD_REQUEST {
                 logging::log_warn(&format!("Refresh-Token ungültig: {status} {body}"));
-                let _ = secrets::delete_secret(self.keys.refresh_token);
+                let _ = secrets::delete_secret(&self.keys.refresh_token);
                 self.set_token(None);
                 self.connection_verified.store(false, Ordering::SeqCst);
             }
@@ -203,12 +305,33 @@ impl DropboxClient {
 
     #[allow(dead_code)]
     pub fn secret_keys(&self) -> DropboxSecretKeys {
-        self.keys
+        self.keys.clone()
+    }
+
+    /// Credential pool for this client (native vs custom_api).
+    pub fn profile_pool(&self) -> DropboxPool {
+        DropboxSecretKeys::pool_from_keys(&self.keys)
+    }
+
+    /// AMS Dropbox profile id when using namespaced keys; `None` for legacy pool-wide keys.
+    pub fn profile_ams_id(&self) -> Option<String> {
+        DropboxSecretKeys::ams_id_from_keys(&self.keys)
+    }
+
+    fn checkpoint_payload(&self, mut payload: Value) -> Value {
+        if let Some(obj) = payload.as_object_mut() {
+            merge_checkpoint_binding(
+                obj,
+                self.profile_ams_id().as_deref(),
+                Some(self.profile_pool()),
+            );
+        }
+        payload
     }
 
     /// Starts the Dropbox OAuth authorize URL (PKCE no-redirect).
     pub fn start_oauth(&self) -> Result<OauthStart, CloudError> {
-        oauth::start_oauth_for_keys(self.keys.app_key, self.keys.app_secret)
+        oauth::start_oauth_for_keys(&self.keys.app_key, &self.keys.app_secret)
     }
 
     /// Completes OAuth with an auth code, stores refresh token, verifies account.
@@ -220,18 +343,25 @@ impl DropboxClient {
     ) -> Result<bool, CloudError> {
         logging::log_info("Schließe Dropbox-OAuth ab...");
         let (access, _refresh) = oauth::finish_oauth_for_keys(
-            self.keys.app_key,
-            self.keys.app_secret,
-            self.keys.refresh_token,
+            &self.keys.app_key,
+            &self.keys.app_secret,
+            &self.keys.refresh_token,
             auth_code,
             code_verifier,
         )
         .await?;
         self.set_token(Some(access.clone()));
         match self.users_get_current_account(&access).await {
-            Ok(()) => {
+            Ok(account) => {
                 self.connection_verified.store(true, Ordering::SeqCst);
-                logging::log_info("Erfolgreich mit Dropbox verbunden (via OAuth).");
+                let name = if account.display_name.is_empty() {
+                    "Dropbox".into()
+                } else {
+                    account.display_name.clone()
+                };
+                logging::log_info(&format!(
+                    "Erfolgreich mit Dropbox verbunden (via OAuth): {name}"
+                ));
                 if emit_status {
                     events::emit_connection_status("Verbunden");
                 }
@@ -251,9 +381,16 @@ impl DropboxClient {
     pub async fn connect_session(&self, emit_status: bool) -> Result<bool, CloudError> {
         match self.refresh_access_token().await {
             Ok(token) => match self.users_get_current_account(&token).await {
-                Ok(()) => {
+                Ok(account) => {
                     self.connection_verified.store(true, Ordering::SeqCst);
-                    logging::log_info("Erfolgreich mit Dropbox verbunden (via Refresh-Token).");
+                    let name = if account.display_name.is_empty() {
+                        "Dropbox".into()
+                    } else {
+                        account.display_name.clone()
+                    };
+                    logging::log_info(&format!(
+                        "Erfolgreich mit Dropbox verbunden (via Refresh-Token): {name}"
+                    ));
                     if emit_status {
                         events::emit_connection_status("Verbunden");
                     }
@@ -297,7 +434,7 @@ impl DropboxClient {
         stop_monitoring: bool,
     ) -> Result<(), CloudError> {
         logging::log_info("Trenne Verbindung zu Dropbox...");
-        let _ = secrets::delete_secret(self.keys.refresh_token);
+        let _ = secrets::delete_secret(&self.keys.refresh_token);
         self.set_token(None);
         self.connection_verified.store(false, Ordering::SeqCst);
         if emit_status {
@@ -314,12 +451,12 @@ impl DropboxClient {
     /// Does not emit connection-status events and avoids noisy keyring warnings
     /// when credentials are simply absent (e.g. Settings verifying the inactive cloud).
     pub async fn connection_status_verified(&self) -> String {
-        let has_app_creds = secrets::get_secret(self.keys.app_key)
+        let has_app_creds = secrets::get_secret(&self.keys.app_key)
             .ok()
             .flatten()
             .filter(|s| !s.is_empty())
             .is_some()
-            && secrets::get_secret(self.keys.app_secret)
+            && secrets::get_secret(&self.keys.app_secret)
                 .ok()
                 .flatten()
                 .filter(|s| !s.is_empty())
@@ -332,7 +469,7 @@ impl DropboxClient {
             if let Ok(token) = self.refresh_access_token().await {
                 self.set_token(Some(token.clone()));
                 return match self.users_get_current_account(&token).await {
-                    Ok(()) => {
+                    Ok(_) => {
                         self.connection_verified.store(true, Ordering::SeqCst);
                         "Verbunden".into()
                     }
@@ -346,7 +483,7 @@ impl DropboxClient {
         }
         if let Some(token) = self.token() {
             return match self.users_get_current_account(&token).await {
-                Ok(()) => {
+                Ok(_) => {
                     self.connection_verified.store(true, Ordering::SeqCst);
                     "Verbunden".into()
                 }
@@ -359,7 +496,53 @@ impl DropboxClient {
         "Nicht verbunden".into()
     }
 
-    async fn users_get_current_account(&self, token: &str) -> Result<(), CloudError> {
+    /// Account name, token health, and storage quota for Settings.
+    pub async fn account_info(&self) -> Result<DropboxAccountInfo, CloudError> {
+        let token = self.ensure_token().await?;
+        let (mut account, root_namespace_id) =
+            self.users_get_current_account_with_root(&token).await?;
+        account.app_key_hint = app_key_hint(
+            secrets::get_secret(&self.keys.app_key)
+                .ok()
+                .flatten()
+                .as_deref()
+                .unwrap_or(""),
+        );
+        match self.resolve_app_folder_name(&token, &root_namespace_id).await {
+            Ok(name) => {
+                account.app_name = name;
+            }
+            Err(e) => {
+                logging::log_warn(&format!(
+                    "Dropbox App-/Root-Ordnername nicht ermittelbar: {e}"
+                ));
+            }
+        }
+        match self.users_get_space_usage(&token).await {
+            Ok((used, allocated)) => {
+                account.used_bytes = used;
+                account.allocated_bytes = allocated;
+            }
+            Err(e) => {
+                logging::log_warn(&format!("Dropbox Speicherabfrage fehlgeschlagen: {e}"));
+            }
+        }
+        self.connection_verified.store(true, Ordering::SeqCst);
+        Ok(account)
+    }
+
+    async fn users_get_current_account(
+        &self,
+        token: &str,
+    ) -> Result<DropboxAccountInfo, CloudError> {
+        let (account, _) = self.users_get_current_account_with_root(token).await?;
+        Ok(account)
+    }
+
+    async fn users_get_current_account_with_root(
+        &self,
+        token: &str,
+    ) -> Result<(DropboxAccountInfo, String), CloudError> {
         let response = self
             .http
             .post(format!("{API_URL}/users/get_current_account"))
@@ -376,7 +559,129 @@ impl DropboxClient {
                 "users/get_current_account: {status} {body}"
             )));
         }
-        Ok(())
+        let payload: Value = response
+            .json()
+            .await
+            .map_err(|e| CloudError::Http(e.to_string()))?;
+        let root_namespace_id = payload
+            .pointer("/root_info/root_namespace_id")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        Ok((parse_account_info(&payload, ""), root_namespace_id))
+    }
+
+    async fn users_get_space_usage(&self, token: &str) -> Result<(u64, Option<u64>), CloudError> {
+        let response = self
+            .http
+            .post(format!("{API_URL}/users/get_space_usage"))
+            .header(AUTHORIZATION, format!("Bearer {token}"))
+            .header(CONTENT_TYPE, "application/json")
+            .body("null")
+            .send()
+            .await
+            .map_err(|e| CloudError::Http(e.to_string()))?;
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            return Err(CloudError::Http(format!(
+                "users/get_space_usage: {status} {body}"
+            )));
+        }
+        let payload: Value = response
+            .json()
+            .await
+            .map_err(|e| CloudError::Http(e.to_string()))?;
+        Ok(parse_space_usage(&payload))
+    }
+
+    /// Resolve app-folder display name.
+    ///
+    /// `files/get_metadata` on `""` is rejected by Dropbox (no root metadata).
+    /// Strategy: try `ns:{root_namespace_id}`, then list `/Apps` (Full Dropbox).
+    async fn resolve_app_folder_name(
+        &self,
+        token: &str,
+        root_namespace_id: &str,
+    ) -> Result<String, CloudError> {
+        if !root_namespace_id.is_empty() {
+            match self
+                .files_get_metadata_name(token, &format!("ns:{root_namespace_id}"))
+                .await
+            {
+                Ok(name) if !name.is_empty() => return Ok(name),
+                Ok(_) => {}
+                Err(e) => logging::log_info(&format!(
+                    "Dropbox ns: root metadata nicht nutzbar: {e}"
+                )),
+            }
+        }
+
+        match self.list_apps_folder_names(token).await {
+            Ok(names) => Ok(pick_apps_folder_name(&names)),
+            Err(e) => {
+                // App-Folder permission cannot see `/Apps` — expected, not fatal.
+                logging::log_info(&format!("Dropbox /Apps nicht lesbar: {e}"));
+                Ok(String::new())
+            }
+        }
+    }
+
+    async fn files_get_metadata_name(
+        &self,
+        token: &str,
+        path: &str,
+    ) -> Result<String, CloudError> {
+        let response = self
+            .http
+            .post(format!("{API_URL}/files/get_metadata"))
+            .header(AUTHORIZATION, format!("Bearer {token}"))
+            .header(CONTENT_TYPE, "application/json")
+            .json(&json!({ "path": path }))
+            .send()
+            .await
+            .map_err(|e| CloudError::Http(e.to_string()))?;
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            return Err(CloudError::Http(format!(
+                "files/get_metadata: {status} {body}"
+            )));
+        }
+        let payload: Value = response
+            .json()
+            .await
+            .map_err(|e| CloudError::Http(e.to_string()))?;
+        Ok(parse_root_folder_name(&payload))
+    }
+
+    async fn list_apps_folder_names(&self, token: &str) -> Result<Vec<String>, CloudError> {
+        let response = self
+            .http
+            .post(format!("{API_URL}/files/list_folder"))
+            .header(AUTHORIZATION, format!("Bearer {token}"))
+            .header(CONTENT_TYPE, "application/json")
+            .json(&json!({
+                "path": "/Apps",
+                "recursive": false,
+                "include_mounted_folders": true,
+            }))
+            .send()
+            .await
+            .map_err(|e| CloudError::Http(e.to_string()))?;
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            return Err(CloudError::Http(format!(
+                "files/list_folder /Apps: {status} {body}"
+            )));
+        }
+        let payload: Value = response
+            .json()
+            .await
+            .map_err(|e| CloudError::Http(e.to_string()))?;
+        Ok(parse_apps_folder_names(&payload))
     }
 
     fn auth_headers(token: &str, api_arg: Option<&Value>) -> Result<HeaderMap, CloudError> {
@@ -798,6 +1103,14 @@ impl CloudClient for DropboxClient {
                 && raw.get("manifest_fp").and_then(Value::as_str) == Some(manifest_fp.as_str())
                 && raw.get("remote_base_path").and_then(Value::as_str) == Some(remote_base_path)
             {
+                if let Err(msg) = assert_checkpoint_binding_matches(
+                    &raw,
+                    self.profile_ams_id().as_deref(),
+                    self.profile_pool(),
+                ) {
+                    logging::log_warn(&msg);
+                    return Err(CloudError::Message(msg));
+                }
                 resume_ck = Some(raw);
             } else {
                 logging::log_warn("Dropbox-Native-Checkpoint verworfen.");
@@ -843,7 +1156,7 @@ impl CloudClient for DropboxClient {
         if resume_ck.is_none() {
             let _ = save_checkpoint(
                 local_dir_path,
-                &json!({
+                &self.checkpoint_payload(json!({
                     "kind": "dropbox_native",
                     "manifest_fp": manifest_fp,
                     "remote_base_path": remote_base_path,
@@ -851,7 +1164,7 @@ impl CloudClient for DropboxClient {
                     "phase": "uploading",
                     "next_file_index": 0,
                     "db_active": Value::Null,
-                }),
+                })),
             );
         }
 
@@ -892,6 +1205,8 @@ impl CloudClient for DropboxClient {
                 let dir = local_dir_path.to_path_buf();
                 let fp = manifest_fp.clone();
                 let remote = remote_base_path.to_string();
+                let ams = self.profile_ams_id();
+                let pool = self.profile_pool();
                 self.upload_large_file(
                     &file.local_path,
                     &file.dropbox_path,
@@ -900,8 +1215,8 @@ impl CloudClient for DropboxClient {
                     total_size,
                     control,
                     resume,
-                    Some(|cursor: Option<&DropboxCursor>| {
-                        let payload = if let Some(cursor) = cursor {
+                    Some(move |cursor: Option<&DropboxCursor>| {
+                        let mut payload = if let Some(cursor) = cursor {
                             json!({
                                 "kind": "dropbox_native",
                                 "manifest_fp": fp,
@@ -927,6 +1242,9 @@ impl CloudClient for DropboxClient {
                                 "db_active": Value::Null,
                             })
                         };
+                        if let Some(obj) = payload.as_object_mut() {
+                            merge_checkpoint_binding(obj, ams.as_deref(), Some(pool));
+                        }
                         let _ = save_checkpoint(&dir, &payload);
                     }),
                 )
@@ -941,7 +1259,7 @@ impl CloudClient for DropboxClient {
                     events::emit_progress_total(total_progress, bytes_uploaded, total_size);
                     let _ = save_checkpoint(
                         local_dir_path,
-                        &json!({
+                        &self.checkpoint_payload(json!({
                             "kind": "dropbox_native",
                             "manifest_fp": manifest_fp,
                             "remote_base_path": remote_base_path,
@@ -949,7 +1267,7 @@ impl CloudClient for DropboxClient {
                             "phase": "uploading",
                             "next_file_index": i + 1,
                             "db_active": Value::Null,
-                        }),
+                        })),
                     );
                 }
                 Err(e) if e.is_cancelled() => return Err(e),
@@ -976,6 +1294,147 @@ impl CloudClient for DropboxClient {
             None => Ok(None),
         }
     }
+}
+
+pub fn app_key_hint(app_key: &str) -> String {
+    let trimmed = app_key.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    let chars: Vec<char> = trimmed.chars().collect();
+    if chars.len() <= 8 {
+        return trimmed.to_string();
+    }
+    let prefix: String = chars.iter().take(4).collect();
+    let suffix: String = chars.iter().rev().take(4).rev().collect();
+    format!("{prefix}…{suffix}")
+}
+
+fn json_u64(value: &Value) -> Option<u64> {
+    value
+        .as_u64()
+        .or_else(|| value.as_i64().and_then(|n| u64::try_from(n).ok()))
+        .or_else(|| {
+            value
+                .as_f64()
+                .and_then(|n| if n.is_finite() && n >= 0.0 { Some(n as u64) } else { None })
+        })
+}
+
+pub fn parse_account_info(payload: &Value, app_key_hint_value: &str) -> DropboxAccountInfo {
+    let account_id = payload
+        .get("account_id")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    let display_name = payload
+        .pointer("/name/display_name")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    let email = payload
+        .get("email")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    let profile_photo_url = payload
+        .get("profile_photo_url")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    DropboxAccountInfo {
+        account_id,
+        display_name,
+        email,
+        profile_photo_url,
+        app_name: String::new(),
+        app_key_hint: app_key_hint_value.to_string(),
+        token_valid: true,
+        used_bytes: 0,
+        allocated_bytes: None,
+    }
+}
+
+/// Root / app-folder display name from `files/get_metadata`.
+pub fn parse_root_folder_name(payload: &Value) -> String {
+    let name = payload
+        .get("name")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim();
+    if !name.is_empty() {
+        return name.to_string();
+    }
+    let path = payload
+        .get("path_display")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .trim_matches('/');
+    if path.is_empty() {
+        return String::new();
+    }
+    path.rsplit('/')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_string()
+}
+
+/// Folder names under `/Apps` from `files/list_folder`.
+pub fn parse_apps_folder_names(payload: &Value) -> Vec<String> {
+    let Some(entries) = payload.get("entries").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    entries
+        .iter()
+        .filter(|entry| {
+            entry
+                .get(".tag")
+                .and_then(Value::as_str)
+                .map(|t| t == "folder")
+                .unwrap_or(false)
+        })
+        .filter_map(|entry| {
+            entry
+                .get("name")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+        })
+        .collect()
+}
+
+/// Prefer a single `/Apps` child; if several, prefer names that look like AMS.
+pub fn pick_apps_folder_name(names: &[String]) -> String {
+    if names.is_empty() {
+        return String::new();
+    }
+    if names.len() == 1 {
+        return names[0].clone();
+    }
+    let preferred = ["aeromediaservice", "aero media", "dropboxuploader", "dropbox uploader"];
+    for name in names {
+        let lower = name.to_ascii_lowercase();
+        if preferred.iter().any(|p| lower.contains(p)) {
+            return name.clone();
+        }
+    }
+    String::new()
+}
+
+pub fn parse_space_usage(payload: &Value) -> (u64, Option<u64>) {
+    let used = payload.get("used").and_then(json_u64).unwrap_or(0);
+    let allocated = payload
+        .pointer("/allocation/allocated")
+        .and_then(json_u64)
+        .filter(|&n| n > 0);
+    (used, allocated)
 }
 
 pub fn collect_upload_files(local_dir_path: &Path, remote_base_path: &str) -> Vec<UploadFile> {
@@ -1206,5 +1665,128 @@ mod tests {
             Some("https://www.dropbox.com/s/abc?dl=0")
         );
         assert_eq!(first_shared_link_url(&json!({"links": []})), None);
+    }
+
+    #[test]
+    fn parse_account_info_reads_name_and_email() {
+        let payload = json!({
+            "account_id": "dbid:AAH4f99T0taONIb-OurWxbNQ6ywGRopQngc",
+            "name": { "display_name": "Ada Lovelace" },
+            "email": "ada@example.com",
+            "profile_photo_url": "https://example.com/ada.jpg"
+        });
+        let info = parse_account_info(&payload, "abcd…wxyz");
+        assert_eq!(
+            info.account_id,
+            "dbid:AAH4f99T0taONIb-OurWxbNQ6ywGRopQngc"
+        );
+        assert_eq!(info.display_name, "Ada Lovelace");
+        assert_eq!(info.email, "ada@example.com");
+        assert_eq!(info.profile_photo_url, "https://example.com/ada.jpg");
+        assert!(info.token_valid);
+        assert_eq!(info.app_key_hint, "abcd…wxyz");
+    }
+
+    #[test]
+    fn secret_keys_for_account_are_pool_namespaced() {
+        let native = DropboxSecretKeys::for_account(DropboxPool::Native, "ams-1");
+        assert_eq!(native.app_key, "db_app_key_ams-1");
+        assert_eq!(native.app_secret, "db_app_secret_ams-1");
+        assert_eq!(native.refresh_token, "db_refresh_token_ams-1");
+
+        let custom = DropboxSecretKeys::for_account(DropboxPool::CustomApi, "ams-1");
+        assert_eq!(custom.app_key, "custom_db_app_key_ams-1");
+        assert_eq!(custom.app_secret, "custom_db_app_secret_ams-1");
+        assert_eq!(custom.refresh_token, "custom_db_refresh_token_ams-1");
+
+        assert_ne!(native.app_key, custom.app_key);
+        assert_ne!(native.refresh_token, custom.refresh_token);
+        assert_ne!(native, DropboxSecretKeys::native());
+        assert_ne!(custom, DropboxSecretKeys::custom_api());
+        assert_eq!(
+            DropboxSecretKeys::ams_id_from_keys(&native).as_deref(),
+            Some("ams-1")
+        );
+        assert_eq!(
+            DropboxSecretKeys::ams_id_from_keys(&custom).as_deref(),
+            Some("ams-1")
+        );
+        assert_eq!(
+            DropboxSecretKeys::pool_from_keys(&native),
+            DropboxPool::Native
+        );
+        assert_eq!(
+            DropboxSecretKeys::pool_from_keys(&custom),
+            DropboxPool::CustomApi
+        );
+        assert!(DropboxSecretKeys::ams_id_from_keys(&DropboxSecretKeys::native()).is_none());
+    }
+
+    #[test]
+    fn parse_space_usage_individual_and_team() {
+        let individual = json!({
+            "used": 1500,
+            "allocation": { ".tag": "individual", "allocated": 2000 }
+        });
+        assert_eq!(parse_space_usage(&individual), (1500, Some(2000)));
+
+        let team = json!({
+            "used": 10,
+            "allocation": { ".tag": "team", "allocated": 100 }
+        });
+        assert_eq!(parse_space_usage(&team), (10, Some(100)));
+
+        let missing = json!({ "used": 42 });
+        assert_eq!(parse_space_usage(&missing), (42, None));
+    }
+
+    #[test]
+    fn app_key_hint_masks_middle() {
+        assert_eq!(app_key_hint(""), "");
+        assert_eq!(app_key_hint("short"), "short");
+        assert_eq!(app_key_hint("abcdefghijklmnop"), "abcd…mnop");
+    }
+
+    #[test]
+    fn parse_root_folder_name_from_metadata() {
+        assert_eq!(
+            parse_root_folder_name(&json!({
+                ".tag": "folder",
+                "name": "AeroMediaService",
+                "path_display": ""
+            })),
+            "AeroMediaService"
+        );
+        assert_eq!(
+            parse_root_folder_name(&json!({
+                ".tag": "folder",
+                "name": "",
+                "path_display": "/Apps/My Dropbox App"
+            })),
+            "My Dropbox App"
+        );
+        assert_eq!(parse_root_folder_name(&json!({})), "");
+    }
+
+    #[test]
+    fn parse_and_pick_apps_folder_names() {
+        let payload = json!({
+            "entries": [
+                { ".tag": "folder", "name": "OtherApp" },
+                { ".tag": "file", "name": "readme.txt" },
+                { ".tag": "folder", "name": "AeroMediaService" }
+            ]
+        });
+        let names = parse_apps_folder_names(&payload);
+        assert_eq!(names, vec!["OtherApp", "AeroMediaService"]);
+        assert_eq!(pick_apps_folder_name(&names), "AeroMediaService");
+        assert_eq!(
+            pick_apps_folder_name(&[String::from("OnlyOne")]),
+            "OnlyOne"
+        );
+        assert_eq!(
+            pick_apps_folder_name(&[String::from("Foo"), String::from("Bar")]),
+            ""
+        );
     }
 }

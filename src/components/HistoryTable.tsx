@@ -32,7 +32,9 @@ import {
   extraNumber,
   extraString,
   formatHistoryDate,
+  formatHistoryDropboxAccount,
   historyAppendEvents,
+  historyDropboxBinding,
   formatManualStatusSummary,
   formatResendHistorySummary,
   historyBookingFlags,
@@ -49,12 +51,14 @@ import {
   channelsDelivered,
   getManualStatusWarnings,
   getSandboxWarnings,
+  listDropboxAccounts,
   resendHistoryNotifications,
   resolveHistoryBookingFlags,
   retryUpload,
   saveHistoryContact,
   setManualStatus,
   syncSmsJournal,
+  type DropboxAccountPool,
 } from "@/lib/tauri";
 import { isCloudConnected, useAppStore } from "@/store/appStore";
 import { useHistoryStore } from "@/store/historyStore";
@@ -67,31 +71,36 @@ const MANUAL_ACTIONS: Array<[string, string]> = [
 ];
 
 /** Detail fields — pipeline status lives in HistoryStatusChips only. */
-const DETAIL_ROWS: Array<[string, (item: HistoryEntry) => string]> = [
-  ["Verzeichnis", (i) => i.dir_name || "—"],
-  ["E-Mail", (i) => i.email || "—"],
-  ["Telefon", (i) => i.phone || "—"],
-  ["Download-Link", (i) => i.share_link || "—"],
-  ["Archiv", (i) => i.archived_path || "—"],
-  ["Wiederversand", (i) => formatResendHistorySummary(i)],
-  ["Manueller Status", (i) => formatManualStatusSummary(i)],
-  [
-    "Retry",
-    (i) => {
-      const n = extraNumber(i, "retry_count");
-      return n ? `${n}×` : "—";
-    },
-  ],
-  [
-    "Nachgereicht",
-    (i) => {
-      const n = extraNumber(i, "append_count");
-      if (!n) return "—";
-      const at = extraString(i, "last_append_at").replace("T", " ").slice(0, 16);
-      return at ? `${n}× (${at})` : `${n}×`;
-    },
-  ],
-];
+function buildDetailRows(
+  dropboxLabelHint: string,
+): Array<[string, (item: HistoryEntry) => string]> {
+  return [
+    ["Verzeichnis", (i) => i.dir_name || "—"],
+    ["E-Mail", (i) => i.email || "—"],
+    ["Telefon", (i) => i.phone || "—"],
+    ["Download-Link", (i) => i.share_link || "—"],
+    ["Dropbox-Konto", (i) => formatHistoryDropboxAccount(i, dropboxLabelHint)],
+    ["Archiv", (i) => i.archived_path || "—"],
+    ["Wiederversand", (i) => formatResendHistorySummary(i)],
+    ["Manueller Status", (i) => formatManualStatusSummary(i)],
+    [
+      "Retry",
+      (i) => {
+        const n = extraNumber(i, "retry_count");
+        return n ? `${n}×` : "—";
+      },
+    ],
+    [
+      "Nachgereicht",
+      (i) => {
+        const n = extraNumber(i, "append_count");
+        if (!n) return "—";
+        const at = extraString(i, "last_append_at").replace("T", " ").slice(0, 16);
+        return at ? `${n}× (${at})` : `${n}×`;
+      },
+    ],
+  ];
+}
 
 type ErrorDetail = {
   label: string;
@@ -184,6 +193,7 @@ export function HistoryTable() {
   const [resendOpen, setResendOpen] = useState(false);
   const [appendOpen, setAppendOpen] = useState(false);
   const [sandboxWarnings, setSandboxWarnings] = useState<string[]>([]);
+  const [dropboxLabelHint, setDropboxLabelHint] = useState("");
   const listHostRef = useRef<HTMLDivElement>(null);
   const statusMenuRef = useRef<HTMLDivElement>(null);
   const moreMenuRef = useRef<HTMLDivElement>(null);
@@ -263,6 +273,10 @@ export function HistoryTable() {
     () => (selected ? historyAppendEvents(selected) : []),
     [selected],
   );
+  const detailRows = useMemo(
+    () => buildDetailRows(dropboxLabelHint),
+    [dropboxLabelHint],
+  );
   const [flagOverlay, setFlagOverlay] = useState<Partial<HistoryBookingFlags> | null>(null);
   const [flagsRefreshing, setFlagsRefreshing] = useState(false);
   const selectedBookingBadges = useMemo(() => {
@@ -273,6 +287,34 @@ export function HistoryTable() {
   const canRefreshBookingFlags = Boolean(
     selected && historyCanRefreshBookingFlags(selected),
   );
+
+  useEffect(() => {
+    if (!selected) {
+      setDropboxLabelHint("");
+      return;
+    }
+    const binding = historyDropboxBinding(selected);
+    if (!binding.amsId) {
+      setDropboxLabelHint("");
+      return;
+    }
+    const pool = (
+      binding.pool === "custom_api" ? "custom_api" : "native"
+    ) as DropboxAccountPool;
+    let cancelled = false;
+    void listDropboxAccounts(pool)
+      .then((rows) => {
+        if (cancelled) return;
+        const row = rows.find((r) => r.id === binding.amsId);
+        setDropboxLabelHint(row?.label.trim() || row?.display_name.trim() || "");
+      })
+      .catch(() => {
+        if (!cancelled) setDropboxLabelHint("");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selected]);
 
   useEffect(() => {
     setFlagOverlay(null);
@@ -766,7 +808,7 @@ export function HistoryTable() {
     );
   }
 
-  function renderDetailRows(rows: typeof DETAIL_ROWS) {
+  function renderDetailRows(rows: ReturnType<typeof buildDetailRows>) {
     const error = historyErrorDetail(selected!);
     const errorRow = (
       <div
@@ -1133,7 +1175,7 @@ export function HistoryTable() {
                 <HistoryStatusChips entry={selected} className="min-w-0 max-w-full" />
               </div>
               {renderBookingOptions()}
-              {renderDetailRows(DETAIL_ROWS)}
+              {renderDetailRows(detailRows)}
               {renderAppendTimeline(selectedAppendEvents)}
             </div>
           ) : (
@@ -1152,7 +1194,7 @@ export function HistoryTable() {
           <HistoryStatusChips entry={selected} className="mb-3 min-w-0 max-w-full" />
           <div className="grid min-w-0 gap-2 text-sm">
             {renderBookingOptions()}
-            {renderDetailRows(DETAIL_ROWS)}
+            {renderDetailRows(detailRows)}
           </div>
           {renderAppendTimeline(selectedAppendEvents)}
         </div>

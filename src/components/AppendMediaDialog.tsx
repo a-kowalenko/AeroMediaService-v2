@@ -13,14 +13,20 @@ import { Switch } from "@/components/ui/switch";
 import { CatStatusChip, type CatStatus } from "@/components/BookingChips";
 import {
   cn,
+  dropboxPoolActiveSettingKey,
+  formatHistoryDropboxAccount,
   historyBookingFlags,
+  historyDropboxBinding,
   overlayBookingFlags,
   type HistoryBookingFlags,
 } from "@/lib/utils";
 import type { AppendCategoryId, AppendFileItem, HistoryEntry } from "@/lib/tauri";
 import {
   expandAppendMediaPaths,
+  getSetting,
+  listDropboxAccounts,
   resolveHistoryBookingFlags,
+  type DropboxAccountPool,
 } from "@/lib/tauri";
 
 type Props = {
@@ -163,6 +169,7 @@ export function AppendMediaDialog({
   const [flags, setFlags] = useState<HistoryBookingFlags>(emptyFlags);
   const [dragOver, setDragOver] = useState(false);
   const [picking, setPicking] = useState(false);
+  const [parentAccountBanner, setParentAccountBanner] = useState<string | null>(null);
 
   const activeCat = useMemo(() => catDef(category), [category]);
   const selectedStatus = activeCat ? categoryStatus(flags, activeCat) : "new";
@@ -180,6 +187,54 @@ export function AppendMediaDialog({
       })).filter((g) => g.items.length > 0),
     [items],
   );
+
+  useEffect(() => {
+    if (!open || !entry) {
+      setParentAccountBanner(null);
+      return;
+    }
+    const binding = historyDropboxBinding(entry);
+    if (!binding.amsId) {
+      setParentAccountBanner(null);
+      return;
+    }
+    const pool = (binding.pool === "custom_api" ? "custom_api" : "native") as DropboxAccountPool;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const activeKey = dropboxPoolActiveSettingKey(pool);
+        const [activeId, accounts] = await Promise.all([
+          getSetting(activeKey, ""),
+          listDropboxAccounts(pool),
+        ]);
+        if (cancelled) return;
+        const active = (activeId ?? "").trim();
+        if (!active || active === binding.amsId) {
+          setParentAccountBanner(null);
+          return;
+        }
+        const parentRow = accounts.find((a) => a.id === binding.amsId);
+        const parentLabel =
+          parentRow?.label.trim() ||
+          parentRow?.email.trim() ||
+          binding.email ||
+          binding.amsId;
+        const activeRow = accounts.find((a) => a.id === active);
+        const activeLabel =
+          activeRow?.label.trim() ||
+          activeRow?.email.trim() ||
+          active;
+        setParentAccountBanner(
+          `Nachreichen läuft über das Parent-Konto „${parentLabel}“, nicht über das aktive Konto „${activeLabel}“ (${formatHistoryDropboxAccount(entry)}).`,
+        );
+      } catch {
+        if (!cancelled) setParentAccountBanner(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [open, entry]);
 
   useEffect(() => {
     if (!open) return;
@@ -460,6 +515,16 @@ export function AppendMediaDialog({
             {busy ? "Wird nachgereicht…" : "Senden"}
           </button>
         </header>
+
+        {parentAccountBanner ? (
+          <div
+            className="flex shrink-0 items-start gap-2 border-b border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-950 dark:text-amber-100"
+            role="status"
+          >
+            <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden />
+            <p className="min-w-0 leading-snug">{parentAccountBanner}</p>
+          </div>
+        ) : null}
 
         <div className="grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-[minmax(17.5rem,0.92fr)_minmax(0,1.08fr)]">
           <section className="flex min-h-0 flex-col gap-3 overflow-y-auto border-b border-border/60 p-3 lg:border-b-0 lg:border-r">

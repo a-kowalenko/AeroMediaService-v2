@@ -5,7 +5,7 @@ use tauri::State;
 use crate::bridge::{BridgeState, BridgeStatus};
 use crate::commands::ConfigState;
 use crate::storage::ats_presence::{
-    AtsHostDetails, AtsHostSummary, AtsJobOriginRecord, AtsPresenceState,
+    AtsActivityPage, AtsHostDetails, AtsHostSummary, AtsJobOriginRecord, AtsPresenceState,
 };
 use crate::storage::history::HistoryState;
 use serde::Serialize;
@@ -102,6 +102,31 @@ pub fn get_ats_jobs_by_host(
         page: page_data.page,
         page_size: page_data.page_size,
     })
+}
+
+#[tauri::command]
+pub fn get_ats_host_activity(
+    presence: State<'_, AtsPresenceState>,
+    instance_id: String,
+    offset: Option<u32>,
+    limit: Option<u32>,
+) -> Result<AtsActivityPage, String> {
+    presence.get_host_activity(&instance_id, offset.unwrap_or(0), limit.unwrap_or(10))
+}
+
+#[tauri::command]
+pub fn remove_ats_host(
+    presence: State<'_, AtsPresenceState>,
+    instance_id: String,
+) -> Result<bool, String> {
+    presence.remove_host(&instance_id)
+}
+
+#[tauri::command]
+pub fn remove_inactive_long_ats_hosts(
+    presence: State<'_, AtsPresenceState>,
+) -> Result<u32, String> {
+    presence.remove_inactive_long_hosts()
 }
 
 fn enrich_jobs(

@@ -1,5 +1,5 @@
 import {ChevronDown} from "lucide-react";
-import {useState} from "react";
+import {useState, type ReactNode} from "react";
 import {
   atsPresenceChipLabel,
   atsPresenceChipTone,
@@ -8,6 +8,7 @@ import {
   type AtsHostGroups,
 } from "@/lib/atsPresence";
 import type {AtsHostSummary} from "@/lib/tauri";
+import {Button} from "@/components/ui/button";
 
 function PresenceChip({
   label,
@@ -108,6 +109,7 @@ function HostSection({
   onSelectHost,
   collapsible = false,
   defaultCollapsed = false,
+  headerAction,
 }: {
   title: string;
   hosts: AtsHostSummary[];
@@ -115,6 +117,7 @@ function HostSection({
   onSelectHost: (instanceId: string) => void;
   collapsible?: boolean;
   defaultCollapsed?: boolean;
+  headerAction?: ReactNode;
 }) {
   const [collapsed, setCollapsed] = useState(defaultCollapsed);
   if (hosts.length === 0) return null;
@@ -128,12 +131,21 @@ function HostSection({
     />
   ));
 
+  const titleText = (
+    <span>
+      {title} ({hosts.length})
+    </span>
+  );
+
   if (!collapsible) {
     return (
       <div className="space-y-2">
-        <p className="text-[11px] font-semibold uppercase tracking-wide text-muted">
-          {title} ({hosts.length})
-        </p>
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <p className="text-[11px] font-semibold uppercase tracking-wide text-muted">
+            {titleText}
+          </p>
+          {headerAction}
+        </div>
         {body}
       </div>
     );
@@ -141,18 +153,19 @@ function HostSection({
 
   return (
     <div className="space-y-2">
-      <button
-        type="button"
-        className="flex w-full items-center justify-between text-left text-[11px] font-semibold uppercase tracking-wide text-muted"
-        onClick={() => setCollapsed((prev) => !prev)}
-      >
-        <span>
-          {title} ({hosts.length})
-        </span>
-        <ChevronDown
-          className={`h-4 w-4 transition-transform ${collapsed ? "-rotate-90" : ""}`}
-        />
-      </button>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <button
+          type="button"
+          className="flex min-w-0 flex-1 items-center justify-between text-left text-[11px] font-semibold uppercase tracking-wide text-muted"
+          onClick={() => setCollapsed((prev) => !prev)}
+        >
+          {titleText}
+          <ChevronDown
+            className={`h-4 w-4 shrink-0 transition-transform ${collapsed ? "-rotate-90" : ""}`}
+          />
+        </button>
+        {headerAction}
+      </div>
       {!collapsed ? body : null}
     </div>
   );
@@ -163,6 +176,8 @@ type Props = {
   selectedHostId: string;
   onSelectHost: (instanceId: string) => void;
   emptyMessage?: string;
+  onPurgeInactiveLong?: () => void;
+  purgeInactiveLongBusy?: boolean;
 };
 
 export function AtsHostListSections({
@@ -170,6 +185,8 @@ export function AtsHostListSections({
   selectedHostId,
   onSelectHost,
   emptyMessage = "Noch keine bekannten ATS-Clients.",
+  onPurgeInactiveLong,
+  purgeInactiveLongBusy = false,
 }: Props) {
   const groups: AtsHostGroups = groupAtsHostsByPresence(hosts);
   const total =
@@ -182,6 +199,22 @@ export function AtsHostListSections({
       </div>
     );
   }
+
+  const purgeAction =
+    onPurgeInactiveLong && groups.inactiveLong.length > 0 ? (
+      <Button
+        type="button"
+        variant="secondary"
+        size="sm"
+        disabled={purgeInactiveLongBusy}
+        onClick={(e) => {
+          e.stopPropagation();
+          onPurgeInactiveLong();
+        }}
+      >
+        Aufräumen
+      </Button>
+    ) : null;
 
   return (
     <div className="space-y-4">
@@ -204,6 +237,7 @@ export function AtsHostListSections({
         onSelectHost={onSelectHost}
         collapsible
         defaultCollapsed
+        headerAction={purgeAction}
       />
     </div>
   );

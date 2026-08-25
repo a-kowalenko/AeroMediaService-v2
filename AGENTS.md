@@ -7,7 +7,7 @@
 **Migration-Mapping:** `@docs/MIGRATION.md`  
 **ATS↔AMS Handoff:** `@docs/HANDOFF.md` (Phase 13)
 
-In jedem neuen Kontextfenster `@docs/IMPLEMENTATION_PLAN.md` referenzieren und **nur eine Phase** (bzw. eine Handoff-Teilphase P1/P1b/P2/P3) implementieren.
+In jedem neuen Kontextfenster `@docs/IMPLEMENTATION_PLAN.md` referenzieren und **nur eine Phase** (bzw. eine Handoff-Teilphase P1/P1b/P2/P3 oder Dropbox-Slice 16a–16d) implementieren.
 
 ---
 
@@ -94,8 +94,9 @@ Vollständiges Mapping: `@docs/MIGRATION.md`
 - ✅ Phase 13 / L4 UX (ATS): Historie AMS-Status-Chips + Stepper, Last-Known-Persistenz, Poll-Härtung
 - ✅ Phase 14: Medien nachreichen in bestehenden Dropbox-/Cloud-Ordner (gleiche Order, gleicher Link)
 - ✅ Phase 15: ATS-Nachreichen (`kind=append`, gleicher Link, keine Notify)
+- ✅ Phase 16: Multi-Dropbox-Konten (Native + Custom-API-Dropbox; Binding, Guards, UI) — 16a–16d
 
-**Nächster Schritt:** Phase 13 / **P5+** — optional (SHA-256, strict extras, …). Spec: `@docs/HANDOFF.md`
+**Nächster Schritt:** Optional Phase 13 / P5+. Spec Handoff: `@docs/HANDOFF.md`
 
 ---
 
@@ -116,3 +117,5 @@ Spec: @docs/HANDOFF.md
 Regeln: @AGENTS.md
 Scope vorher klären. Upload-Pipeline nicht ändern.
 ```
+
+Multi-Dropbox (Phase 16): abgeschlossen (16a–16d).

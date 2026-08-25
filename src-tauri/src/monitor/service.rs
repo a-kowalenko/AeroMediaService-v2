@@ -11,7 +11,12 @@ use std::time::{Duration, Instant};
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::Notify;
 
+use crate::cloud::binding::{
+    binding_from_append_fields, freeze_active_binding, merge_binding_into_history,
+    pool_for_new_job, resolve_binding_for_history, DropboxAccountBinding,
+};
 use crate::cloud::custom_api::fetch_customer_as_kunde;
+use crate::cloud::DropboxPool;
 use crate::events;
 use crate::model::handoff::{
     evaluate_manifest_gate, is_handoff_scan_dir, manifest_path, peek_correlation_id,
@@ -30,6 +35,8 @@ use crate::monitor::stability::{
     HANDOFF_PHASE_REJECTED, HANDOFF_PHASE_SIGNALED, HANDOFF_PHASE_WAITING_FERTIG,
     HANDOFF_PHASE_WAITING_FOLDER, HANDOFF_PHASE_WAITING_MEDIA, PENDING_KIND_HANDOFF,
 };
+use crate::storage::dropbox_accounts::DropboxAccountStore;
+use crate::storage::history::HistoryStore;
 use crate::storage::logging;
 use crate::upload::append::{
     build_append_parent_history_update, resolve_claimed_append_target, APPEND_EVENT_QUEUED,
@@ -77,6 +84,8 @@ pub struct EnqueueContext<'a> {
     pub customer_lookup: Option<CustomerLookup>,
     /// When true, jobs without `_ams_manifest.v1.json` are rejected (default false = legacy).
     pub manifest_required: bool,
+    pub active_dropbox_account_id: &'a str,
+    pub active_custom_dropbox_account_id: &'a str,
 }
 
 #[derive(Debug, Clone)]
@@ -454,6 +463,8 @@ async fn run_loop<F>(
         let manifest_required = parse_manifest_required(&get_setting("manifest_required"));
         let selected_cloud = get_setting("selected_cloud_service");
         let archive_path = get_setting("archive_path");
+        let active_dropbox_account_id = get_setting("active_dropbox_account_id");
+        let active_custom_dropbox_account_id = get_setting("active_custom_dropbox_account_id");
 
         if scan_path.trim().is_empty() {
             logging::log_info("Kein Überwachungsordner konfiguriert. Pausiere.");
@@ -484,6 +495,8 @@ async fn run_loop<F>(
             archive_path: archive_path.trim(),
             customer_lookup: None,
             manifest_required,
+            active_dropbox_account_id: active_dropbox_account_id.trim(),
+            active_custom_dropbox_account_id: active_custom_dropbox_account_id.trim(),
         };
 
         if !recovered {
@@ -918,6 +931,17 @@ pub async fn try_claim_and_enqueue(folder: &Path, ctx: &EnqueueContext<'_>) -> C
         ));
     }
 
+    let dropbox_binding = match resolve_enqueue_binding(ctx, use_dropbox, append_target.as_ref()) {
+        Ok(b) => b,
+        Err(e) => {
+            ctx.registry.unregister(Some(folder));
+            logging::log_error(&format!(
+                "Dropbox-Konto-Bindung für '{dir_name}' fehlgeschlagen: {e}"
+            ));
+            return ClaimResult::MarkerError(e);
+        }
+    };
+
     logging::log_info(&format!(
         "Kundendaten erfolgreich geladen für '{dir_name}': {}",
         kunde_label(&kunde)
@@ -939,7 +963,7 @@ pub async fn try_claim_and_enqueue(folder: &Path, ctx: &EnqueueContext<'_>) -> C
             ),
         );
     } else {
-        emit_marker_history(dir_name, &marker_raw, &kunde);
+        emit_marker_history(dir_name, &marker_raw, &kunde, dropbox_binding.as_ref());
     }
 
     if let Err(e) = claim_fertig_marker(folder) {
@@ -957,6 +981,7 @@ pub async fn try_claim_and_enqueue(folder: &Path, ctx: &EnqueueContext<'_>) -> C
         use_dropbox_client: use_dropbox,
         correlation_id: handoff_cid.clone(),
         append: append_target,
+        dropbox_binding,
     };
     if ctx.registry.enqueue(ctx.jobs, job, true) {
         logging::log_info(&format!(
@@ -1090,6 +1115,16 @@ async fn recover_stalled_folders(scan_path: &Path, ctx: &EnqueueContext<'_>) -> 
         logging::log_info(&format!(
             "Recovery: unterbrochener Auftrag '{dir_name}', Kundendaten geladen."
         ));
+        let dropbox_binding =
+            match resolve_recovery_binding(ctx, &dir_name, use_dropbox, append.as_ref()) {
+                Ok(b) => b,
+                Err(e) => {
+                    logging::log_error(&format!(
+                        "Recovery: Dropbox-Konto-Bindung für '{dir_name}' fehlgeschlagen: {e}"
+                    ));
+                    continue;
+                }
+            };
         let correlation_id = peek_correlation_id(&full_dir_path);
         if let Some(ref append_target) = append {
             events::emit(
@@ -1108,7 +1143,7 @@ async fn recover_stalled_folders(scan_path: &Path, ctx: &EnqueueContext<'_>) -> 
                 ),
             );
         } else {
-            emit_marker_history(&dir_name, &marker_raw, &kunde);
+            emit_marker_history(&dir_name, &marker_raw, &kunde, dropbox_binding.as_ref());
         }
         let job = UploadJob {
             dir_path: full_dir_path.clone(),
@@ -1116,6 +1151,7 @@ async fn recover_stalled_folders(scan_path: &Path, ctx: &EnqueueContext<'_>) -> 
             use_dropbox_client: use_dropbox,
             correlation_id,
             append,
+            dropbox_binding,
         };
         if ctx.registry.enqueue(ctx.jobs, job, false) {
             recovered += 1;
@@ -1152,7 +1188,12 @@ async fn lookup_kunde_from_api_marker(
     Ok(kunde)
 }
 
-fn emit_marker_history(dir_name: &str, marker_raw: &str, kunde: &Kunde) {
+fn emit_marker_history(
+    dir_name: &str,
+    marker_raw: &str,
+    kunde: &Kunde,
+    binding: Option<&DropboxAccountBinding>,
+) {
     let mut payload = serde_json::json!({
         "dir_name": dir_name,
         "marker_raw": marker_raw,
@@ -1165,7 +1206,75 @@ fn emit_marker_history(dir_name: &str, marker_raw: &str, kunde: &Kunde) {
         "type": kunde.customer_type.clone().unwrap_or_default(),
     });
     crate::model::marker::merge_kunde_media_flags(&mut payload, kunde);
+    merge_binding_into_history(&mut payload, binding);
     crate::events::emit(crate::events::UPLOAD_HISTORY_UPDATE, payload);
+}
+
+/// Freeze active account for new jobs, or inherit parent binding for append.
+fn resolve_enqueue_binding(
+    ctx: &EnqueueContext<'_>,
+    use_dropbox_client: bool,
+    append: Option<&AppendTarget>,
+) -> Result<Option<DropboxAccountBinding>, String> {
+    let pool = pool_for_new_job(ctx.selected_cloud, use_dropbox_client);
+    let accounts = DropboxAccountStore::open_default().map_err(|e| e.to_string())?;
+    if let Some(target) = append {
+        if let Some(binding) = binding_from_append_fields(
+            target.dropbox_account_ams_id.as_deref(),
+            target.dropbox_account_pool.as_deref(),
+            target.dropbox_account_id.as_deref(),
+            target.dropbox_account_email.as_deref(),
+        ) {
+            if binding.pool != pool {
+                return Err(format!(
+                    "Parent-Job ist an Pool „{}“ gebunden, aktueller Cloud-Pfad erwartet „{}“.",
+                    binding.pool.as_str(),
+                    pool.as_str()
+                ));
+            }
+            return Ok(Some(binding));
+        }
+        // Legacy parent without binding: sole profile, empty pool → None, else error.
+        let rows = accounts.list(pool).map_err(|e| e.to_string())?;
+        return match rows.len() {
+            0 => Ok(None),
+            1 => Ok(Some(DropboxAccountBinding::from_row(&rows[0])?)),
+            n => Err(format!(
+                "Parent-Job ohne Konto-Bindung und {n} Profile im Pool „{}“.",
+                pool.as_str()
+            )),
+        };
+    }
+    let active = match pool {
+        DropboxPool::Native => ctx.active_dropbox_account_id,
+        DropboxPool::CustomApi => ctx.active_custom_dropbox_account_id,
+    };
+    freeze_active_binding(pool, active, &accounts)
+}
+
+/// Prefer history binding on recovery so Soft-Active switches cannot rebind mid-flight.
+fn resolve_recovery_binding(
+    ctx: &EnqueueContext<'_>,
+    dir_name: &str,
+    use_dropbox_client: bool,
+    append: Option<&AppendTarget>,
+) -> Result<Option<DropboxAccountBinding>, String> {
+    let pool = pool_for_new_job(ctx.selected_cloud, use_dropbox_client);
+    if let Ok(store) = HistoryStore::open_default() {
+        if let Ok(Some(entry)) = store.find_by_dir_name(dir_name) {
+            let json = entry.to_json();
+            let ams = json
+                .get("dropbox_account_ams_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim();
+            if !ams.is_empty() {
+                let accounts = DropboxAccountStore::open_default().map_err(|e| e.to_string())?;
+                return resolve_binding_for_history(&json, pool, &accounts).map(Some);
+            }
+        }
+    }
+    resolve_enqueue_binding(ctx, use_dropbox_client, append)
 }
 
 fn kunde_label(kunde: &Kunde) -> String {
@@ -1333,6 +1442,8 @@ mod tests {
             archive_path: archive,
             customer_lookup: None,
             manifest_required: false,
+            active_dropbox_account_id: "",
+            active_custom_dropbox_account_id: "",
         }
     }
 

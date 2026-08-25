@@ -46,22 +46,11 @@ impl UploadState {
         let Some(rx) = rx else {
             return;
         };
-        let dropbox: Arc<dyn crate::cloud::CloudClient> = cloud.dropbox.clone();
-        let custom_dropbox: Arc<dyn crate::cloud::CloudClient> = cloud.custom_dropbox.clone();
-        let custom_api: Arc<dyn crate::cloud::CloudClient> = cloud.custom_api.clone();
+        let cloud = cloud.clone();
         let control = self.control.clone();
         let registry = Arc::clone(&self.registry);
         let handle = tauri::async_runtime::spawn(async move {
-            worker::run_loop(
-                rx,
-                dropbox,
-                custom_api,
-                custom_dropbox,
-                control,
-                registry,
-                get_setting,
-            )
-            .await;
+            worker::run_loop(rx, cloud, control, registry, get_setting).await;
         });
         if let Ok(mut guard) = self.worker.lock() {
             *guard = Some(handle);

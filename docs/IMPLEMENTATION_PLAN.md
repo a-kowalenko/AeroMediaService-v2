@@ -69,8 +69,9 @@
 | ATS↔AMS Handoff (Docs P0) | 🔄 Phase 13 — Spec: [`HANDOFF.md`](./HANDOFF.md) · P0 ✅ · P1 ✅ · P1b ✅ · P2 ✅ · P3 ✅ · P4 ✅ · L4 UX ✅ · P5+ offen |
 | Medien nachreichen (bestehende Order) | ✅ Phase 14 |
 | ATS-Nachreichen (Append-Handoff) | ✅ Phase 15 |
+| Multi-Dropbox-Konten (Native + Custom-API) | ✅ Phase 16 — 16a ✅ · 16b ✅ · 16c ✅ · 16d ✅ |
 
-**Nächste Phase:** 13 P5+ (optional) — Spec: [`HANDOFF.md`](./HANDOFF.md)
+**Nächste Phase:** optional Phase 13 / P5+ ([`HANDOFF.md`](./HANDOFF.md)); Phase 16 abgeschlossen
 
 ---
 
@@ -665,14 +666,18 @@ Danach cargo test.
 | `bridge_enabled` | LAN-Bridge-Server (Phase 13 / P2) | `"false"` |
 | `bridge_bind` | Bind-Adresse (LAN, z. B. `0.0.0.0:8787`) | `"0.0.0.0:8787"` |
 | `selected_cloud_service` | `dropbox` \| `custom_api` | `dropbox` |
+| `active_dropbox_account_id` | Aktives Native-Dropbox-Profil (Phase 16) | `""` (nach Migration gesetzt) |
+| `active_custom_dropbox_account_id` | Aktives Custom-API-Dropbox-Profil (Phase 16) | `""` (nach Migration gesetzt) |
 | `smtp_*` / Sandbox-Flags | E-Mail | — |
 
 ### Secrets (Keyring)
 
 | Key | Beschreibung |
 |-----|--------------|
-| `db_app_key` / `db_app_secret` / `db_refresh_token` | Dropbox |
-| `custom_db_app_key` / `custom_db_app_secret` / `custom_db_refresh_token` | Custom-API Dropbox |
+| `db_app_key` / `db_app_secret` / `db_refresh_token` | Dropbox Native (Legacy-Alias Phase 16; Lesen bis Migration) |
+| `custom_db_app_key` / `custom_db_app_secret` / `custom_db_refresh_token` | Custom-API Dropbox (Legacy-Alias Phase 16) |
+| `db_app_key_<ams_id>` / `db_app_secret_<ams_id>` / `db_refresh_token_<ams_id>` | Native-Dropbox pro Profil (Phase 16) |
+| `custom_db_app_key_<ams_id>` / `custom_db_app_secret_<ams_id>` / `custom_db_refresh_token_<ams_id>` | Custom-API-Dropbox pro Profil (Phase 16) |
 | SMTP-Passwort, `sms_api_key`, Sandbox-Key | Notify |
 | `twilio_account_sid` / `twilio_auth_token` | WhatsApp |
 | `bridge_token` | LAN-Bridge Bearer-Token (Phase 13 / P2) |
@@ -707,6 +712,153 @@ Setup: `setup_completed`, Theme: `ui_theme` (`dark` \| `light`).
 - [x] Worker-Route: Phase-14-Append (`remote_path` / `existing_order_id`), kein neuer Link, keine Mail
 - [x] Bridge-Capability `append-v1`
 - [x] ATS: Historie-Dialog Dateien + Kategorie + Preview/Voll
+
+---
+
+### Phase 16 — Multi-Dropbox-Konten (Native + Custom-API)
+
+**Status:** ✅ 16a–16d erledigt  
+**Ziel:** Mehrere Dropbox-Konten pro Cloud-Slot (Native und Custom-API-Dropbox), jeweils genau eines aktiv für **neue** Jobs; Upload/Append/Retry/Resume immer über das am Job/History **gebundene** Konto.
+
+**Leitprinzipien**
+
+1. Aktives Konto steuert nur *neue* Uploads (pro Pool).
+2. Job/History speichern, welches AMS-Profil den Upload gemacht hat.
+3. Upload/Append/Retry/Resume lesen die gebundene Account-ID — kein stiller Fallback auf „gerade aktiv“.
+4. Secrets nur Keyring; SQLite nur Metadaten.
+5. Zwei getrennte Pools: `native` (`db_*`) und `custom_api` (`custom_db_*`) — kein Mischen der Token zwischen Pools.
+
+**Zwei Pools (parallel)**
+
+| Pool | Setting (aktiv) | Legacy-Keys | Namespaced Keys | Verwendung |
+|------|-----------------|-------------|-----------------|------------|
+| Native | `active_dropbox_account_id` | `db_app_key` / `db_app_secret` / `db_refresh_token` | `db_*_<ams_id>` | `selected_cloud_service=dropbox` |
+| Custom-API Dropbox | `active_custom_dropbox_account_id` | `custom_db_*` | `custom_db_*_<ams_id>` | Direct-Dropbox + Manifest unter Custom API; reine Kontakt-Marker (`use_dropbox_client`) |
+
+`selected_cloud_service` bleibt unverändert (`dropbox` \| `custom_api`). Multi-Account ersetzt nicht die Cloud-Wahl — es multipliziert die Dropbox-Logins **innerhalb** jedes Slots.
+
+#### Datenmodell (SQLite)
+
+```text
+dropbox_accounts
+  id                    TEXT PK          -- AMS-UUID
+  pool                  TEXT NOT NULL    -- 'native' | 'custom_api'
+  label                 TEXT
+  dropbox_account_id    TEXT             -- von users/get_current_account (pro pool unique)
+  email                 TEXT
+  display_name          TEXT
+  app_key_hint          TEXT
+  created_at / updated_at
+  UNIQUE(pool, dropbox_account_id) WHERE dropbox_account_id <> ''
+```
+
+#### History / Job-Binding
+
+| Feld | Bedeutung |
+|------|-----------|
+| `dropbox_account_ams_id` | AMS-Profil-UUID |
+| `dropbox_account_pool` | `native` \| `custom_api` |
+| `dropbox_account_id` | Dropbox-Account-ID (Diagnose) |
+| `dropbox_account_email` | Snapshot für Anzeige nach Profil-Löschung |
+
+`AppendTarget` und Checkpoints (`kind: dropbox_native` / Custom-Äquivalent) tragen dieselbe `dropbox_account_ams_id` (+ Pool).
+
+#### Client-Auflösung
+
+```text
+resolve_dropbox_client(job|history):
+  1. ams_id + pool aus Job/History
+  2. Legacy ohne Feld: einziges Profil im erwarteten Pool, sonst Fehler/Confirm
+  3. Client aus Registry; Token fehlt → klarer Fehler, kein Cross-Account-Fallback
+```
+
+Betrifft: `upload/worker`, `upload/append`, `upload/retry`, `notify/resend`, Operator-Append, `CloudState` / `CustomApiClient`-Dropbox-Pfad.
+
+#### Teilphasen (eine Session = eine Slice)
+
+##### 16a — Account-Profile + Migration + Registry (D1)
+
+- [x] Tabelle `dropbox_accounts` + Settings `active_dropbox_account_id` / `active_custom_dropbox_account_id`
+- [x] Keyring-Namespace pro Profil; Legacy-Keys weiter lesen
+- [x] Einmal-Migration: vorhandene `db_*` → ein Native-Profil; `custom_db_*` → ein Custom-Profil; Active setzen
+- [x] `DropboxSecretKeys::for_account(pool, ams_id)`; `DropboxAccountInfo.account_id` parsen
+- [x] `CloudState`: Registry pro Pool (`HashMap` / lazy Clients) statt einzelner `Arc<DropboxClient>`
+- [x] Unit-Tests: Migration, Key-Ableitung, Pool-Isolation (Native-Keys ≠ Custom-Keys)
+
+**DoD:** Mehrere Profile speicherbar (beide Pools); OAuth connect/disconnect pro Profil; je Pool ein Active.
+
+##### 16b — Job an Account binden (D2)
+
+- [x] `UploadJob` + History-Felder (ams_id, pool, email, dropbox_account_id)
+- [x] Claim/Enqueue friert aktives Profil des **zuständigen** Pools ein (Native vs. Custom-Dropbox-Pfad inkl. Kontakt-Marker)
+- [x] Worker/Append/Retry/Resend/Link-Lookup über Binding
+- [x] `AppendTarget.dropbox_account_ams_id` (+ pool); Altbestand ohne Feld: nur bei genau einem Profil im Pool oder UI-Confirm
+- [x] Unit-Tests: Retry/Append nutzen Parent-Account, nicht Active; fehlendes Profil → Fehler
+
+**DoD:** Neue Jobs schreiben Binding; alle Upload-Nebenpfade respektieren Binding (Native **und** Custom-API-Dropbox).
+
+##### 16c — Switch-Guards + Invarianten (D3 + D5)
+
+- [x] Soft-Active: Wechsel des Active ändert nur Default für *neue* Jobs; laufende behalten Binding
+- [x] Hard-Guard: Löschen/Trennen blockieren wenn Queue/Active-Jobs an Profil gebunden (oder Jobs bewusst failen)
+- [x] OAuth: gleiche Dropbox-`account_id` → Token-Update; andere ID → neues Profil oder harte Warnung
+- [x] Kein Upload-Pfad ohne Binding (außer Settings-Verify); kein Temporary-Override ohne History-Schreiben
+- [x] Checkpoints um `dropbox_account_ams_id` (+ pool) erweitern; Resume bei Mismatch verweigern
+- [x] Audit-Checkliste: Monitor-Claim, Upload, Pause/Resume, Retry, Operator-Append, ATS-Append, Resend, Pure-Contact-Marker unter `custom_api`
+
+**DoD:** Dokumentierte Switch-Semantik; keine Session-Resume mit falschem Token.
+
+**Audit (16c — Binding-Pfade):** Soft-Active gilt für Claim/Enqueue (`freeze_active_binding`); Recovery liest History-Binding; Worker/`client_for_binding` + `CustomDropboxPin` nur mit Job-Binding; Retry/Append/Resend via `resolve_binding_for_history`; Native- und Direct-Dropbox-Checkpoints tragen `dropbox_account_ams_id`+`pool`; Pause/Resume nutzen denselben Worker-Client (kein Rebind).
+
+##### 16d — Settings-UI + History-Hinweise (D4)
+
+- [x] Settings Dropbox: Kontoliste Native (Label, E-Mail, Quota, Token, Badge Aktiv)
+- [x] Settings Custom-API Dropbox: gleiche Liste für Pool `custom_api`
+- [x] Aktionen: Verbinden (OAuth), Trennen, Als aktiv, Umbenennen, Entfernen
+- [x] Hinweis bei Switch wenn Queue nicht leer („nur neue Jobs“)
+- [x] Append-Banner wenn Parent-Konto ≠ Active (Nachreichen über Parent-Konto)
+- [x] History-Detail: Dropbox-Konto (E-Mail / Label / Pool)
+- [x] Duplikat-Schutz: gleiche `(pool, dropbox_account_id)` aktualisiert Token, kein zweites Profil
+
+**DoD:** Bedienung ohne Keyring-Handarbeit; Status/Quota multiplikativ wie heutiges `DropboxAccountPanel`.
+
+#### Explizit out of scope
+
+- Automatische Job-Routung Kunde/Marker → Konto (spätere Phase)
+- Dropbox Business Admin / Team-Namespaces als eigenes Modell
+- Änderung Pause/Resume/Cancel-Semantik
+- ATS-Handoff-Pflichtfelder (optional später Status-Outbox-Hinweis)
+
+#### Risiken
+
+| Risiko | Mitigation |
+|--------|------------|
+| Alt-History ohne Binding | Fallback nur bei 1 Profil im Pool; sonst Confirm |
+| Cross-Pool-Verwechslung | `pool` am Job; Registry getrennt; UI-Tabs getrennt |
+| Profil gelöscht | Snapshot-E-Mail; klarer Fehler statt Rate |
+| Custom API Order + falsches Dropbox | Binding am Direct-Dropbox-/Kontakt-Pfad; Order-API unverändert |
+| Keyring-Ballast | Delete räumt namespaced Keys auf |
+
+#### Manuelle Abnahme
+
+1. Legacy-Migration: je Pool ≤1 Konto, Upload wie bisher (Dropbox + Custom-API Direct-Dropbox).
+2. Zweites Native-Konto aktiv → neuer Job dort; History zeigt Binding.
+3. Zweites Custom-Dropbox-Konto; Kontakt-Marker / Direct-Dropbox nutzen Binding.
+4. Active = B; Append an Job von A → Upload über A; Share-Link gültig.
+5. Queue mit Job A; Active → B; Job A resumed weiter mit A.
+6. Trennen von A bei offenem Job A → blockiert oder bewusster Fail.
+
+**Abhängigkeiten:** Phase 4 (Dropbox), 5 (Custom API), 9 (Settings), 14/15 (Append).  
+**Nicht anfassen außer Binding:** Custom-API Order/Manifest-Kern, Notify-Templates, Bridge.
+
+**Agent-Prompt (Slice):**
+
+```
+Implementiere Phase 16 Teilphase 16d aus @docs/IMPLEMENTATION_PLAN.md
+Regeln: @AGENTS.md
+Nur 16d. Settings-UI und History-Hinweise für Multi-Dropbox.
+Danach cargo test && npm run tauri dev.
+```
 
 ---
 
@@ -749,3 +901,4 @@ Updater-Endpoint und Signing: siehe [`docs/RELEASE.md`](./RELEASE.md) (analog Ae
 | 13 | ATS↔AMS Handoff | 🔄 P0 ✅ · P1 ✅ · P1b ✅ · P2 ✅ · P3 ✅ · P4 ✅ · L4 UX ✅ · P5+ offen |
 | 14 | Medien nachreichen | ✅ |
 | 15 | ATS-Nachreichen (Append) | ✅ |
+| 16 | Multi-Dropbox-Konten (Native + Custom-API) | ✅ 16a ✅ · 16b ✅ · 16c ✅ · 16d ✅ |

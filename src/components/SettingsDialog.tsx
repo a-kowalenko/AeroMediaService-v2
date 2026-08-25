@@ -1,6 +1,6 @@
 import {FormEvent, type ReactNode, useCallback, useEffect, useMemo, useState} from "react";
+import {listen} from "@tauri-apps/api/event";
 import {open as openDirectoryDialog} from "@tauri-apps/plugin-dialog";
-import {openUrl} from "@tauri-apps/plugin-opener";
 import {FolderOpen, Moon, Sun} from "lucide-react";
 import {Spinner} from "@/components/Spinner";
 import {StatusChip} from "@/components/StatusChip";
@@ -29,40 +29,45 @@ import {Tabs, TabsContent, TabsList, TabsTrigger} from "@/components/ui/tabs";
 import {
     applyBridgeConfig,
     connectCustomApi,
-    connectDropbox,
     disconnectCustomApi,
-    disconnectDropbox,
-    finishDropboxOauth,
     getAtsHostDetails,
     getAtsHostsSummary,
     getBridgeStatus,
+    getCloudConnectionStatus,
     getSecret,
     getSetting,
     getSmsBalance,
     getUpdaterStatus,
     listAvailableVersions,
     migrateLegacySettings,
+    removeAtsHost,
+    removeInactiveLongAtsHosts,
     resetSetup,
     saveSecret,
     saveSetting,
     testLinkShortener,
-    verifyDropboxStatus,
     type AtsHostDetails,
     type AtsHostSummary,
     type AvailableRelease,
 } from "@/lib/tauri";
-import {AtsActivityEventCard} from "@/components/AtsActivityEventCard";
+import {AtsHostActivitySection} from "@/components/AtsHostActivitySection";
+import {DropboxAccountsSection} from "@/components/settings/DropboxAccountsSection";
 import {
     atsPresenceChipLabel,
     atsPresenceChipTone,
+    canForgetAtsHost,
     defaultAtsHostSelection,
     findAtsHost,
+    forgetAtsHostConfirmMessage,
+    groupAtsHostsByPresence,
+    purgeInactiveLongAtsHostsConfirmMessage,
 } from "@/lib/atsPresence";
 import {
     AtsHostListSections,
     countActiveAtsHosts,
     countConnectedAtsHosts,
 } from "@/components/AtsHostListSections";
+import {CONNECTION_STATUS_CHANGED} from "@/lib/events";
 import {showAppToast} from "@/lib/toast";
 import {eventTypeLabel} from "@/lib/atsActivityDisplay";
 import {compareVersionParts} from "@/lib/versionCompare";
@@ -75,7 +80,6 @@ type TabId =
     | "email"
     | "sms"
     | "shortener"
-    | "whatsapp"
     | "extras";
 
 type Props = {
@@ -95,7 +99,6 @@ const TAB_ITEMS: { id: TabId; label: string }[] = [
     {id: "email", label: "E-Mail"},
     {id: "sms", label: "SMS"},
     {id: "shortener", label: "Link-Shortener"},
-    {id: "whatsapp", label: "WhatsApp"},
     {id: "extras", label: "Extras"},
 ];
 
@@ -359,31 +362,6 @@ async function pickDirectory(current: string): Promise<string | null> {
     }
 }
 
-async function promptAuthCode(authorizeUrl: string): Promise<string | null> {
-    const ui = useUiStore.getState();
-    const proceed = await ui.confirm(
-        "Ein Browser-Fenster wird geöffnet, um die App zu autorisieren.\n\n" +
-        "Bitte kopieren Sie den angezeigten Code und fügen Sie ihn im nächsten Dialog ein.",
-        {
-            title: "Dropbox autorisieren",
-            primaryLabel: "Browser öffnen",
-            secondaryLabel: "Abbrechen",
-        },
-    );
-    if (!proceed) return null;
-    try {
-        await openUrl(authorizeUrl);
-    } catch {
-        window.open(authorizeUrl, "_blank", "noopener,noreferrer");
-    }
-    const code = await ui.prompt("Eingabe-Code von Dropbox:", {
-        title: "Autorisierungscode",
-        placeholder: "Code einfügen…",
-        primaryLabel: "Weiter",
-    });
-    return code?.trim() || null;
-}
-
 export function SettingsDialog({
                                    open: isOpen,
                                    onClose,
@@ -433,15 +411,13 @@ export function SettingsDialog({
     const [selectedAtsHostId, setSelectedAtsHostId] = useState("");
     const [selectedAtsDetails, setSelectedAtsDetails] = useState<AtsHostDetails | null>(null);
     const [atsDetailsLoading, setAtsDetailsLoading] = useState(false);
+    const [atsRemovalBusy, setAtsRemovalBusy] = useState(false);
 
     const [cloudService, setCloudService] = useState<"dropbox" | "custom_api">("dropbox");
     const [dropbox, setDropbox] = useState({
         db_app_key: "",
         db_app_secret: "",
     });
-    const [dbStatus, setDbStatus] = useState("Nicht verbunden");
-    const [dbBusy, setDbBusy] = useState(false);
-    const [dbStatusLoading, setDbStatusLoading] = useState(false);
 
     const [customApi, setCustomApi] = useState({
         custom_api_url: "",
@@ -456,9 +432,8 @@ export function SettingsDialog({
         custom_db_app_secret: "",
     });
     const [customApiStatus, setCustomApiStatus] = useState("Nicht verbunden");
-    const [customDbStatus, setCustomDbStatus] = useState("Nicht verbunden");
+    const [customApiStatusLoading, setCustomApiStatusLoading] = useState(false);
     const [customBusy, setCustomBusy] = useState(false);
-    const [customDbStatusLoading, setCustomDbStatusLoading] = useState(false);
 
     const [email, setEmail] = useState({
         smtp_host: "",
@@ -568,6 +543,10 @@ export function SettingsDialog({
         () => countActiveAtsHosts(atsHosts),
         [atsHosts],
     );
+    const inactiveLongAtsHostsCount = useMemo(
+        () => groupAtsHostsByPresence(atsHosts).inactiveLong.length,
+        [atsHosts],
+    );
 
     const loadExtras = useCallback(async () => {
         setReleasesLoading(true);
@@ -647,6 +626,52 @@ export function SettingsDialog({
             setAtsDetailsLoading(false);
         }
     }, []);
+
+    const forgetSelectedAtsHost = useCallback(async () => {
+        if (!selectedAtsHost || !canForgetAtsHost(selectedAtsHost)) return;
+        const ok = await confirm(forgetAtsHostConfirmMessage(selectedAtsHost), {
+            title: "ATS-Client entfernen",
+            primaryLabel: "Entfernen",
+            destructive: true,
+        });
+        if (!ok) return;
+        setAtsRemovalBusy(true);
+        setAtsHostsError("");
+        try {
+            await removeAtsHost(selectedAtsHost.instance_id);
+            setSelectedAtsDetails(null);
+            setSelectedAtsHostId("");
+            await loadAtsHosts();
+        } catch (err) {
+            setAtsHostsError(String(err));
+        } finally {
+            setAtsRemovalBusy(false);
+        }
+    }, [selectedAtsHost, confirm, loadAtsHosts]);
+
+    const purgeInactiveLongAtsHosts = useCallback(async () => {
+        if (inactiveLongAtsHostsCount <= 0) return;
+        const ok = await confirm(
+            purgeInactiveLongAtsHostsConfirmMessage(inactiveLongAtsHostsCount),
+            {
+                title: "Länger inaktive entfernen",
+                primaryLabel: "Aufräumen",
+                destructive: true,
+            },
+        );
+        if (!ok) return;
+        setAtsRemovalBusy(true);
+        setAtsHostsError("");
+        try {
+            await removeInactiveLongAtsHosts();
+            setSelectedAtsDetails(null);
+            await loadAtsHosts();
+        } catch (err) {
+            setAtsHostsError(String(err));
+        } finally {
+            setAtsRemovalBusy(false);
+        }
+    }, [inactiveLongAtsHostsCount, confirm, loadAtsHosts]);
 
     useEffect(() => {
         if (!isOpen || tab !== "extras") return;
@@ -762,6 +787,26 @@ export function SettingsDialog({
                     setBridgeStatusLoading(false);
                 });
             setCloudService(selected_cloud_service === "custom_api" ? "custom_api" : "dropbox");
+
+            // Active-cloud status (Custom API when selected) — sync with auto-connect / main UI.
+            // Independent of Keyring so the connect button stays accurate if secrets fail to load.
+            if (selected_cloud_service === "custom_api") {
+                setCustomApiStatusLoading(true);
+                void getCloudConnectionStatus()
+                    .then((status) => {
+                        setCustomApiStatus(status || "Nicht verbunden");
+                    })
+                    .catch(() => {
+                        setCustomApiStatus("Verbindungsfehler");
+                    })
+                    .finally(() => {
+                        setCustomApiStatusLoading(false);
+                    });
+            } else {
+                setCustomApiStatus("Nicht verbunden");
+                setCustomApiStatusLoading(false);
+            }
+
             setEmail((prev) => ({
                 ...prev,
                 smtp_host,
@@ -960,29 +1005,6 @@ export function SettingsDialog({
 
                 const sandbox = boolFromSetting(seven_sandbox_mode);
                 const balanceKey = sandbox ? seven_sandbox_api_key : seven_api_key;
-                setDbStatusLoading(true);
-                void verifyDropboxStatus("native")
-                    .then((nativeStatus) => {
-                        setDbStatus(nativeStatus);
-                    })
-                    .catch(() => {
-                        setDbStatus("Verbindungsfehler");
-                    })
-                    .finally(() => {
-                        setDbStatusLoading(false);
-                    });
-
-                setCustomDbStatusLoading(true);
-                void verifyDropboxStatus("custom")
-                    .then((customStatus) => {
-                        setCustomDbStatus(customStatus);
-                    })
-                    .catch(() => {
-                        setCustomDbStatus("Verbindungsfehler");
-                    })
-                    .finally(() => {
-                        setCustomDbStatusLoading(false);
-                    });
 
                 if (balanceKey) {
                     setSmsBalanceLoading(true);
@@ -1016,6 +1038,29 @@ export function SettingsDialog({
         if (!isOpen) return;
         void loadAll();
     }, [isOpen, loadAll]);
+
+    // Keep Custom-API status in sync with backend events while Settings is open.
+    useEffect(() => {
+        if (!isOpen || cloudService !== "custom_api") return;
+        let cancelled = false;
+        const unlisteners: Array<() => void> = [];
+        listen<string>(CONNECTION_STATUS_CHANGED, (event) => {
+            if (cancelled) return;
+            setCustomApiStatus(String(event.payload ?? "") || "Nicht verbunden");
+        })
+            .then((fn) => {
+                if (cancelled) {
+                    fn();
+                    return;
+                }
+                unlisteners.push(fn);
+            })
+            .catch(() => {});
+        return () => {
+            cancelled = true;
+            unlisteners.forEach((fn) => fn());
+        };
+    }, [isOpen, cloudService]);
 
     useEffect(() => {
         if (!isOpen || tab !== "general") return;
@@ -1200,83 +1245,6 @@ export function SettingsDialog({
             });
         } finally {
             setBusy(false);
-        }
-    }
-
-    async function toggleDropbox() {
-        setDbBusy(true);
-        try {
-            await persistSecret("db_app_key", dropbox.db_app_key);
-            await persistSecret("db_app_secret", dropbox.db_app_secret);
-            if (dbStatus === "Verbunden") {
-                const result = await disconnectDropbox("native");
-                setDbStatus(result.status);
-                return;
-            }
-            setDbStatus("Warte auf OAuth...");
-            let result = await connectDropbox("native");
-            if (result.needs_oauth && result.authorize_url && result.code_verifier) {
-                const code = await promptAuthCode(result.authorize_url);
-                if (!code) {
-                    setDbStatus("Nicht verbunden (Abbruch)");
-                    return;
-                }
-                result = await finishDropboxOauth("native", code, result.code_verifier);
-            }
-            setDbStatus(result.status);
-            if (!result.success) {
-                showError(result.message || "Dropbox-Verbindung fehlgeschlagen.", "Dropbox");
-            } else {
-                showAppToast(result.message || "Verbunden.", {
-                    tone: "success",
-                    title: "Dropbox",
-                });
-            }
-        } catch (err) {
-            setDbStatus("Verbindungsfehler");
-            showError(String(err), "Dropbox");
-        } finally {
-            setDbBusy(false);
-        }
-    }
-
-    async function toggleCustomDropbox() {
-        setCustomBusy(true);
-        try {
-            await persistSecret("custom_db_app_key", customApi.custom_db_app_key);
-            await persistSecret("custom_db_app_secret", customApi.custom_db_app_secret);
-            if (customDbStatus === "Verbunden" || customDbStatus.startsWith("Verbunden")) {
-                const result = await disconnectDropbox("custom");
-                setCustomDbStatus(result.status);
-                return;
-            }
-            setCustomDbStatus("Warte auf OAuth...");
-            let result = await connectDropbox("custom");
-            if (result.needs_oauth && result.authorize_url && result.code_verifier) {
-                const code = await promptAuthCode(result.authorize_url);
-                if (!code) {
-                    setCustomDbStatus("Nicht verbunden (Abbruch)");
-                    return;
-                }
-                result = await finishDropboxOauth("custom", code, result.code_verifier);
-            }
-            setCustomDbStatus(result.status);
-            if (!result.success) {
-                showError(
-                    result.message || "Custom-Dropbox-Verbindung fehlgeschlagen.",
-                    "Custom Dropbox",
-                );
-            } else {
-                showAppToast(result.message || "Verbunden.", {
-                    tone: "success",
-                    title: "Custom Dropbox",
-                });
-            }
-        } catch (err) {
-            setCustomDbStatus("Verbindungsfehler");
-            showError(String(err), "Custom Dropbox");
-        } finally {
-            setCustomBusy(false);
         }
     }
 
@@ -1557,7 +1525,7 @@ export function SettingsDialog({
                                                                 bridge_display_name: e.target.value,
                                                             }))
                                                         }
-                                                        placeholder="z. B. Landebahn Nord (leer = PC-Name)"
+                                                        placeholder="z. B. Video-PC GEra (leer = PC-Name)"
                                                         maxLength={64}
                                                     />
                                                 </Field>
@@ -1712,6 +1680,8 @@ export function SettingsDialog({
                                                             hosts={atsHosts}
                                                             selectedHostId={selectedAtsHostId}
                                                             onSelectHost={setSelectedAtsHostId}
+                                                            onPurgeInactiveLong={() => void purgeInactiveLongAtsHosts()}
+                                                            purgeInactiveLongBusy={atsRemovalBusy}
                                                         />
                                                     </div>
 
@@ -1732,22 +1702,35 @@ export function SettingsDialog({
                                                         ) : (
                                                             <div className="space-y-4">
                                                                 <div className="space-y-3">
-                                                                    <div className="flex flex-wrap items-center gap-2">
-                                                                        <span className="text-base font-semibold text-foreground">
-                                                                            {selectedAtsDetails.host.hostname}
-                                                                        </span>
-                                                                        <AtsPresenceChip
-                                                                            label={
-                                                                                selectedAtsHost
-                                                                                    ? atsPresenceChipLabel(selectedAtsHost)
-                                                                                    : "—"
-                                                                            }
-                                                                            tone={
-                                                                                selectedAtsHost
-                                                                                    ? atsPresenceChipTone(selectedAtsHost)
-                                                                                    : "inactive"
-                                                                            }
-                                                                        />
+                                                                    <div className="flex flex-wrap items-center justify-between gap-2">
+                                                                        <div className="flex min-w-0 flex-wrap items-center gap-2">
+                                                                            <span className="text-base font-semibold text-foreground">
+                                                                                {selectedAtsDetails.host.hostname}
+                                                                            </span>
+                                                                            <AtsPresenceChip
+                                                                                label={
+                                                                                    selectedAtsHost
+                                                                                        ? atsPresenceChipLabel(selectedAtsHost)
+                                                                                        : "—"
+                                                                                }
+                                                                                tone={
+                                                                                    selectedAtsHost
+                                                                                        ? atsPresenceChipTone(selectedAtsHost)
+                                                                                        : "inactive"
+                                                                                }
+                                                                            />
+                                                                        </div>
+                                                                        {selectedAtsHost && canForgetAtsHost(selectedAtsHost) ? (
+                                                                            <Button
+                                                                                type="button"
+                                                                                variant="destructive"
+                                                                                size="sm"
+                                                                                disabled={atsRemovalBusy}
+                                                                                onClick={() => void forgetSelectedAtsHost()}
+                                                                            >
+                                                                                Entfernen
+                                                                            </Button>
+                                                                        ) : null}
                                                                     </div>
                                                                     <div className="grid gap-2 sm:grid-cols-2">
                                                                         <div className="rounded-md border border-border/50 bg-background/80 p-3 text-xs text-muted">
@@ -1779,23 +1762,9 @@ export function SettingsDialog({
                                                                     </div>
                                                                 </div>
 
-                                                                <div className="space-y-2">
-                                                                    <p className="text-xs font-semibold uppercase tracking-wide text-muted">
-                                                                        Letzte Events
-                                                                    </p>
-                                                                    {selectedAtsDetails.host.recent_events.length === 0 ? (
-                                                                        <p className="text-sm text-muted">Keine Events im Zeitfenster.</p>
-                                                                    ) : (
-                                                                        <div className="space-y-2">
-                                                                            {selectedAtsDetails.host.recent_events.slice(0, 8).map((entry) => (
-                                                                                <AtsActivityEventCard
-                                                                                    key={`${entry.occurred_at}-${entry.event_type}-${entry.correlation_id}-${entry.payload_json.slice(0, 24)}`}
-                                                                                    entry={entry}
-                                                                                />
-                                                                            ))}
-                                                                        </div>
-                                                                    )}
-                                                                </div>
+                                                                <AtsHostActivitySection
+                                                                    instanceId={selectedAtsDetails.host.instance_id}
+                                                                />
 
                                                                 <div className="space-y-2">
                                                                     <p className="text-xs font-semibold uppercase tracking-wide text-muted">
@@ -1896,53 +1865,7 @@ export function SettingsDialog({
 
                                 {cloudService === "dropbox" ? (
                                     <SettingsSection title="Dropbox">
-                                        <div className="space-y-3">
-                                            <Field label="App Key">
-                                                <PasswordInput
-                                                    autoComplete="off"
-                                                    value={dropbox.db_app_key}
-                                                    disabled={dbStatus === "Verbunden"}
-                                                    onChange={(e) =>
-                                                        setDropbox((p) => ({
-                                                            ...p,
-                                                            db_app_key: e.target.value,
-                                                        }))
-                                                    }
-                                                />
-                                            </Field>
-                                            <Field label="App Secret">
-                                                <PasswordInput
-                                                    autoComplete="off"
-                                                    value={dropbox.db_app_secret}
-                                                    disabled={dbStatus === "Verbunden"}
-                                                    onChange={(e) =>
-                                                        setDropbox((p) => ({
-                                                            ...p,
-                                                            db_app_secret: e.target.value,
-                                                        }))
-                                                    }
-                                                />
-                                            </Field>
-                                            <InlineStatus
-                                                label="Status"
-                                                value={dbStatus}
-                                                loading={dbStatusLoading}
-                                            />
-                                            <Button
-                                                type="button"
-                                                disabled={
-                                                    dbBusy ||
-                                                    (dbStatus !== "Verbunden" &&
-                                                        (!dropbox.db_app_key.trim() ||
-                                                            !dropbox.db_app_secret.trim()))
-                                                }
-                                                onClick={() => void toggleDropbox()}
-                                            >
-                                                {dbStatus === "Verbunden"
-                                                    ? "Verbindung trennen"
-                                                    : "Mit Dropbox verbinden"}
-                                            </Button>
-                                        </div>
+                                        <DropboxAccountsSection open={isOpen} pool="native"/>
                                     </SettingsSection>
                                 ) : (
                                     <>
@@ -2060,13 +1983,16 @@ export function SettingsDialog({
                                                             unten. Ohne Verbindung schlägt der Upload fehl.
                                                         </p>
                                                     )}
-                                                <p className="text-xs text-muted">
-                                                    Status: {customApiStatus}
-                                                </p>
+                                                <InlineStatus
+                                                    label="Status"
+                                                    value={customApiStatus}
+                                                    loading={customApiStatusLoading}
+                                                />
                                                 <Button
                                                     type="button"
                                                     disabled={
                                                         customBusy ||
+                                                        customApiStatusLoading ||
                                                         !customApi.custom_api_url.trim() ||
                                                         !customApi.custom_api_bearer_token.trim()
                                                     }
@@ -2080,50 +2006,10 @@ export function SettingsDialog({
                                         </SettingsSection>
 
                                         <SettingsSection title="Custom-API Dropbox-Konto">
-                                            <div className="space-y-3">
-                                                <Field label="App Key">
-                                                    <PasswordInput
-                                                        autoComplete="off"
-                                                        value={customApi.custom_db_app_key}
-                                                        onChange={(e) =>
-                                                            setCustomApi((p) => ({
-                                                                ...p,
-                                                                custom_db_app_key: e.target.value,
-                                                            }))
-                                                        }
-                                                    />
-                                                </Field>
-                                                <Field label="App Secret">
-                                                    <PasswordInput
-                                                        autoComplete="off"
-                                                        value={customApi.custom_db_app_secret}
-                                                        onChange={(e) =>
-                                                            setCustomApi((p) => ({
-                                                                ...p,
-                                                                custom_db_app_secret: e.target.value,
-                                                            }))
-                                                        }
-                                                    />
-                                                </Field>
-                                                <InlineStatus
-                                                    label="Status"
-                                                    value={customDbStatus}
-                                                    loading={customDbStatusLoading}
-                                                />
-                                                <Button
-                                                    type="button"
-                                                    disabled={
-                                                        customBusy ||
-                                                        !customApi.custom_db_app_key.trim() ||
-                                                        !customApi.custom_db_app_secret.trim()
-                                                    }
-                                                    onClick={() => void toggleCustomDropbox()}
-                                                >
-                                                    {customDbStatus.startsWith("Verbunden")
-                                                        ? "Dropbox trennen"
-                                                        : "Mit Dropbox verbinden"}
-                                                </Button>
-                                            </div>
+                                            <DropboxAccountsSection
+                                                open={isOpen}
+                                                pool="custom_api"
+                                            />
                                         </SettingsSection>
                                     </>
                                 )}
@@ -2443,49 +2329,6 @@ export function SettingsDialog({
                                         >
                                             Verbindung testen
                                         </Button>
-                                    </div>
-                                </SettingsSection>
-                            </TabsContent>
-
-                            <TabsContent value="whatsapp" className="mt-4 space-y-4">
-                                <SettingsSection title="Twilio WhatsApp">
-                                    <div className="space-y-3">
-                                        <Field label="Account SID">
-                                            <PasswordInput
-                                                autoComplete="off"
-                                                value={whatsapp.twilio_account_sid}
-                                                onChange={(e) =>
-                                                    setWhatsapp((p) => ({
-                                                        ...p,
-                                                        twilio_account_sid: e.target.value,
-                                                    }))
-                                                }
-                                            />
-                                        </Field>
-                                        <Field label="Auth Token">
-                                            <PasswordInput
-                                                autoComplete="off"
-                                                value={whatsapp.twilio_auth_token}
-                                                onChange={(e) =>
-                                                    setWhatsapp((p) => ({
-                                                        ...p,
-                                                        twilio_auth_token: e.target.value,
-                                                    }))
-                                                }
-                                            />
-                                        </Field>
-                                        <Field label="WhatsApp From">
-                                            <Input
-                                                placeholder="whatsapp:+49…"
-                                                value={whatsapp.twilio_whatsapp_from}
-                                                onChange={(e) =>
-                                                    setWhatsapp((p) => ({
-                                                        ...p,
-                                                        twilio_whatsapp_from: e.target.value,
-                                                    }))
-                                                }
-                                            />
-                                        </Field>
                                     </div>
                                 </SettingsSection>
                             </TabsContent>

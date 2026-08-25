@@ -596,6 +596,7 @@ function App() {
       <AtsClientsDialog
         open={atsClientsOpen}
         onClose={() => setAtsClientsOpen(false)}
+        onHostsChanged={() => void refreshAtsClientCount()}
       />
 
       <SetupWizard

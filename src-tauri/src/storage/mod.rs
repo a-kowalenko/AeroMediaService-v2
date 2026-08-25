@@ -1,6 +1,7 @@
 pub mod ats_presence;
 pub mod config;
 pub mod customers;
+pub mod dropbox_accounts;
 pub mod folder_match;
 pub mod history;
 pub mod legacy_migrate;

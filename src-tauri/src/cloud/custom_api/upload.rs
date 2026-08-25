@@ -9,6 +9,7 @@ use tokio::io::{AsyncReadExt, AsyncSeekExt};
 
 use super::{extract_customer_url, guess_mime, parse_next_offset, CustomApiClient, CHUNK_BYTES};
 use crate::cloud::dropbox::{self, DropboxSessionResume};
+use crate::cloud::guards::{assert_checkpoint_binding_matches, merge_checkpoint_binding};
 use crate::cloud::manifest::build_manifest_v11;
 use crate::cloud::traits::{should_skip_upload_file, CloudError};
 use crate::events;
@@ -621,6 +622,15 @@ impl CustomApiClient {
             if raw.get("kind").and_then(Value::as_str) == Some("custom_api_direct_dropbox")
                 && raw.get("manifest_fp").and_then(Value::as_str) == Some(manifest_fp.as_str())
             {
+                let db = self.dropbox_client();
+                if let Err(msg) = assert_checkpoint_binding_matches(
+                    &raw,
+                    db.profile_ams_id().as_deref(),
+                    db.profile_pool(),
+                ) {
+                    logging::log_warn(&msg);
+                    return Err(CloudError::Message(msg));
+                }
                 resume_ck = Some(raw);
             } else {
                 logging::log_warn("Direct-Dropbox-Checkpoint verworfen.");
@@ -668,22 +678,28 @@ impl CustomApiClient {
         }
 
         if resume_ck.is_none() {
-            let _ = save_checkpoint(
-                local_dir_path,
-                &json!({
-                    "kind": "custom_api_direct_dropbox",
-                    "manifest_fp": manifest_fp,
-                    "uploaded_files": [],
-                    "next_file_index": 0,
-                    "dd_active": Value::Null,
-                    "phase": "uploading",
-                }),
-            );
+            let db = self.dropbox_client();
+            let mut payload = json!({
+                "kind": "custom_api_direct_dropbox",
+                "manifest_fp": manifest_fp,
+                "uploaded_files": [],
+                "next_file_index": 0,
+                "dd_active": Value::Null,
+                "phase": "uploading",
+            });
+            if let Some(obj) = payload.as_object_mut() {
+                merge_checkpoint_binding(
+                    obj,
+                    db.profile_ams_id().as_deref(),
+                    Some(db.profile_pool()),
+                );
+            }
+            let _ = save_checkpoint(local_dir_path, &payload);
         }
 
         // Use connect_session(false): CloudClient::connect emits global status and would
         // overwrite Custom-API "Verbunden" when Dropbox credentials are checked mid-upload.
-        if let Err(e) = self.dropbox.connect_session(false).await {
+        if let Err(e) = self.dropbox_client().connect_session(false).await {
             logging::log_error(&format!(
                 "Direct-Dropbox: Verbindung fehlgeschlagen ({e}). Bitte Custom-API-Dropbox-Konto (App Key/Secret + OAuth) in den Einstellungen verbinden."
             ));
@@ -760,12 +776,15 @@ impl CustomApiClient {
             let dp = file.dropbox_path.clone();
             let dir = local_dir_path.to_path_buf();
             let fp = manifest_fp.clone();
+            let db = self.dropbox_client();
+            let ams = db.profile_ams_id();
+            let pool = db.profile_pool();
             let result = if file.size <= dropbox::CHUNK_SIZE as u64 {
-                self.dropbox
+                self.dropbox_client()
                     .upload_small_file(&file.local_path, &file.dropbox_path, file.size, control)
                     .await
             } else {
-                self.dropbox
+                self.dropbox_client()
                     .upload_large_file(
                         &file.local_path,
                         &file.dropbox_path,
@@ -783,17 +802,18 @@ impl CustomApiClient {
                                     "dropbox_path": dp,
                                 })
                             });
-                            let _ = save_checkpoint(
-                                &dir,
-                                &json!({
-                                    "kind": "custom_api_direct_dropbox",
-                                    "manifest_fp": fp,
-                                    "uploaded_files": snapshot,
-                                    "next_file_index": i,
-                                    "dd_active": active,
-                                    "phase": "uploading",
-                                }),
-                            );
+                            let mut payload = json!({
+                                "kind": "custom_api_direct_dropbox",
+                                "manifest_fp": fp,
+                                "uploaded_files": snapshot,
+                                "next_file_index": i,
+                                "dd_active": active,
+                                "phase": "uploading",
+                            });
+                            if let Some(obj) = payload.as_object_mut() {
+                                merge_checkpoint_binding(obj, ams.as_deref(), Some(pool));
+                            }
+                            let _ = save_checkpoint(&dir, &payload);
                         }),
                     )
                     .await
@@ -816,17 +836,23 @@ impl CustomApiClient {
                         row["dropbox_id"] = json!(id);
                     }
                     uploaded_files.push(row);
-                    let _ = save_checkpoint(
-                        local_dir_path,
-                        &json!({
-                            "kind": "custom_api_direct_dropbox",
-                            "manifest_fp": manifest_fp,
-                            "uploaded_files": uploaded_files,
-                            "next_file_index": i + 1,
-                            "dd_active": Value::Null,
-                            "phase": "uploading",
-                        }),
-                    );
+                    let db = self.dropbox_client();
+                    let mut payload = json!({
+                        "kind": "custom_api_direct_dropbox",
+                        "manifest_fp": manifest_fp,
+                        "uploaded_files": uploaded_files,
+                        "next_file_index": i + 1,
+                        "dd_active": Value::Null,
+                        "phase": "uploading",
+                    });
+                    if let Some(obj) = payload.as_object_mut() {
+                        merge_checkpoint_binding(
+                            obj,
+                            db.profile_ams_id().as_deref(),
+                            Some(db.profile_pool()),
+                        );
+                    }
+                    let _ = save_checkpoint(local_dir_path, &payload);
                 }
                 Err(e) if e.is_cancelled() => return Err(e),
                 Err(e) => {
@@ -838,7 +864,7 @@ impl CustomApiClient {
         }
 
         let root_share = self
-            .dropbox
+            .dropbox_client()
             .get_shareable_link_raw(remote_base_path)
             .await
             .ok()
@@ -882,6 +908,9 @@ impl CustomApiClient {
         let root = root_share_link.map(str::to_string);
         let fp = manifest_fp.to_string();
         let dir = local_dir_path.to_path_buf();
+        let db = self.dropbox_client();
+        let ck_ams = db.profile_ams_id();
+        let ck_pool = db.profile_pool();
         match self
             .submit_manifest_v11(
                 &manifest,
@@ -896,6 +925,9 @@ impl CustomApiClient {
                         "root_share_link": root,
                         "phase": "manifest_pending",
                     });
+                    if let Some(obj) = payload.as_object_mut() {
+                        merge_checkpoint_binding(obj, ck_ams.as_deref(), Some(ck_pool));
+                    }
                     if let (Some(obj), Some(extra_obj)) =
                         (payload.as_object_mut(), extra.as_object())
                     {

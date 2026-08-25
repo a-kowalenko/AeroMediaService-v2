@@ -101,13 +101,30 @@ pub fn save_setting(
 }
 
 #[tauri::command]
-pub fn get_secret(key: String) -> Result<Option<String>, String> {
+pub fn get_secret(
+    state: State<'_, ConfigState>,
+    key: String,
+) -> Result<Option<String>, String> {
+    // Prefer namespaced active-profile secret when Settings asks for legacy Dropbox keys.
+    if let Some(mapped) = map_legacy_dropbox_secret_key(&state, &key)? {
+        if let Some(value) = secrets::get_secret(&mapped).map_err(|e| e.to_string())? {
+            return Ok(Some(value));
+        }
+    }
     secrets::get_secret(&key).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-pub fn save_secret(app: AppHandle, key: String, value: String) -> Result<(), String> {
+pub fn save_secret(
+    app: AppHandle,
+    state: State<'_, ConfigState>,
+    key: String,
+    value: String,
+) -> Result<(), String> {
     secrets::save_secret(&key, &value).map_err(|e| e.to_string())?;
+    if let Some(mapped) = map_legacy_dropbox_secret_key(&state, &key)? {
+        secrets::save_secret(&mapped, &value).map_err(|e| e.to_string())?;
+    }
     if value.is_empty() {
         logging::log_info(&format!("Geheimnis für '{key}' gelöscht."));
     } else {
@@ -115,6 +132,34 @@ pub fn save_secret(app: AppHandle, key: String, value: String) -> Result<(), Str
     }
     let _ = app.emit(events::SETTINGS_CHANGED, SettingsChangedPayload { key });
     Ok(())
+}
+
+fn map_legacy_dropbox_secret_key(
+    state: &ConfigState,
+    key: &str,
+) -> Result<Option<String>, String> {
+    use crate::cloud::dropbox::{DropboxPool, DropboxSecretKeys};
+
+    let (pool, kind) = match key {
+        "db_app_key" => (DropboxPool::Native, "app_key"),
+        "db_app_secret" => (DropboxPool::Native, "app_secret"),
+        "db_refresh_token" => (DropboxPool::Native, "refresh_token"),
+        "custom_db_app_key" => (DropboxPool::CustomApi, "app_key"),
+        "custom_db_app_secret" => (DropboxPool::CustomApi, "app_secret"),
+        "custom_db_refresh_token" => (DropboxPool::CustomApi, "refresh_token"),
+        _ => return Ok(None),
+    };
+    let active = state.get(pool.active_setting_key(), Some(""))?;
+    let active = active.trim();
+    if active.is_empty() {
+        return Ok(None);
+    }
+    let keys = DropboxSecretKeys::for_account(pool, active);
+    Ok(Some(match kind {
+        "app_key" => keys.app_key,
+        "app_secret" => keys.app_secret,
+        _ => keys.refresh_token,
+    }))
 }
 
 #[tauri::command]

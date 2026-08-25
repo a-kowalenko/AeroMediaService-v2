@@ -6,6 +6,10 @@ use std::path::{Path, PathBuf};
 use serde_json::{json, Value};
 use tokio::sync::mpsc::UnboundedSender;
 
+use crate::cloud::binding::{
+    merge_binding_into_history, pool_for_new_job, resolve_binding_for_history,
+    DropboxAccountBinding,
+};
 use crate::events;
 use crate::model::handoff::peek_correlation_id;
 use crate::model::marker::{
@@ -13,6 +17,7 @@ use crate::model::marker::{
 };
 use crate::upload::booking_flags::{self, BookingFlagsPolicy};
 use crate::monitor::stability::has_uploadable_files;
+use crate::storage::dropbox_accounts::DropboxAccountStore;
 use crate::storage::logging;
 use crate::upload::registry::{UploadJob, UploadQueueRegistry};
 use crate::util::archive::{self, ARCHIVE_CANCELLED, ARCHIVE_ERROR};
@@ -53,6 +58,23 @@ pub async fn resolve_kunde_from_history_entry(entry: &Value) -> Result<crate::mo
 
 fn nonempty_opt(value: Option<&str>) -> bool {
     value.map(|s| !s.trim().is_empty()).unwrap_or(false)
+}
+
+fn resolve_retry_binding(
+    history_entry: &Value,
+    selected_cloud: &str,
+    use_dropbox_client: bool,
+) -> Result<Option<DropboxAccountBinding>, String> {
+    let pool = pool_for_new_job(selected_cloud, use_dropbox_client);
+    let accounts = match DropboxAccountStore::open_default() {
+        Ok(store) => store,
+        Err(_) => return Ok(None),
+    };
+    let rows = accounts.list(pool).map_err(|e| e.to_string())?;
+    if rows.is_empty() {
+        return Ok(None);
+    }
+    resolve_binding_for_history(history_entry, pool, &accounts).map(Some)
 }
 
 /// Restore an archived job into the monitor folder and enqueue it.
@@ -156,12 +178,16 @@ pub async fn retry_upload_from_history(
         should_use_dropbox_client_for_marker(selected_cloud, &marker_raw).unwrap_or(false)
     };
 
+    let dropbox_binding = resolve_retry_binding(history_entry, selected_cloud, use_dropbox_client)?;
+    let binding_for_history = dropbox_binding.clone();
+
     let job = UploadJob {
         dir_path: target_path.clone(),
         kunde: kunde.clone(),
         use_dropbox_client,
         correlation_id: peek_correlation_id(&target_path),
         append: None,
+        dropbox_binding,
     };
     if !registry.enqueue(jobs, job, false) {
         return Err(format!(
@@ -170,29 +196,28 @@ pub async fn retry_upload_from_history(
     }
 
     let retry_count = json_int(history_entry, "retry_count") + 1;
-    events::emit(
-        events::UPLOAD_HISTORY_UPDATE,
-        json!({
-            "dir_name": dir_name,
-            "status": "Gestartet",
-            "retry_count": retry_count,
-            "first_name": kunde.first_name.unwrap_or_default(),
-            "last_name": kunde.last_name.unwrap_or_default(),
-            "email": kunde.email.unwrap_or_default(),
-            "phone": kunde.phone.unwrap_or_default(),
-            "customer_number": kunde.customer_number.unwrap_or_default(),
-            "booking_number": kunde.booking_number.unwrap_or_default(),
-            "type": kunde.customer_type.unwrap_or_default(),
-            "handcam_foto": kunde.handcam_foto,
-            "handcam_video": kunde.handcam_video,
-            "outside_foto": kunde.outside_foto,
-            "outside_video": kunde.outside_video,
-            "ist_bezahlt_handcam_foto": kunde.ist_bezahlt_handcam_foto,
-            "ist_bezahlt_handcam_video": kunde.ist_bezahlt_handcam_video,
-            "ist_bezahlt_outside_foto": kunde.ist_bezahlt_outside_foto,
-            "ist_bezahlt_outside_video": kunde.ist_bezahlt_outside_video,
-        }),
-    );
+    let mut history_update = json!({
+        "dir_name": dir_name,
+        "status": "Gestartet",
+        "retry_count": retry_count,
+        "first_name": kunde.first_name.unwrap_or_default(),
+        "last_name": kunde.last_name.unwrap_or_default(),
+        "email": kunde.email.unwrap_or_default(),
+        "phone": kunde.phone.unwrap_or_default(),
+        "customer_number": kunde.customer_number.unwrap_or_default(),
+        "booking_number": kunde.booking_number.unwrap_or_default(),
+        "type": kunde.customer_type.unwrap_or_default(),
+        "handcam_foto": kunde.handcam_foto,
+        "handcam_video": kunde.handcam_video,
+        "outside_foto": kunde.outside_foto,
+        "outside_video": kunde.outside_video,
+        "ist_bezahlt_handcam_foto": kunde.ist_bezahlt_handcam_foto,
+        "ist_bezahlt_handcam_video": kunde.ist_bezahlt_handcam_video,
+        "ist_bezahlt_outside_foto": kunde.ist_bezahlt_outside_foto,
+        "ist_bezahlt_outside_video": kunde.ist_bezahlt_outside_video,
+    });
+    merge_binding_into_history(&mut history_update, binding_for_history.as_ref());
+    events::emit(events::UPLOAD_HISTORY_UPDATE, history_update);
     events::emit_status(format!("Erneut eingereiht: {dir_name}"));
 
     Ok(format!(
@@ -377,6 +402,32 @@ mod tests {
         assert_eq!(job.dir_path, restored);
         assert_eq!(job.kunde.first_name.as_deref(), Some("Ada"));
         assert!(registry.is_registered(&restored));
+    }
+
+    #[tokio::test]
+    async fn retry_binds_history_account_not_active() {
+        use crate::cloud::DropboxPool;
+        use crate::constants::CONFIG_DB_FILE;
+        use crate::storage::config::ConfigStore;
+        use crate::storage::dropbox_accounts::DropboxAccountStore;
+        use tempfile::tempdir;
+
+        let cfg_dir = tempdir().unwrap();
+        // Point app config at temp dir via env is hard; use open_at through resolve path.
+        // Instead verify resolve_retry_binding logic via resolve_binding_for_history.
+        let db = cfg_dir.path().join(CONFIG_DB_FILE);
+        let accounts = DropboxAccountStore::open_at(db.clone()).unwrap();
+        let _config = ConfigStore::open_at(db).unwrap();
+        let parent = accounts.create(DropboxPool::Native, "Parent").unwrap();
+        let _other = accounts.create(DropboxPool::Native, "Active").unwrap();
+        let entry = json!({
+            "dropbox_account_ams_id": parent.id,
+            "dropbox_account_pool": "native",
+        });
+        let binding =
+            crate::cloud::binding::resolve_binding_for_history(&entry, DropboxPool::Native, &accounts)
+                .unwrap();
+        assert_eq!(binding.ams_id, parent.id);
     }
 
     #[tokio::test]
