@@ -37,12 +37,8 @@ import {
     getSecret,
     getSetting,
     getSmsBalance,
-    getUpdaterStatus,
-    listAvailableVersions,
-    migrateLegacySettings,
     removeAtsHost,
     removeInactiveLongAtsHosts,
-    resetSetup,
     saveSecret,
     saveSetting,
     testLinkShortener,
@@ -52,6 +48,7 @@ import {
 } from "@/lib/tauri";
 import {AtsHostActivitySection} from "@/components/AtsHostActivitySection";
 import {DropboxAccountsSection} from "@/components/settings/DropboxAccountsSection";
+import {ExtrasSettingsSection} from "@/components/settings/ExtrasSettingsSection";
 import {
     atsPresenceChipLabel,
     atsPresenceChipTone,
@@ -70,7 +67,6 @@ import {
 import {CONNECTION_STATUS_CHANGED} from "@/lib/events";
 import {showAppToast} from "@/lib/toast";
 import {eventTypeLabel} from "@/lib/atsActivityDisplay";
-import {compareVersionParts} from "@/lib/versionCompare";
 import {useThemeStore, type ThemeMode} from "@/store/themeStore";
 import {useUiStore} from "@/store/uiStore";
 
@@ -99,7 +95,7 @@ const TAB_ITEMS: { id: TabId; label: string }[] = [
     {id: "email", label: "E-Mail"},
     {id: "sms", label: "SMS"},
     {id: "shortener", label: "Link-Shortener"},
-    {id: "extras", label: "Extras"},
+    {id: "extras", label: "Wartung"},
 ];
 
 const SHORTENER_PRESETS = [
@@ -382,12 +378,6 @@ export function SettingsDialog({
     const [loadError, setLoadError] = useState("");
     const [savedSnapshot, setSavedSnapshot] = useState<SettingsFormSnapshot | null>(null);
 
-    const [updaterMessage, setUpdaterMessage] = useState("—");
-    const [releases, setReleases] = useState<AvailableRelease[]>([]);
-    const [releasesLoading, setReleasesLoading] = useState(false);
-    const [releasesError, setReleasesError] = useState("");
-    const [selectedVersion, setSelectedVersion] = useState("");
-    const [showPrereleases, setShowPrereleases] = useState(false);
     const [general, setGeneral] = useState({
         monitor_path: "",
         archive_path: "",
@@ -513,24 +503,6 @@ export function SettingsDialog({
         onClose();
     }, [busy, isDirty, confirm, onClose]);
 
-    const filteredReleases = useMemo(() => {
-        if (showPrereleases) return releases;
-        return releases.filter((r) => !r.prerelease);
-    }, [releases, showPrereleases]);
-
-    const selectedRelease = useMemo(
-        () => filteredReleases.find((r) => r.tag_name === selectedVersion) ?? null,
-        [filteredReleases, selectedVersion],
-    );
-
-    const selectedRelation = useMemo(() => {
-        if (!selectedRelease || !appVersion) return null;
-        const cmp = compareVersionParts(selectedRelease.tag_name, appVersion);
-        if (cmp > 0) return "newer" as const;
-        if (cmp < 0) return "older" as const;
-        return "same" as const;
-    }, [selectedRelease, appVersion]);
-
     const connectedAtsHostsCount = useMemo(
         () => countConnectedAtsHosts(atsHosts),
         [atsHosts],
@@ -547,47 +519,6 @@ export function SettingsDialog({
         () => groupAtsHostsByPresence(atsHosts).inactiveLong.length,
         [atsHosts],
     );
-
-    const loadExtras = useCallback(async () => {
-        setReleasesLoading(true);
-        setReleasesError("");
-        try {
-            const [statusInfo, list] = await Promise.all([
-                getUpdaterStatus(),
-                listAvailableVersions(),
-            ]);
-            setUpdaterMessage(statusInfo.message);
-            setReleases(list);
-            const firstStable = list.find((r) => !r.prerelease);
-            const preferred =
-                (appVersion && list.find((r) => r.tag_name === appVersion)?.tag_name) ||
-                firstStable?.tag_name ||
-                list[0]?.tag_name ||
-                "";
-            setSelectedVersion(preferred);
-        } catch (err) {
-            setReleases([]);
-            setSelectedVersion("");
-            const raw = String(err);
-            const looksTechnical =
-                /error sending request|dns error|reqwest|os error|failed to lookup|timed out|connection refused/i.test(
-                    raw,
-                );
-            setReleasesError(
-                looksTechnical
-                    ? "Versionsliste nicht verfügbar — bitte Internetverbindung prüfen."
-                    : raw,
-            );
-            try {
-                const statusInfo = await getUpdaterStatus();
-                setUpdaterMessage(statusInfo.message);
-            } catch {
-                setUpdaterMessage("Update-Status nicht verfügbar.");
-            }
-        } finally {
-            setReleasesLoading(false);
-        }
-    }, [appVersion]);
 
     const loadAtsHosts = useCallback(async () => {
         setAtsHostsLoading(true);
@@ -672,27 +603,6 @@ export function SettingsDialog({
             setAtsRemovalBusy(false);
         }
     }, [inactiveLongAtsHostsCount, confirm, loadAtsHosts]);
-
-    useEffect(() => {
-        if (!isOpen || tab !== "extras") return;
-        void loadExtras();
-    }, [isOpen, tab, loadExtras]);
-
-    useEffect(() => {
-        if (!isOpen || tab !== "extras" || releases.length === 0) return;
-        const visible = showPrereleases
-            ? releases
-            : releases.filter((r) => !r.prerelease);
-        if (appVersion && visible.some((r) => r.tag_name === appVersion)) {
-            setSelectedVersion(appVersion);
-            return;
-        }
-        setSelectedVersion((prev) =>
-            visible.some((r) => r.tag_name === prev)
-                ? prev
-                : (visible[0]?.tag_name ?? ""),
-        );
-    }, [appVersion, isOpen, releases, showPrereleases, tab]);
 
     const loadAll = useCallback(async () => {
         setLoadError("");
@@ -2333,229 +2243,17 @@ export function SettingsDialog({
                                 </SettingsSection>
                             </TabsContent>
 
-                            <TabsContent value="extras" className="mt-4 space-y-4">
-                                <SettingsSection
-                                    title="Einrichtung"
-                                    description="First-Run-Assistent erneut öffnen oder Kernpfade zurücksetzen."
-                                >
-                                    <div className="flex flex-wrap gap-2">
-                                        <Button
-                                            type="button"
-                                            variant="secondary"
-                                            onClick={() => {
-                                                void (async () => {
-                                                    try {
-                                                        await resetSetup(false);
-                                                        onOpenSetupWizard?.();
-                                                        onClose();
-                                                    } catch (err) {
-                                                        showError(String(err), "Einrichtung");
-                                                    }
-                                                })();
-                                            }}
-                                        >
-                                            Einrichtungsassistent öffnen
-                                        </Button>
-                                        <Button
-                                            type="button"
-                                            variant="secondary"
-                                            onClick={() => {
-                                                void (async () => {
-                                                    const ok = await confirm(
-                                                        "Pfade (Monitor/Archiv/Log) leeren und Assistent erneut starten?",
-                                                        {
-                                                            title: "Einrichtung zurücksetzen",
-                                                            primaryLabel: "Zurücksetzen",
-                                                            destructive: true,
-                                                        },
-                                                    );
-                                                    if (!ok) return;
-                                                    try {
-                                                        await resetSetup(true);
-                                                        onOpenSetupWizard?.();
-                                                        onClose();
-                                                    } catch (err) {
-                                                        showError(String(err), "Einrichtung");
-                                                    }
-                                                })();
-                                            }}
-                                        >
-                                            Factory-Reset (Pfade)
-                                        </Button>
-                                    </div>
-                                </SettingsSection>
-
-                                <SettingsSection
-                                    title="Legacy-Migration"
-                                    description="Einmaliger Import aus QSettings (AKSoftware/AeroMediaService) und Keyring (DropboxUploaderApp). Secrets nur in den v2-Keyring — nie in SQLite."
-                                >
-                                    <Button
-                                        type="button"
-                                        variant="secondary"
-                                        onClick={() => {
-                                            void (async () => {
-                                                try {
-                                                    const report = await migrateLegacySettings(true);
-                                                    showSuccess(report.message, "Legacy-Migration");
-                                                } catch (err) {
-                                                    showError(String(err), "Legacy-Migration");
-                                                }
-                                            })();
-                                        }}
-                                    >
-                                        Migration erneut ausführen
-                                    </Button>
-                                </SettingsSection>
-
-                                <SettingsSection title="Software-Update">
-                                    <div className="space-y-2">
-                                        <p className="text-xs text-muted">
-                                            Aktuell installierte Version:{" "}
-                                            <span className="font-medium text-foreground">
-                        {appVersion || "—"}
-                      </span>
-                                        </p>
-                                        <p className="text-xs text-muted">
-                                            Update-Status:{" "}
-                                            <span className="font-medium text-foreground">
-                        {updaterMessage}
-                      </span>
-                                        </p>
-                                        {platformHint ? (
-                                            <p className="text-xs text-muted">{platformHint}</p>
-                                        ) : null}
-                                        {installBlockedReason ? (
-                                            <p className="text-xs text-destructive">
-                                                {installBlockedReason}
-                                            </p>
-                                        ) : null}
-                                        <Button
-                                            type="button"
-                                            variant="secondary"
-                                            size="sm"
-                                            disabled={Boolean(installBlockedReason)}
-                                            onClick={() => onRequestUpdateCheck?.()}
-                                        >
-                                            Jetzt auf Updates prüfen
-                                        </Button>
-                                    </div>
-                                </SettingsSection>
-
-                                <SettingsSection
-                                    title="Version wechseln"
-                                    description="Verfügbare stabile Versionen (stille Installation wie Auto-Update)."
-                                >
-                                    <div className="space-y-3">
-                                        <label className="flex items-center gap-2 text-sm">
-                                            <Checkbox
-                                                checked={showPrereleases}
-                                                onCheckedChange={(v) => setShowPrereleases(v === true)}
-                                            />
-                                            Prereleases anzeigen
-                                        </label>
-                                        <Field label="Ziel-Version">
-                                            <Select
-                                                value={selectedVersion || undefined}
-                                                onValueChange={setSelectedVersion}
-                                                disabled={
-                                                    releasesLoading || filteredReleases.length === 0
-                                                }
-                                            >
-                                                <SelectTrigger>
-                                                    <SelectValue
-                                                        placeholder={
-                                                            releasesLoading
-                                                                ? "Lade Versionen…"
-                                                                : filteredReleases.length === 0
-                                                                    ? "Keine Versionen"
-                                                                    : "Version wählen…"
-                                                        }
-                                                    />
-                                                </SelectTrigger>
-                                                <SelectContent>
-                                                    {filteredReleases.map((r, index) => {
-                                                        const labels: string[] = [];
-                                                        if (index === 0) labels.push("Neueste");
-                                                        if (
-                                                            appVersion &&
-                                                            compareVersionParts(r.tag_name, appVersion) === 0
-                                                        ) {
-                                                            labels.push("Installiert");
-                                                        }
-                                                        if (r.prerelease) labels.push("Prerelease");
-                                                        if (!r.updater_json_url) {
-                                                            labels.push("nicht auto-installierbar");
-                                                        }
-                                                        const suffix =
-                                                            labels.length > 0
-                                                                ? ` (${labels.join(", ")})`
-                                                                : "";
-                                                        return (
-                                                            <SelectItem key={r.tag_name} value={r.tag_name}>
-                                                                {r.tag_name}
-                                                                {suffix}
-                                                            </SelectItem>
-                                                        );
-                                                    })}
-                                                </SelectContent>
-                                            </Select>
-                                        </Field>
-                                        <div className="flex flex-wrap gap-2">
-                                            <Button
-                                                type="button"
-                                                variant="secondary"
-                                                size="sm"
-                                                disabled={releasesLoading}
-                                                onClick={() => void loadExtras()}
-                                            >
-                                                Liste neu laden
-                                            </Button>
-                                            <Button
-                                                type="button"
-                                                size="sm"
-                                                disabled={
-                                                    !selectedRelease ||
-                                                    selectedRelation === "same" ||
-                                                    Boolean(installBlockedReason) ||
-                                                    (!selectedRelease.updater_json_url &&
-                                                        !selectedRelease.installer_url)
-                                                }
-                                                onClick={() => {
-                                                    if (!selectedRelease) return;
-                                                    onRequestVersionSwitch?.(selectedRelease);
-                                                }}
-                                            >
-                                                {!selectedRelease?.updater_json_url &&
-                                                selectedRelease?.installer_url
-                                                    ? "Installer öffnen…"
-                                                    : selectedRelation === "older"
-                                                        ? "Ältere Version installieren"
-                                                        : selectedRelation === "newer"
-                                                            ? "Aktualisieren"
-                                                            : "Auf diese Version wechseln"}
-                                            </Button>
-                                        </div>
-                                        {releasesError ? (
-                                            <p className="text-xs text-destructive">{releasesError}</p>
-                                        ) : null}
-                                        {selectedRelease && selectedRelation !== "same" ? (
-                                            <div
-                                                className="space-y-1 rounded-md border border-border/50 bg-card/40 p-3">
-                                                {!selectedRelease.updater_json_url ? (
-                                                    <p className="text-xs text-muted">
-                                                        Für diese Version ist die automatische Installation
-                                                        nicht verfügbar.
-                                                    </p>
-                                                ) : null}
-                                                <p className="text-sm font-medium">Release-Notes</p>
-                                                <pre
-                                                    className="max-h-28 overflow-y-auto whitespace-pre-wrap text-xs text-muted">
-                          {selectedRelease.body || "Keine Details verfügbar."}
-                        </pre>
-                                            </div>
-                                        ) : null}
-                                    </div>
-                                </SettingsSection>
+                            <TabsContent value="extras" className="mt-4">
+                                <ExtrasSettingsSection
+                                    active={isOpen && tab === "extras"}
+                                    appVersion={appVersion}
+                                    platformHint={platformHint}
+                                    installBlockedReason={installBlockedReason}
+                                    onRequestUpdateCheck={onRequestUpdateCheck}
+                                    onRequestVersionSwitch={onRequestVersionSwitch}
+                                    onOpenSetupWizard={onOpenSetupWizard}
+                                    onCloseSettings={onClose}
+                                />
                             </TabsContent>
                         </div>
                     </Tabs>

@@ -223,6 +223,43 @@ pub fn reset_setup(
     Ok(())
 }
 
+#[tauri::command(rename = "propose_default_dirs")]
+pub fn propose_default_dirs_cmd(
+) -> Result<crate::storage::default_dirs::DefaultDirsProposal, String> {
+    crate::storage::default_dirs::propose_default_dirs().map_err(|e| e.to_string())
+}
+
+#[tauri::command(rename = "ensure_default_dir")]
+pub fn ensure_default_dir_cmd(
+    kind: crate::storage::default_dirs::DefaultDirKind,
+    root: Option<String>,
+) -> Result<crate::storage::default_dirs::EnsureDefaultDirResult, String> {
+    use std::path::PathBuf;
+
+    let override_root = root
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from);
+    crate::storage::default_dirs::ensure_default_dir(kind, override_root.as_deref())
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command(rename = "ensure_default_app_root")]
+pub fn ensure_default_app_root_cmd(
+    root: Option<String>,
+) -> Result<crate::storage::default_dirs::EnsureDefaultAppRootResult, String> {
+    use std::path::PathBuf;
+
+    let override_root = root
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from);
+    crate::storage::default_dirs::ensure_default_app_root(override_root.as_deref())
+        .map_err(|e| e.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     #[test]

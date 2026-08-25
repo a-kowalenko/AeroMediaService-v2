@@ -43,6 +43,56 @@ export function resetSetup(clearPaths = false): Promise<void> {
     return invoke("reset_setup", {clear_paths: clearPaths});
 }
 
+export type DefaultDirKind = "archive" | "logs";
+
+export type DefaultDirsProposal = {
+    root: string;
+    archive_path: string;
+    log_path: string;
+    root_exists: boolean;
+    archive_exists: boolean;
+    log_exists: boolean;
+    warnings: string[];
+};
+
+export type EnsureDefaultDirResult = {
+    kind: DefaultDirKind;
+    root: string;
+    path: string;
+    created: boolean;
+    warnings: string[];
+};
+
+export type EnsureDefaultAppRootResult = {
+    root: string;
+    archive_path: string;
+    log_path: string;
+    created: boolean;
+    warnings: string[];
+};
+
+export function proposeDefaultDirs(): Promise<DefaultDirsProposal> {
+    return invoke<DefaultDirsProposal>("propose_default_dirs");
+}
+
+export function ensureDefaultDir(
+    kind: DefaultDirKind,
+    root?: string | null,
+): Promise<EnsureDefaultDirResult> {
+    return invoke<EnsureDefaultDirResult>("ensure_default_dir", {
+        kind,
+        root: root?.trim() ? root : null,
+    });
+}
+
+export function ensureDefaultAppRoot(
+    root?: string | null,
+): Promise<EnsureDefaultAppRootResult> {
+    return invoke<EnsureDefaultAppRootResult>("ensure_default_app_root", {
+        root: root?.trim() ? root : null,
+    });
+}
+
 export function getRecentLogs(limit?: number): Promise<LogMessage[]> {
     return invoke<LogMessage[]>("get_recent_logs", {limit: limit ?? null});
 }

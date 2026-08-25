@@ -20,7 +20,7 @@ use crate::monitor::stability::has_uploadable_files;
 use crate::storage::dropbox_accounts::DropboxAccountStore;
 use crate::storage::logging;
 use crate::upload::registry::{UploadJob, UploadQueueRegistry};
-use crate::util::archive::{self, ARCHIVE_CANCELLED, ARCHIVE_ERROR};
+use crate::util::archive::{self, ARCHIVE_RETRY_SUBFOLDERS};
 
 pub const RETRYABLE_STATUSES: [&str; 2] = ["Fehler", "Abgebrochen"];
 
@@ -121,12 +121,12 @@ pub async fn retry_upload_from_history(
     let archived_path = archive::find_archived_folder(
         archive_path,
         dir_name,
-        &[ARCHIVE_ERROR, ARCHIVE_CANCELLED],
+        ARCHIVE_RETRY_SUBFOLDERS,
         archived_hint.as_deref(),
     )
     .ok_or_else(|| {
         format!(
-            "Ordner „{dir_name}“ wurde unter archiv/fehler oder archiv/abgebrochen nicht gefunden."
+            "Ordner „{dir_name}“ wurde unter Archiv/3 Fehler oder Archiv/2 Abgebrochen nicht gefunden."
         )
     })?;
 
@@ -229,6 +229,7 @@ pub async fn retry_upload_from_history(
 mod tests {
     use super::*;
     use crate::upload::booking_flags::kunde_from_history_fields;
+    use crate::util::archive::ARCHIVE_ERROR;
     use serde_json::json;
     use std::fs;
     use tempfile::tempdir;

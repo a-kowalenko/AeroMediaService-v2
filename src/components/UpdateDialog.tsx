@@ -13,6 +13,7 @@ import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import { ProgressBar } from "./ProgressBar";
+import { ReleaseNotes } from "@/components/ReleaseNotes";
 import { cn } from "@/lib/utils";
 import type { UpdateInstallProgress } from "@/lib/tauri";
 import { compareVersionParts } from "@/lib/versionCompare";
@@ -221,9 +222,11 @@ export function UpdateDialog({
               </button>
               {notesOpen ? (
                 <div className="min-w-0 overflow-hidden border-l border-border/70 pl-3">
-                  <pre className="max-h-48 max-w-full overflow-x-auto overflow-y-auto whitespace-pre-wrap break-words [overflow-wrap:anywhere] text-xs leading-relaxed text-muted">
-                    {notes?.trim() || "Keine Details verfügbar."}
-                  </pre>
+                  <ReleaseNotes
+                    markdown={notes?.trim() ?? ""}
+                    emptyLabel="Keine Patchnotes verfügbar."
+                    className="max-h-48"
+                  />
                 </div>
               ) : null}
             </div>

@@ -1,8 +1,11 @@
 ﻿/**
- * Interactive SemVer release: bump -> commit -> tag -> push.
+ * Interactive SemVer release: bump → changelog → commit → tag → push.
  *
  * Usage: npm run release
  * Asks: patch | minor | major, then confirmation.
+ *
+ * Requires meaningful notes under ## [Unreleased] in CHANGELOG.md.
+ * CI publishes that section as the public GitHub release body (updater notes).
  */
 import { createInterface } from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
@@ -10,6 +13,13 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
+import {
+  CHANGELOG_PATH,
+  insertVersionNotes,
+  readChangelog,
+  resolveNotesForRelease,
+  writeChangelog,
+} from "./changelog.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const root = join(__dirname, "..");
@@ -20,6 +30,7 @@ const FILES = {
   cargoToml: join(root, "src-tauri", "Cargo.toml"),
   cargoLock: join(root, "src-tauri", "Cargo.lock"),
   tauriConf: join(root, "src-tauri", "tauri.conf.json"),
+  changelog: CHANGELOG_PATH,
 };
 
 function git(args, opts = {}) {
@@ -30,13 +41,14 @@ function git(args, opts = {}) {
     ...opts,
     stdio,
   });
+  // With stdio: "inherit", Node returns null (no captured stdout).
   if (out == null) return "";
   return String(out).trim();
 }
 
 function parseSemver(v) {
   const m = /^(\d+)\.(\d+)\.(\d+)$/.exec(v);
-  if (!m) throw new Error(`Ungultige Version: ${v}`);
+  if (!m) throw new Error(`Ungültige Version: ${v}`);
   return { major: Number(m[1]), minor: Number(m[2]), patch: Number(m[3]) };
 }
 
@@ -57,7 +69,8 @@ function writeJson(path, data) {
 }
 
 function setCargoTomlVersion(next) {
-  const text = readFileSync(FILES.cargoToml, "utf8");
+  let text = readFileSync(FILES.cargoToml, "utf8");
+  // Only the package table at the top — first bare `version =` after [package]
   const replaced = text.replace(
     /(\[package\][\s\S]*?^version\s*=\s*")([^"]+)(")/m,
     `$1${next}$3`,
@@ -69,7 +82,7 @@ function setCargoTomlVersion(next) {
 }
 
 function setCargoLockPackageVersion(next) {
-  const text = readFileSync(FILES.cargoLock, "utf8");
+  let text = readFileSync(FILES.cargoLock, "utf8");
   const replaced = text.replace(
     /(\[\[package\]\]\nname = "aero-media-service"\nversion = ")([^"]+)(")/,
     `$1${next}$3`,
@@ -112,7 +125,7 @@ function assertReadyToRelease() {
   const status = git(["status", "--porcelain"]);
   if (status) {
     throw new Error(
-      "Working tree ist nicht sauber. Bitte zuerst alle Anderungen committen, dann erneut Release starten.\n\n" +
+      "Working tree ist nicht sauber. Bitte zuerst alle Änderungen committen, dann erneut Release starten.\n\n" +
         status,
     );
   }
@@ -132,6 +145,8 @@ async function ask(rl, question) {
 }
 
 async function main() {
+  // JetBrains Run-Konsole ist oft kein echtes TTY — ohne terminal:false
+  // erscheinen Cursor-Escape-Sequenzen (z. B. ←[1G←[0J) im Output.
   const rl = createInterface({
     input,
     output,
@@ -142,10 +157,10 @@ async function main() {
 
     const current = readJson(FILES.packageJson).version;
     console.log(`\nAktuelle Version: ${current}\n`);
-    console.log("Release-Typ wahlen:");
-    console.log("  1) patch  - Bugfixes        (x.y.Z)");
-    console.log("  2) minor  - neue Features   (x.Y.0)");
-    console.log("  3) major  - Breaking Change (X.0.0)");
+    console.log("Release-Typ wählen:");
+    console.log("  1) patch  — Bugfixes        (x.y.Z)");
+    console.log("  2) minor  — neue Features   (x.Y.0)");
+    console.log("  3) major  — Breaking Change (X.0.0)");
     console.log("  q) abbrechen\n");
 
     const choice = (await ask(rl, "Auswahl [1/2/3/q]: ")).toLowerCase();
@@ -163,12 +178,28 @@ async function main() {
     }
     const kind = kindMap[choice];
     if (!kind) {
-      throw new Error(`Ungultige Auswahl: ${choice}`);
+      throw new Error(`Ungültige Auswahl: ${choice}`);
     }
 
     const next = bump(current, kind);
     const tag = `v${next}`;
-    console.log(`\n-> ${kind}: ${current} -> ${next} (Tag ${tag})\n`);
+    console.log(`\n→ ${kind}: ${current} → ${next} (Tag ${tag})\n`);
+
+    const changelog = readChangelog();
+    const { body: notesBody, source, fromVersion } = resolveNotesForRelease(
+      changelog,
+      kind,
+      current,
+    );
+    if (source === "previous") {
+      console.log(
+        `Release-Notes: [Unreleased] leer — übernommen von ${fromVersion}:\n`,
+      );
+    } else {
+      console.log("Release-Notes aus [Unreleased]:\n");
+    }
+    console.log(notesBody);
+    console.log("");
 
     const confirm = (
       await ask(rl, `Release ${tag} committen, taggen und nach origin pushen? [y/N]: `)
@@ -178,6 +209,7 @@ async function main() {
       return;
     }
 
+    writeChangelog(insertVersionNotes(changelog, next, notesBody));
     applyVersions(next);
 
     git(
@@ -188,6 +220,7 @@ async function main() {
         "src-tauri/Cargo.toml",
         "src-tauri/Cargo.lock",
         "src-tauri/tauri.conf.json",
+        "CHANGELOG.md",
       ],
       { stdio: "inherit" },
     );
@@ -195,11 +228,11 @@ async function main() {
     git(["tag", tag], { stdio: "inherit" });
 
     const branch = git(["branch", "--show-current"]);
-    console.log(`\nPush ${branch} + ${tag} ...`);
+    console.log(`\nPush ${branch} + ${tag} …`);
     git(["push", "origin", branch], { stdio: "inherit" });
     git(["push", "origin", tag], { stdio: "inherit" });
 
-    console.log(`\nFertig. Release-Workflow sollte fur ${tag} starten.`);
+    console.log(`\nFertig. Release-Workflow sollte für ${tag} starten.`);
     console.log(
       "Releases: https://github.com/a-kowalenko/aero-media-service-releases/releases\n",
     );

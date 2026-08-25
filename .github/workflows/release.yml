@@ -59,12 +59,19 @@ jobs:
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "Using tag: $TAG"
 
+      - name: Checkout source (for CHANGELOG.md)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.meta.outputs.tag }}
+          fetch-depth: 1
+
       - name: Ensure tag and release on public repo
         id: ensure
         env:
           GH_TOKEN: ${{ secrets.RELEASES_GITHUB_TOKEN }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ steps.meta.outputs.tag }}
+          SOURCE_REPO: ${{ github.repository }}
         shell: bash
         run: |
           set -euo pipefail
@@ -74,17 +81,21 @@ jobs:
           fi
 
           REPO="${RELEASES_OWNER}/${RELEASES_REPO}"
+          VERSION="${TAG#v}"
 
-          # Patchnotes from private source commits (between previous tag and this one).
-          # Use the workflow token for the private source repo (not the releases PAT).
-          NOTES=$(GH_TOKEN="${GITHUB_TOKEN}" gh api \
-            --method POST \
-            -H "Accept: application/vnd.github+json" \
-            "/repos/${{ github.repository }}/releases/generate-notes" \
-            -f tag_name="${TAG}" \
-            --jq .body 2>/dev/null || true)
+          # User-facing notes from CHANGELOG.md (not auto-generated commit spam).
+          # If the tag predates CHANGELOG (e.g. re-run for an older tag), load
+          # the section from the source repo default branch.
+          if [ ! -f CHANGELOG.md ] || ! grep -qE "^## \[${VERSION}\]" CHANGELOG.md; then
+            SRC_BRANCH=$(GH_TOKEN="${GITHUB_TOKEN}" gh api "repos/${SOURCE_REPO}" --jq .default_branch)
+            echo "CHANGELOG section ## [${VERSION}] missing on tag; fetching from ${SOURCE_REPO}@${SRC_BRANCH}"
+            GH_TOKEN="${GITHUB_TOKEN}" gh api \
+              "repos/${SOURCE_REPO}/contents/CHANGELOG.md?ref=${SRC_BRANCH}" \
+              --jq .content | tr -d '\n' | base64 --decode > CHANGELOG.md
+          fi
+          NOTES="$(node scripts/changelog.mjs extract "${VERSION}")"
           if [ -z "${NOTES}" ]; then
-            NOTES="Aero Media Service ${TAG}"$'\n\n'"Automatischer Build aus dem privaten Source-Repository."
+            NOTES="Aero Media Service ${VERSION}"
           fi
           DELIM="NOTES_EOF_$(openssl rand -hex 8)"
           {
@@ -113,13 +124,17 @@ jobs:
               -f sha="${SHA}"
           fi
 
-          # Create published release if missing.
+          NOTES_FILE="$(mktemp)"
+          printf '%s\n' "${NOTES}" > "${NOTES_FILE}"
+
+          # Create published release if missing; otherwise refresh body from CHANGELOG.
           if RELEASE_ID=$(gh api "repos/${REPO}/releases/tags/${TAG}" --jq .id 2>/dev/null); then
-            echo "Release for ${TAG} already exists (id=${RELEASE_ID})"
+            echo "Release for ${TAG} already exists (id=${RELEASE_ID}) — updating notes"
+            gh release edit "${TAG}" \
+              --repo "${REPO}" \
+              --notes-file "${NOTES_FILE}"
           else
             echo "Creating release ${TAG}"
-            NOTES_FILE="$(mktemp)"
-            printf '%s\n' "${NOTES}" > "${NOTES_FILE}"
             # Do not mark as Latest — promote manually in the releases UI
             # after verifying assets (updater still uses /releases/latest/).
             gh release create "${TAG}" \
@@ -127,9 +142,9 @@ jobs:
               --title "Aero Media Service ${TAG}" \
               --notes-file "${NOTES_FILE}" \
               --latest=false
-            rm -f "${NOTES_FILE}"
             RELEASE_ID=$(gh api "repos/${REPO}/releases/tags/${TAG}" --jq .id)
           fi
+          rm -f "${NOTES_FILE}"
 
           echo "release_id=${RELEASE_ID}" >> "$GITHUB_OUTPUT"
 

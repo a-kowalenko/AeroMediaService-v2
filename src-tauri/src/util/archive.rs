@@ -1,4 +1,5 @@
-//! Move processed folders into archive subfolders (`erfolg` / `fehler` / `abgebrochen`).
+//! Move processed folders into archive subfolders
+//! (`1 Erfolgreich` / `2 Abgebrochen` / `3 Fehler`).
 //! Port of legacy `core/archive.py`.
 
 use std::fs;
@@ -9,9 +10,17 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::model::marker::{read_marker_raw, remove_upload_markers, MarkerError};
 use crate::storage::logging;
 
-pub const ARCHIVE_SUCCESS: &str = "erfolg";
-pub const ARCHIVE_ERROR: &str = "fehler";
-pub const ARCHIVE_CANCELLED: &str = "abgebrochen";
+pub const ARCHIVE_SUCCESS: &str = "1 Erfolgreich";
+pub const ARCHIVE_CANCELLED: &str = "2 Abgebrochen";
+pub const ARCHIVE_ERROR: &str = "3 Fehler";
+
+/// Current + legacy names when recovering jobs for retry.
+pub const ARCHIVE_RETRY_SUBFOLDERS: &[&str] = &[
+    ARCHIVE_ERROR,
+    ARCHIVE_CANCELLED,
+    "fehler",
+    "abgebrochen",
+];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ArchiveMove {
@@ -147,7 +156,7 @@ pub fn is_marker_format_failure(err: &MarkerError) -> bool {
     )
 }
 
-/// Archive a folder after a failed customer API lookup into `fehler`.
+/// Archive a folder after a failed customer API lookup into `3 Fehler`.
 pub fn handle_customer_lookup_failure(
     archive_base: &str,
     local_dir_path: &Path,
@@ -254,12 +263,27 @@ mod tests {
     #[test]
     fn find_archived_folder_matches_prefix() {
         let root = tempdir().unwrap();
-        let dest = root.path().join("fehler").join("clip_111");
+        let dest = root.path().join(ARCHIVE_ERROR).join("clip_111");
         fs::create_dir_all(&dest).unwrap();
         let found = find_archived_folder(
             root.path().to_str().unwrap(),
             "clip",
             &[ARCHIVE_ERROR, ARCHIVE_CANCELLED],
+            None,
+        )
+        .unwrap();
+        assert_eq!(found, dest);
+    }
+
+    #[test]
+    fn find_archived_folder_still_finds_legacy_names() {
+        let root = tempdir().unwrap();
+        let dest = root.path().join("fehler").join("clip_legacy");
+        fs::create_dir_all(&dest).unwrap();
+        let found = find_archived_folder(
+            root.path().to_str().unwrap(),
+            "clip_legacy",
+            ARCHIVE_RETRY_SUBFOLDERS,
             None,
         )
         .unwrap();

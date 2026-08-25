@@ -681,11 +681,11 @@ mod tests {
             Some(cid),
             OutboxState::Completed,
             None,
-            Some("erfolg"),
+            Some("1 Erfolgreich"),
         );
         let done = read_status_outbox(root.path(), cid).unwrap();
         assert_eq!(done.state, OutboxState::Completed);
-        assert_eq!(done.ams.archive.as_deref(), Some("erfolg"));
+        assert_eq!(done.ams.archive.as_deref(), Some("1 Erfolgreich"));
         // Outbox file remains after "final" write (archive move is separate).
         assert!(outbox_path(root.path(), cid).is_file());
     }

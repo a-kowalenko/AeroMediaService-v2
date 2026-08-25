@@ -35,8 +35,9 @@ pub use operator::{
     set_manual_status, sync_sms_journal,
 };
 pub use settings::{
-    get_app_version, get_recent_logs, get_secret, get_setting, migrate_legacy_settings,
-    reset_setup, save_secret, save_setting, ConfigState,
+    ensure_default_app_root_cmd, ensure_default_dir_cmd, get_app_version, get_recent_logs,
+    get_secret, get_setting, migrate_legacy_settings, propose_default_dirs_cmd, reset_setup,
+    save_secret, save_setting, ConfigState,
 };
 pub use upload::{
     cancel_upload, get_upload_control_state, get_upload_queue, pause_upload, resume_upload,
