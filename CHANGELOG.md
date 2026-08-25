@@ -8,12 +8,21 @@ Patch ohne Unreleased-Text: Notes der Vorgängerversion werden übernommen.
 
 ## [Unreleased]
 
+### Verbessert
+
+- Parallele Upload-Slots: sobald eine Datei fertig ist, startet die nächste — die vier Slots bleiben durchgehend sichtbar statt alle kurz zu verschwinden
+- Gesamt-Fortschritt (Bytes) steigt nur noch nach oben und springt nicht mehr zurück, wenn einzelne Dateien abgeschlossen werden
+
 ## [0.1.8] - 2026-08-25
 
 ### Verbessert
 
 - **Dropbox-Uploads** reagieren bei Rate-Limits automatisch — weniger parallele Dateien, danach schrittweise wieder hoch, statt Fehler oder Stillstand
 - Upload-Bereich: Liste der parallelen Slots springt beim Ein- und Ausblenden weniger
+
+### Behoben
+
+- Großer Dropbox-Upload bricht bei Rate-Limits nicht mehr nahe am Ende ab und startet nicht von vorn — bereits hochgeladene Dateien werden übersprungen und der Upload setzt dort fort
 
 ## [0.1.7] - 2026-08-25
 
