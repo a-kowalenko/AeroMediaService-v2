@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { ChevronDown } from "lucide-react";
-import { openUrl } from "@tauri-apps/plugin-opener";
+import { openExternalUrl } from "@/lib/tauri";
 import {
   Dialog,
   DialogContent,
@@ -307,7 +307,7 @@ export function UpdateDialog({
                   data-update-primary
                   disabled={installing}
                   onClick={() => {
-                    void openUrl(installerUrl).catch(() => undefined);
+                    void openExternalUrl(installerUrl).catch(() => undefined);
                   }}
                 >
                   Installer herunterladen

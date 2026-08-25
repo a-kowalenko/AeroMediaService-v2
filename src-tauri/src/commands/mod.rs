@@ -3,6 +3,7 @@ pub mod cloud;
 pub mod customers;
 pub mod history;
 pub mod monitor;
+pub mod opener;
 pub mod operator;
 pub mod settings;
 pub mod upload;
@@ -27,6 +28,7 @@ pub use history::{clear_history, delete_history_items, get_history, get_history_
 pub use monitor::{
     get_monitoring_status, get_stability_pending, start_monitoring, stop_monitoring,
 };
+pub use opener::{open_external_path, open_external_url};
 pub use operator::{
     append_history_files, append_history_media, channels_delivered, get_manual_status_warnings,
     get_sandbox_warnings,

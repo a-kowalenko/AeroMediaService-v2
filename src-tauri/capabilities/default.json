@@ -12,24 +12,6 @@
     "core:window:allow-is-maximized",
     "core:window:allow-set-decorations",
     "core:window:allow-start-dragging",
-    "opener:default",
-    {
-      "identifier": "opener:allow-open-url",
-      "allow": [
-        { "url": "https://**" },
-        { "url": "http://**" },
-        { "url": "https://www.dropbox.com/**" },
-        { "url": "https://*.dropbox.com/**" }
-      ]
-    },
-    {
-      "identifier": "opener:allow-open-path",
-      "allow": [
-        { "path": "$TEMP/**" },
-        { "path": "$HOME/**" },
-        { "path": "**" }
-      ]
-    },
     "dialog:default",
     "updater:default",
     "process:default"

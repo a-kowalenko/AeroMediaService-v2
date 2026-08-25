@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState, type ReactNode } from "react";
-import { openUrl } from "@tauri-apps/plugin-opener";
+import { openExternalUrl } from "@/lib/tauri";
 import { ChevronDown } from "lucide-react";
 import { Spinner } from "@/components/Spinner";
 import { Button } from "@/components/ui/button";
@@ -336,7 +336,7 @@ async function promptAuthCode(authorizeUrl: string): Promise<string | null> {
     }
   } else {
     try {
-      await openUrl(authorizeUrl);
+      await openExternalUrl(authorizeUrl);
     } catch (err) {
       ui.showWarning(
         `Browser konnte nicht geöffnet werden:\n${String(err)}\n\n` +

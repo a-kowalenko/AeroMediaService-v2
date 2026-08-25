@@ -12,6 +12,14 @@ export function getAppVersion(): Promise<string> {
     return invoke<string>("get_app_version");
 }
 
+export function openExternalUrl(url: string): Promise<void> {
+    return invoke("open_external_url", {url});
+}
+
+export function openExternalPath(path: string): Promise<void> {
+    return invoke("open_external_path", {path});
+}
+
 export function getSetting(key: string, fallback?: string): Promise<string> {
     return invoke<string>("get_setting", {key, default: fallback ?? null});
 }

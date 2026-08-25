@@ -29,6 +29,7 @@ use commands::{
     get_recent_logs, get_sandbox_warnings, get_secret, get_setting, get_sms_balance,
     get_stability_pending, get_upload_control_state, get_upload_queue, list_customers,
     list_dropbox_accounts, list_media_folders_cmd, lookup_share_link, migrate_legacy_settings,
+    open_external_path, open_external_url,
     pause_upload, propose_customer_assignments, propose_default_dirs_cmd, remove_ats_host,
     remove_inactive_long_ats_hosts, rename_dropbox_account, resend_history_notifications,
     reset_setup, resolve_history_booking_flags, resume_upload, retry_upload, save_customer,
@@ -96,7 +97,6 @@ pub fn run() {
     });
 
     tauri::Builder::default()
-        .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(config_state.clone())
         .manage(cloud_state.clone())
@@ -109,6 +109,8 @@ pub fn run() {
         .manage(customer_state)
         .invoke_handler(tauri::generate_handler![
             get_app_version,
+            open_external_url,
+            open_external_path,
             get_setting,
             save_setting,
             get_secret,

@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { openPath, openUrl } from "@tauri-apps/plugin-opener";
 import {
   Check,
   ChevronLeft,
@@ -52,6 +51,8 @@ import {
   getManualStatusWarnings,
   getSandboxWarnings,
   listDropboxAccounts,
+  openExternalPath,
+  openExternalUrl,
   resendHistoryNotifications,
   resolveHistoryBookingFlags,
   retryUpload,
@@ -663,13 +664,9 @@ export function HistoryTable() {
     const href = selected?.share_link.trim() ?? "";
     if (!href) return;
     try {
-      await openUrl(href);
-    } catch {
-      try {
-        window.open(href, "_blank", "noopener,noreferrer");
-      } catch (err) {
-        showError(String(err), "Download-Link");
-      }
+      await openExternalUrl(href);
+    } catch (err) {
+      showError(String(err), "Download-Link");
     }
   }
 
@@ -677,7 +674,7 @@ export function HistoryTable() {
     const path = selected?.archived_path.trim() ?? "";
     if (!path) return;
     try {
-      await openPath(path);
+      await openExternalPath(path);
     } catch (err) {
       showError(String(err), "Archiv");
     }
@@ -893,7 +890,7 @@ export function HistoryTable() {
                       <DetailIconButton
                         disabled={actionBusy}
                         title="Archivordner öffnen"
-                        onClick={() => void openPath(archivedPath).catch((err) => showError(String(err), "Archiv"))}
+                        onClick={() => void openExternalPath(archivedPath).catch((err) => showError(String(err), "Archiv"))}
                       >
                         <FolderOpen className="h-3.5 w-3.5" />
                       </DetailIconButton>
