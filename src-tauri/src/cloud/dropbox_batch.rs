@@ -531,6 +531,7 @@ where
                 limiter.on_success();
                 on_file_done(global_idx + 1, *running_bytes, &row)?;
                 results.push((local_idx, id));
+                emit_file_done(worker_id);
 
                 let cap = limiter.current_workers(worker_capacity(set.len(), queue.len()));
                 try_spawn_worker_lanes(
@@ -572,9 +573,6 @@ where
                         }
                     },
                 );
-                if !lane_busy[worker_id] {
-                    emit_file_done(worker_id);
-                }
             }
             Ok((_, Err(e))) => {
                 set.abort_all();
@@ -727,14 +725,12 @@ where
                 };
                 limiter.on_success();
                 on_file_done(global_idx + 1, *running_bytes, &row)?;
+                emit_file_done(worker_id);
 
                 let cap = limiter.current_workers(worker_capacity(set.len(), queue.len()));
                 try_spawn_large_lanes(&mut set, &mut lane_busy, cap, &mut queue, |worker_id, batch_idx| {
                     spawn_large(worker_id, batch_idx)
                 });
-                if !lane_busy[worker_id] {
-                    emit_file_done(worker_id);
-                }
             }
             Ok((_, Err(e))) => {
                 set.abort_all();
