@@ -152,6 +152,17 @@ mod tests {
     }
 
     #[test]
+    fn batch_progress_stays_monotonic_when_one_slot_completes() {
+        let bp = BatchProgress::new(2, 0, 1000);
+        bp.report_inflight(0, 500, true);
+        bp.report_inflight(1, 500, true);
+        assert_eq!(bp.combined(), 1000);
+        bp.complete_slot(0, 500);
+        // Still 500 completed + 500 inflight on slot 1 — must not drop.
+        assert_eq!(bp.combined(), 1000);
+    }
+
+    #[test]
     fn batch_progress_inflight_is_monotonic_per_slot() {
         let bp = BatchProgress::new(1, 0, 100);
         bp.report_inflight(0, 40, true);

@@ -5,16 +5,16 @@
 //! - Large n==1: serial [`DropboxClient::upload_large_file`]
 //! - Groups of at most [`BATCH_MAX_FILES`]
 
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::sync::Arc;
 
 use serde_json::{json, Value};
-use tokio::sync::Semaphore;
+use tokio::sync::Mutex;
 use tokio::task::JoinSet;
 
 use super::dropbox::{
     percent, read_chunk, session_append_arg, DropboxClient, DropboxCursor, DropboxSessionResume,
-    UploadFile, BATCH_MAX_FILES, CHUNK_SIZE, SMALL_FILE_BYTES,
+    UploadFile, BATCH_MAX_FILES, BATCH_PARALLEL_WORKERS, CHUNK_SIZE, SMALL_FILE_BYTES,
 };
 use crate::cloud::traits::CloudError;
 use crate::events;
@@ -355,6 +355,32 @@ where
     Ok(out)
 }
 
+/// Reusable worker indices `0..capacity` for [`BatchProgress`] inflight slots.
+struct WorkerSlotPool {
+    free: Mutex<Vec<usize>>,
+}
+
+impl WorkerSlotPool {
+    fn new(capacity: usize) -> Arc<Self> {
+        Arc::new(Self {
+            free: Mutex::new((0..capacity).collect()),
+        })
+    }
+
+    async fn acquire(&self) -> Option<usize> {
+        self.free.lock().await.pop()
+    }
+
+    async fn release(&self, slot: usize) {
+        let mut free = self.free.lock().await;
+        free.push(slot);
+    }
+}
+
+fn worker_capacity(in_flight: usize, pending: usize) -> usize {
+    in_flight + pending
+}
+
 async fn upload_small_parallel<H>(
     client: &DropboxClient,
     batch: &[UploadFile],
@@ -407,29 +433,28 @@ where
     }
 
     let limiter = client.write_limiter();
-    let mut queue: Vec<(usize, usize)> = indexed.to_vec();
+    let mut queue: VecDeque<(usize, usize)> = indexed.iter().copied().collect();
     let mut results = Vec::with_capacity(indexed.len());
-    let batch_prog = BatchProgress::new(indexed.len(), bytes_uploaded_base, total_job_size);
+    let batch_prog = BatchProgress::new(BATCH_PARALLEL_WORKERS, bytes_uploaded_base, total_job_size);
+    let slot_pool = WorkerSlotPool::new(BATCH_PARALLEL_WORKERS);
+    let mut set = JoinSet::new();
 
-    while !queue.is_empty() {
+    while !queue.is_empty() || !set.is_empty() {
         control.wait_if_paused().await?;
-        let wave_size = limiter.current_workers(queue.len());
-        let wave: Vec<(usize, usize)> = queue.drain(..wave_size).collect();
-        let sem = Arc::new(Semaphore::new(wave.len()));
-        let mut set = JoinSet::new();
-
-        for (slot_idx, (local_idx, global_idx)) in wave.into_iter().enumerate() {
-            let permit = sem
-                .clone()
-                .acquire_owned()
-                .await
-                .map_err(|e| CloudError::Message(e.to_string()))?;
+        let cap = limiter.current_workers(worker_capacity(set.len(), queue.len()));
+        while set.len() < cap {
+            let Some((local_idx, global_idx)) = queue.pop_front() else {
+                break;
+            };
+            let Some(worker_slot) = slot_pool.acquire().await else {
+                queue.push_front((local_idx, global_idx));
+                break;
+            };
             let client = client.clone();
             let control = control.clone();
             let file = batch[local_idx].clone();
             let batch_prog = Arc::clone(&batch_prog);
             set.spawn(async move {
-                let _permit = permit;
                 control.wait_if_paused().await?;
                 emit_file_status(&file, global_idx, total_files_in_job);
                 events::emit_progress_file(0, 0, file.size);
@@ -437,7 +462,7 @@ where
                 let bp = Arc::clone(&batch_prog);
                 let on_send = std::sync::Arc::new(move |sent: u64| {
                     let sent = sent.min(size);
-                    bp.report_inflight(slot_idx, sent, false);
+                    bp.report_inflight(worker_slot, sent, false);
                     events::upload_slots_progress(global_idx, sent, size);
                     events::emit_progress_file(percent(sent, size), sent, size);
                 }) as std::sync::Arc<dyn Fn(u64) + Send + Sync>;
@@ -453,36 +478,39 @@ where
                 events::emit_progress_file(100, file.size, file.size);
                 events::upload_slots_progress(global_idx, file.size, file.size);
                 emit_file_done(global_idx);
-                batch_prog.complete_slot(slot_idx, file.size);
-                Ok::<_, CloudError>((local_idx, global_idx, id))
+                batch_prog.complete_slot(worker_slot, file.size);
+                Ok::<_, CloudError>((local_idx, global_idx, id, worker_slot))
             });
         }
 
-        while let Some(joined) = set.join_next().await {
-            match joined {
-                Ok(Ok((local_idx, global_idx, id))) => {
-                    let file = &batch[local_idx];
-                    *running_bytes = running_bytes.saturating_add(file.size);
-                    emit_total(*running_bytes, total_job_size);
-                    let row = HybridUploaded {
-                        file_index: global_idx,
-                        dropbox_id: id.clone(),
-                    };
-                    limiter.on_success();
-                    on_file_done(global_idx + 1, *running_bytes, &row)?;
-                    results.push((local_idx, id));
-                }
-                Ok(Err(e)) => {
-                    set.abort_all();
-                    return Err(e);
-                }
-                Err(e) => {
-                    set.abort_all();
-                    return Err(CloudError::Message(format!("Join-Fehler: {e}")));
-                }
+        let Some(joined) = set.join_next().await else {
+            continue;
+        };
+        match joined {
+            Ok(Ok((local_idx, global_idx, id, worker_slot))) => {
+                slot_pool.release(worker_slot).await;
+                let file = &batch[local_idx];
+                *running_bytes = running_bytes.saturating_add(file.size);
+                let row = HybridUploaded {
+                    file_index: global_idx,
+                    dropbox_id: id.clone(),
+                };
+                limiter.on_success();
+                on_file_done(global_idx + 1, *running_bytes, &row)?;
+                results.push((local_idx, id));
+            }
+            Ok(Err(e)) => {
+                set.abort_all();
+                return Err(e);
+            }
+            Err(e) => {
+                set.abort_all();
+                return Err(CloudError::Message(format!("Join-Fehler: {e}")));
             }
         }
     }
+
+    emit_total(batch_prog.combined(), total_job_size);
 
     results.sort_by_key(|(i, _)| *i);
     Ok(results)
@@ -568,38 +596,37 @@ where
     }
 
     let limiter = client.write_limiter();
-    let mut queue: Vec<usize> = (0..n).collect();
+    let mut queue: VecDeque<usize> = (0..n).collect();
     let mut cursors: Vec<Option<DropboxCursor>> = vec![None; n];
-    let batch_prog = BatchProgress::new(n, bytes_uploaded_base, total_job_size);
+    let batch_prog = BatchProgress::new(BATCH_PARALLEL_WORKERS, bytes_uploaded_base, total_job_size);
+    let slot_pool = WorkerSlotPool::new(BATCH_PARALLEL_WORKERS);
+    let mut set = JoinSet::new();
 
-    while !queue.is_empty() {
+    while !queue.is_empty() || !set.is_empty() {
         control.wait_if_paused().await?;
-        let wave_size = limiter.current_workers(queue.len());
-        let wave: Vec<usize> = queue.drain(..wave_size).collect();
-        let sem = Arc::new(Semaphore::new(wave.len()));
-        let mut set = JoinSet::new();
-
-        for slot_idx in wave {
-            let permit = sem
-                .clone()
-                .acquire_owned()
-                .await
-                .map_err(|e| CloudError::Message(e.to_string()))?;
+        let cap = limiter.current_workers(worker_capacity(set.len(), queue.len()));
+        while set.len() < cap {
+            let Some(batch_idx) = queue.pop_front() else {
+                break;
+            };
+            let Some(worker_slot) = slot_pool.acquire().await else {
+                queue.push_front(batch_idx);
+                break;
+            };
             let client = client.clone();
             let control = control.clone();
-            let file = (*large_files[slot_idx]).clone();
-            let session_id = session_ids[slot_idx].clone();
-            let global_idx = global_indices[slot_idx];
+            let file = (*large_files[batch_idx]).clone();
+            let session_id = session_ids[batch_idx].clone();
+            let global_idx = global_indices[batch_idx];
             let batch_prog = Arc::clone(&batch_prog);
             set.spawn(async move {
-                let _permit = permit;
                 control.wait_if_paused().await?;
                 emit_file_status(&file, global_idx, total_files_in_job);
                 let size = file.size;
                 let bp = Arc::clone(&batch_prog);
                 let emit = std::sync::Arc::new(move |sent: u64| {
                     let sent = sent.min(size);
-                    bp.report_inflight(slot_idx, sent, false);
+                    bp.report_inflight(worker_slot, sent, false);
                     events::upload_slots_progress(global_idx, sent, size);
                     events::emit_progress_file(percent(sent, size), sent, size);
                 }) as std::sync::Arc<dyn Fn(u64) + Send + Sync>;
@@ -613,35 +640,39 @@ where
                 .await?;
                 events::upload_slots_progress(global_idx, file.size, file.size);
                 emit_file_done(global_idx);
-                batch_prog.complete_slot(slot_idx, file.size);
-                Ok::<_, CloudError>((slot_idx, global_idx, cursor))
+                batch_prog.complete_slot(worker_slot, file.size);
+                Ok::<_, CloudError>((batch_idx, global_idx, cursor, worker_slot))
             });
         }
 
-        while let Some(joined) = set.join_next().await {
-            match joined {
-                Ok(Ok((batch_idx, global_idx, cursor))) => {
-                    cursors[batch_idx] = Some(cursor);
-                    let file = large_files[batch_idx];
-                    *running_bytes = running_bytes.saturating_add(file.size);
-                    let row = HybridUploaded {
-                        file_index: global_idx,
-                        dropbox_id: None,
-                    };
-                    limiter.on_success();
-                    on_file_done(global_idx + 1, *running_bytes, &row)?;
-                }
-                Ok(Err(e)) => {
-                    set.abort_all();
-                    return Err(e);
-                }
-                Err(e) => {
-                    set.abort_all();
-                    return Err(CloudError::Message(format!("Join-Fehler: {e}")));
-                }
+        let Some(joined) = set.join_next().await else {
+            continue;
+        };
+        match joined {
+            Ok(Ok((batch_idx, global_idx, cursor, worker_slot))) => {
+                slot_pool.release(worker_slot).await;
+                cursors[batch_idx] = Some(cursor);
+                let file = large_files[batch_idx];
+                *running_bytes = running_bytes.saturating_add(file.size);
+                let row = HybridUploaded {
+                    file_index: global_idx,
+                    dropbox_id: None,
+                };
+                limiter.on_success();
+                on_file_done(global_idx + 1, *running_bytes, &row)?;
+            }
+            Ok(Err(e)) => {
+                set.abort_all();
+                return Err(e);
+            }
+            Err(e) => {
+                set.abort_all();
+                return Err(CloudError::Message(format!("Join-Fehler: {e}")));
             }
         }
     }
+
+    emit_total(batch_prog.combined(), total_job_size);
 
     let mut entries = Vec::with_capacity(n);
     for (i, file) in large_files.iter().enumerate() {
