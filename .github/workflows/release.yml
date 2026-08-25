@@ -232,6 +232,41 @@ jobs:
           releaseBody: ${{ needs.prepare.outputs.release_notes }}
           releaseDraft: false
           prerelease: false
-          uploadUpdaterJson: true
-          updaterJsonPreferNsis: true
+          # latest.json is merged in merge-updater-manifest (parallel jobs overwrite each other).
+          uploadUpdaterJson: false
           args: ${{ matrix.args }}
+
+  # Merge signed updater manifest from all release assets (fixes macOS keys lost when
+  # the last matrix job overwrote latest.json with Windows/Linux-only entries).
+  merge-updater-manifest:
+    needs: [prepare, release]
+    if: ${{ !cancelled() && needs.prepare.result == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+
+      - name: Merge and upload latest.json
+        env:
+          GH_TOKEN: ${{ secrets.RELEASES_GITHUB_TOKEN }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${GH_TOKEN}" ]; then
+            echo "Missing secret RELEASES_GITHUB_TOKEN" >&2
+            exit 1
+          fi
+          NOTES_FILE="$(mktemp)"
+          node scripts/changelog.mjs extract "${TAG#v}" > "${NOTES_FILE}" || true
+          node scripts/merge-updater-manifest.mjs \
+            --tag "${TAG}" \
+            --out latest.json \
+            --notes-file "${NOTES_FILE}" \
+            --upload
+          rm -f "${NOTES_FILE}"

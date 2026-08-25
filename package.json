@@ -12,6 +12,7 @@
     "release": "node scripts/release.mjs",
     "check": "tsc --noEmit",
     "test:rust": "cargo test --manifest-path src-tauri/Cargo.toml",
+    "test:scripts": "node --test scripts/*.test.mjs",
     "tauri:build:ci": "tauri build --config src-tauri/tauri.conf.ci.json"
   },
   "dependencies": {

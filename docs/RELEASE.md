@@ -95,7 +95,11 @@ Das Skript setzt die Version, promoted den Changelog, committed `release: x.y.z`
 npm run release
 ```
 
-Danach: Actions → Workflow **release** (Win + zwei Mac-Jobs + Ubuntu AppImage); öffentliches Repo → [Releases](https://github.com/a-kowalenko/aero-media-service-releases/releases).
+Danach: Actions → Workflow **release** (Win + zwei Mac-Jobs + Ubuntu AppImage + Merge `latest.json`); öffentliches Repo → [Releases](https://github.com/a-kowalenko/aero-media-service-releases/releases).
+
+`latest.json` wird **nicht** mehr von jedem Matrix-Job hochgeladen (Race/Overwrite), sondern am Ende per `scripts/merge-updater-manifest.mjs` aus allen Release-Assets zusammengeführt.
+
+Kaputtes Manifest auf bestehendem Tag reparieren (ohne Neu-Build): Actions → **repair-updater-manifest** → Tag z. B. `v0.1.10`.
 
 Neue Releases bekommen **kein** „Latest“-Label. Erst nach manueller Promotion greifen Installer-Links und Auto-Update (`/releases/latest/`).
 

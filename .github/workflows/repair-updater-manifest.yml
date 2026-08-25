@@ -1,0 +1,62 @@
+# Repair a broken latest.json on an existing release (no rebuild).
+#
+# Use when platform keys are missing from latest.json, e.g. macOS auto-update fails.
+# Requires RELEASES_GITHUB_TOKEN (same as release.yml).
+
+name: repair-updater-manifest
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to repair (e.g. v0.1.10)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  RELEASES_OWNER: a-kowalenko
+  RELEASES_REPO: aero-media-service-releases
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate tag
+        shell: bash
+        run: |
+          TAG="${{ inputs.tag }}"
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-].*)?$ ]]; then
+            echo "Invalid tag '$TAG' (expected vX.Y.Z)" >&2
+            exit 1
+          fi
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+
+      - name: Rebuild and upload latest.json
+        env:
+          GH_TOKEN: ${{ secrets.RELEASES_GITHUB_TOKEN }}
+          TAG: ${{ inputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${GH_TOKEN}" ]; then
+            echo "Missing secret RELEASES_GITHUB_TOKEN" >&2
+            exit 1
+          fi
+          NOTES_FILE="$(mktemp)"
+          node scripts/changelog.mjs extract "${TAG#v}" > "${NOTES_FILE}" || true
+          node scripts/merge-updater-manifest.mjs \
+            --tag "${TAG}" \
+            --out latest.json \
+            --notes-file "${NOTES_FILE}" \
+            --upload
+          rm -f "${NOTES_FILE}"
