@@ -273,6 +273,49 @@ export type ByteProgress = {
     total: number;
 };
 
+/** One in-flight file among parallel upload workers. */
+export type UploadActiveSlot = {
+    /** 1-based file index within the job. */
+    file_index: number;
+    name: string;
+    percent: number;
+    current: number;
+    total: number;
+};
+
+/** Completed count + currently active parallel slots. */
+export type UploadSlotsProgress = {
+    files_done: number;
+    files_total: number;
+    slots: UploadActiveSlot[];
+};
+
+export type UploadActivityPhase =
+    | "idle"
+    | "starting"
+    | "uploading"
+    | "finalizing"
+    | "registering"
+    | "linking"
+    | "paused"
+    | "pausing"
+    | "appending"
+    | "success"
+    | "failed"
+    | "cancelled";
+
+/** Structured upload activity — prefer over free-form status strings in the panel. */
+export type UploadActivity = {
+    phase: UploadActivityPhase;
+    dir_name?: string;
+    rel_path?: string;
+    /** 1-based file index while uploading. */
+    file_index?: number;
+    file_count?: number;
+    /** Short path-free phrase or error summary. */
+    message?: string;
+};
+
 export type QueueSnapshotItem = {
     position: number;
     dir_name: string;

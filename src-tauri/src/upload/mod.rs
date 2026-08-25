@@ -3,6 +3,7 @@ pub mod booking_flags;
 pub mod checkpoint;
 pub mod control;
 pub mod preview_watermark;
+pub mod progress;
 pub mod registry;
 pub mod retry;
 pub mod worker;

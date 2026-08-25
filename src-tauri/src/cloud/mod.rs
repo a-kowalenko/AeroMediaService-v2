@@ -2,6 +2,7 @@ pub mod active_slot;
 pub mod binding;
 pub mod custom_api;
 pub mod dropbox;
+pub mod dropbox_batch;
 pub mod guards;
 pub mod manifest;
 pub mod oauth;

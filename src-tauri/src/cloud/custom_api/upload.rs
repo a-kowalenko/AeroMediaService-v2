@@ -246,7 +246,7 @@ impl CustomApiClient {
             save_checkpoint(local_dir_path, &payload).map_err(CloudError::from)
         };
 
-        events::emit_started(files.len() as i32);
+        events::emit_started_at(files.len() as i32, start_idx as u32);
         for i in start_idx..files.len() {
             control.wait_if_paused().await?;
             let roff = if i == start_idx {
@@ -362,6 +362,7 @@ impl CustomApiClient {
             let pct = percent(sent, file_size);
             let combined = base_uploaded + sent;
             events::emit_progress_file(pct, sent, file_size.max(1));
+            events::upload_slots_progress(file_index, sent, file_size.max(1));
             events::emit_progress_total(
                 percent(combined, total_job_size),
                 combined,
@@ -378,6 +379,7 @@ impl CustomApiClient {
                 .unwrap_or_default()
         ));
         events::emit_status(format!("Lade hoch: {}", file.name));
+        events::upload_slots_start(file_index, &file.name, file_size);
         emit(0);
         events::emit_progress_file(0, 0, file_size.max(1));
 
@@ -419,7 +421,6 @@ impl CustomApiClient {
             off = parse_next_offset(payload.as_ref(), n as u64);
             emit(off);
             on_chunk(off);
-            let _ = file_index;
         }
 
         let mut buf = vec![0u8; CHUNK_BYTES];
@@ -475,6 +476,7 @@ impl CustomApiClient {
 
         emit(file_size);
         events::emit_progress_file(100, file_size, file_size.max(1));
+        events::upload_slots_finish(file_index);
         let current = base_uploaded + file_size;
         events::emit_progress_total(percent(current, total_job_size), current, total_job_size);
         logging::log_info(&format!(
@@ -638,7 +640,7 @@ impl CustomApiClient {
             }
         }
 
-        let mut uploaded_files: Vec<Value> = resume_ck
+        let uploaded_files: Vec<Value> = resume_ck
             .as_ref()
             .and_then(|ck| ck.get("uploaded_files").and_then(Value::as_array).cloned())
             .unwrap_or_default();
@@ -746,122 +748,119 @@ impl CustomApiClient {
                     .map(str::to_string)
             })
             .collect();
-        let mut bytes_uploaded: u64 = files
+        let bytes_uploaded: u64 = files
             .iter()
             .filter(|f| done.contains(&f.rel_norm))
             .map(|f| f.size)
             .sum();
 
-        events::emit_started(files.len() as i32);
-        for i in start_idx..files.len() {
-            control.wait_if_paused().await?;
-            let file = &files[i];
-            if done.contains(&file.rel_norm) {
-                continue;
-            }
-            events::emit_status(format!(
-                "Lade hoch: {} ({}/{})",
-                file.rel_norm,
-                i + 1,
-                files.len()
-            ));
-            events::emit_progress_file(0, 0, file.size);
-            let resume = if i == start_idx {
-                resume_dd.clone()
-            } else {
-                None
-            };
-            let snapshot = uploaded_files.clone();
-            let rel = file.rel_norm.clone();
-            let dp = file.dropbox_path.clone();
-            let dir = local_dir_path.to_path_buf();
-            let fp = manifest_fp.clone();
-            let db = self.dropbox_client();
-            let ams = db.profile_ams_id();
-            let pool = db.profile_pool();
-            let result = if file.size <= dropbox::CHUNK_SIZE as u64 {
-                self.dropbox_client()
-                    .upload_small_file(&file.local_path, &file.dropbox_path, file.size, control)
-                    .await
-            } else {
-                self.dropbox_client()
-                    .upload_large_file(
-                        &file.local_path,
-                        &file.dropbox_path,
-                        file.size,
-                        bytes_uploaded,
-                        total_size,
-                        control,
-                        resume,
-                        Some(move |cursor: Option<&dropbox::DropboxCursor>| {
-                            let active = cursor.map(|c| {
-                                json!({
-                                    "file_name": rel,
-                                    "session_id": c.session_id,
-                                    "offset": c.offset,
-                                    "dropbox_path": dp,
-                                })
-                            });
-                            let mut payload = json!({
-                                "kind": "custom_api_direct_dropbox",
-                                "manifest_fp": fp,
-                                "uploaded_files": snapshot,
-                                "next_file_index": i,
-                                "dd_active": active,
-                                "phase": "uploading",
-                            });
-                            if let Some(obj) = payload.as_object_mut() {
-                                merge_checkpoint_binding(obj, ams.as_deref(), Some(pool));
-                            }
-                            let _ = save_checkpoint(&dir, &payload);
-                        }),
-                    )
-                    .await
-            };
-            match result {
-                Ok(dropbox_id) => {
-                    bytes_uploaded += file.size;
-                    events::emit_progress_total(
-                        percent(bytes_uploaded, total_size),
-                        bytes_uploaded,
-                        total_size,
-                    );
-                    let mut row = json!({
-                        "name": file.local_path.file_name().and_then(|n| n.to_str()).unwrap_or(""),
-                        "rel_path": file.rel_norm,
-                        "size": file.size,
-                        "mime": guess_mime(&file.local_path),
-                    });
-                    if let Some(id) = dropbox_id {
-                        row["dropbox_id"] = json!(id);
-                    }
-                    uploaded_files.push(row);
-                    let db = self.dropbox_client();
-                    let mut payload = json!({
-                        "kind": "custom_api_direct_dropbox",
-                        "manifest_fp": manifest_fp,
-                        "uploaded_files": uploaded_files,
-                        "next_file_index": i + 1,
-                        "dd_active": Value::Null,
-                        "phase": "uploading",
-                    });
-                    if let Some(obj) = payload.as_object_mut() {
-                        merge_checkpoint_binding(
-                            obj,
-                            db.profile_ams_id().as_deref(),
-                            Some(db.profile_pool()),
-                        );
-                    }
-                    let _ = save_checkpoint(local_dir_path, &payload);
+        events::emit_started_at(files.len() as i32, start_idx as u32);
+
+        let dir = local_dir_path.to_path_buf();
+        let fp = manifest_fp.clone();
+        let db = self.dropbox_client();
+        let ams = db.profile_ams_id();
+        let pool = db.profile_pool();
+        let files_for_ck = files.clone();
+        let uploaded_files_cell = std::sync::Mutex::new(uploaded_files);
+        let ck_saver = std::sync::Mutex::new(
+            crate::upload::checkpoint::ThrottledCheckpointSaver::new(
+                dropbox::CK_MIN_INTERVAL_SECS,
+                dropbox::CHUNK_SIZE as u64,
+            ),
+        );
+
+        let result = crate::cloud::dropbox_batch::upload_files_hybrid(
+            self.dropbox_client().as_ref(),
+            &files,
+            start_idx,
+            total_size,
+            bytes_uploaded,
+            control,
+            resume_dd,
+            |file_idx, cursor, force| {
+                let i = file_idx.min(files_for_ck.len().saturating_sub(1));
+                let file = &files_for_ck[i];
+                let snapshot = uploaded_files_cell
+                    .lock()
+                    .map(|g| g.clone())
+                    .unwrap_or_default();
+                let active = cursor.as_ref().map(|c| {
+                    json!({
+                        "file_name": file.rel_norm,
+                        "session_id": c.session_id,
+                        "offset": c.offset,
+                        "dropbox_path": file.dropbox_path,
+                    })
+                });
+                let mut payload = json!({
+                    "kind": "custom_api_direct_dropbox",
+                    "manifest_fp": fp,
+                    "uploaded_files": snapshot,
+                    "next_file_index": i,
+                    "dd_active": active,
+                    "phase": "uploading",
+                });
+                if let Some(obj) = payload.as_object_mut() {
+                    merge_checkpoint_binding(obj, ams.as_deref(), Some(pool));
                 }
-                Err(e) if e.is_cancelled() => return Err(e),
-                Err(e) => {
-                    logging::log_error(&format!("Fehler beim Upload von {}: {e}", file.rel_norm));
-                    events::emit_status(format!("Fehler: {e}"));
-                    return Ok(false);
+                let offset = cursor.as_ref().map(|c| c.offset).unwrap_or(0);
+                if let Ok(mut saver) = ck_saver.lock() {
+                    let _ = saver.update(&dir, &payload, offset, force);
+                    if cursor.is_none() {
+                        let _ = saver.flush();
+                    }
                 }
+            },
+            |next_idx, _bytes, uploaded| {
+                if let Ok(mut saver) = ck_saver.lock() {
+                    let _ = saver.flush();
+                }
+                if let Ok(mut list) = uploaded_files_cell.lock() {
+                    for u in uploaded {
+                        let file = &files_for_ck[u.file_index];
+                        let mut row = json!({
+                            "name": file.local_path.file_name().and_then(|n| n.to_str()).unwrap_or(""),
+                            "rel_path": file.rel_norm,
+                            "size": file.size,
+                            "mime": guess_mime(&file.local_path),
+                        });
+                        if let Some(id) = &u.dropbox_id {
+                            row["dropbox_id"] = json!(id);
+                        }
+                        list.push(row);
+                    }
+                }
+                let snapshot = uploaded_files_cell
+                    .lock()
+                    .map(|g| g.clone())
+                    .unwrap_or_default();
+                let mut payload = json!({
+                    "kind": "custom_api_direct_dropbox",
+                    "manifest_fp": fp,
+                    "uploaded_files": snapshot,
+                    "next_file_index": next_idx,
+                    "dd_active": Value::Null,
+                    "phase": "uploading",
+                });
+                if let Some(obj) = payload.as_object_mut() {
+                    merge_checkpoint_binding(obj, ams.as_deref(), Some(pool));
+                }
+                let _ = save_checkpoint(&dir, &payload);
+                Ok(())
+            },
+        )
+        .await;
+
+        let uploaded_files = match result {
+            Ok(()) => uploaded_files_cell.into_inner().unwrap_or_default(),
+            Err(e) if e.is_cancelled() => return Err(e),
+            Err(e) => {
+                logging::log_error(&format!("Fehler beim Direct-Dropbox-Upload: {e}"));
+                events::emit_status(format!("Fehler: {e}"));
+                return Ok(false);
             }
-        }
+        };
 
         let root_share = self
             .dropbox_client()

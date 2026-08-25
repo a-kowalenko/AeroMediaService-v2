@@ -6,15 +6,17 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
+use bytes::Bytes;
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
 use reqwest::StatusCode;
 use serde::Serialize;
 use serde_json::{json, Value};
 
+use crate::cloud::dropbox_batch::{self, HybridUploaded};
 use crate::cloud::guards::{assert_checkpoint_binding_matches, merge_checkpoint_binding};
 use crate::cloud::oauth::{self, OauthStart};
 use crate::cloud::traits::{should_skip_upload_file, CloudClient, CloudError};
@@ -24,11 +26,18 @@ use crate::storage::logging;
 use crate::storage::secrets;
 use crate::upload::checkpoint::{
     clear_checkpoint, load_checkpoint, manifest_fingerprint, save_checkpoint,
+    ThrottledCheckpointSaver,
 };
 use crate::upload::control::UploadControl;
 use crate::util::link_shortener;
 
-pub const CHUNK_SIZE: usize = 8 * 1024 * 1024;
+/// Dropbox session chunk size (Performance Guide: multiples of 4 MiB).
+pub const CHUNK_SIZE: usize = 32 * 1024 * 1024;
+/// Direct `/files/upload` threshold (hybrid small vs large).
+pub const SMALL_FILE_BYTES: usize = 4 * 1024 * 1024;
+pub const CK_MIN_INTERVAL_SECS: f64 = 10.0;
+pub const BATCH_PARALLEL_WORKERS: usize = 4;
+pub const BATCH_MAX_FILES: usize = 1000;
 
 const TOKEN_URL: &str = "https://api.dropboxapi.com/oauth2/token";
 const API_URL: &str = "https://api.dropboxapi.com/2";
@@ -181,10 +190,11 @@ pub struct DropboxSessionResume {
     pub rel_path: String,
 }
 
+#[derive(Clone)]
 pub struct DropboxClient {
     http: reqwest::Client,
-    access_token: Mutex<Option<String>>,
-    connection_verified: AtomicBool,
+    access_token: Arc<Mutex<Option<String>>>,
+    connection_verified: Arc<AtomicBool>,
     keys: DropboxSecretKeys,
 }
 
@@ -215,8 +225,8 @@ impl DropboxClient {
             .unwrap_or_else(|_| reqwest::Client::new());
         Self {
             http,
-            access_token: Mutex::new(None),
-            connection_verified: AtomicBool::new(false),
+            access_token: Arc::new(Mutex::new(None)),
+            connection_verified: Arc::new(AtomicBool::new(false)),
             keys,
         }
     }
@@ -750,17 +760,33 @@ impl DropboxClient {
         Err(last_err)
     }
 
-    async fn content_upload(
+    pub(crate) async fn content_upload(
         &self,
         path: &str,
         api_arg: &Value,
-        body: Vec<u8>,
+        body: Bytes,
         control: &UploadControl,
+    ) -> Result<Value, CloudError> {
+        self.content_upload_with_progress(path, api_arg, body, control, None)
+            .await
+    }
+
+    /// Like [`content_upload`], but reports bytes as they are handed to the HTTP stack.
+    pub(crate) async fn content_upload_with_progress(
+        &self,
+        path: &str,
+        api_arg: &Value,
+        body: Bytes,
+        control: &UploadControl,
+        on_send: Option<std::sync::Arc<dyn Fn(u64) + Send + Sync>>,
     ) -> Result<Value, CloudError> {
         control.wait_if_paused().await?;
         let mut token = self.ensure_token().await?;
         for auth_try in 0..2 {
-            match self.send_content(path, &token, api_arg, &body).await {
+            match self
+                .send_content(path, &token, api_arg, body.clone(), on_send.clone())
+                .await
+            {
                 Ok(response) => {
                     let text = response.text().await.unwrap_or_default();
                     if text.is_empty() {
@@ -783,32 +809,58 @@ impl DropboxClient {
         path: &str,
         token: &str,
         api_arg: &Value,
-        body: &[u8],
+        body: Bytes,
+        on_send: Option<std::sync::Arc<dyn Fn(u64) + Send + Sync>>,
     ) -> Result<reqwest::Response, CloudError> {
         let headers = Self::auth_headers(token, Some(api_arg))?;
         let url = format!("{CONTENT_URL}{path}");
-        let bytes = body.to_vec();
-        let request = self
-            .http
-            .post(url)
-            .headers(headers)
-            .header(CONTENT_TYPE, "application/octet-stream")
-            .body(bytes);
-        self.with_retry(path, || {
-            let request = request.try_clone().ok_or_else(|| {
-                CloudError::Message("Dropbox-Request konnte nicht geklont werden.".into())
-            });
-            async move {
-                request?
-                    .send()
-                    .await
-                    .map_err(|e| CloudError::Http(e.to_string()))
+        let mut last_err = CloudError::Message(format!("{path}: keine Versuche"));
+        for attempt in 1..=MAX_RETRY_ATTEMPTS {
+            let request_body = if let Some(ref cb) = on_send {
+                crate::upload::progress::body_with_send_progress(body.clone(), cb.clone())
+            } else {
+                body.clone().into()
+            };
+            let request = self
+                .http
+                .post(&url)
+                .headers(headers.clone())
+                .header(CONTENT_TYPE, "application/octet-stream")
+                .body(request_body);
+            match request.send().await {
+                Ok(response) => {
+                    let status = response.status();
+                    if status == StatusCode::UNAUTHORIZED {
+                        return Err(CloudError::Http(format!("{path}: 401 unauthorized")));
+                    }
+                    if should_retry_status(status) && attempt < MAX_RETRY_ATTEMPTS {
+                        let body_text = response.text().await.unwrap_or_default();
+                        last_err = CloudError::Http(format!("{path}: {status} {body_text}"));
+                    } else if status.is_success() {
+                        return Ok(response);
+                    } else {
+                        let body_text = response.text().await.unwrap_or_default();
+                        return Err(CloudError::Http(format!("{path}: {status} {body_text}")));
+                    }
+                }
+                Err(e) => {
+                    let err = CloudError::Http(e.to_string());
+                    if attempt >= MAX_RETRY_ATTEMPTS || !should_retry_error(&err) {
+                        return Err(err);
+                    }
+                    last_err = err;
+                }
             }
-        })
-        .await
+            let delay = retry_delay_secs(attempt);
+            logging::log_warn(&format!(
+                "{path}: Versuch {attempt}/{MAX_RETRY_ATTEMPTS} fehlgeschlagen, warte {delay:.1}s — {last_err}"
+            ));
+            tokio::time::sleep(Duration::from_secs_f64(delay)).await;
+        }
+        Err(last_err)
     }
 
-    async fn rpc(&self, path: &str, body: Value) -> Result<Value, CloudError> {
+    pub(crate) async fn rpc(&self, path: &str, body: Value) -> Result<Value, CloudError> {
         let mut token = self.ensure_token().await?;
         for auth_try in 0..2 {
             let token_for_req = token.clone();
@@ -855,11 +907,23 @@ impl DropboxClient {
         file_size: u64,
         control: &UploadControl,
     ) -> Result<Option<String>, CloudError> {
+        self.upload_small_file_with_progress(local_path, dropbox_path, file_size, control, None)
+            .await
+    }
+
+    pub(crate) async fn upload_small_file_with_progress(
+        &self,
+        local_path: &Path,
+        dropbox_path: &str,
+        file_size: u64,
+        control: &UploadControl,
+        on_send: Option<std::sync::Arc<dyn Fn(u64) + Send + Sync>>,
+    ) -> Result<Option<String>, CloudError> {
         control.wait_if_paused().await?;
-        let data = fs::read(local_path)?;
+        let data = Bytes::from(fs::read(local_path)?);
         let arg = files_upload_arg(dropbox_path);
         let result = self
-            .content_upload("/files/upload", &arg, data, control)
+            .content_upload_with_progress("/files/upload", &arg, data, control, on_send)
             .await?;
         events::emit_progress_file(100, file_size, file_size);
         Ok(result.get("id").and_then(Value::as_str).map(str::to_string))
@@ -874,12 +938,22 @@ impl DropboxClient {
         total_job_size: u64,
         control: &UploadControl,
         resume: Option<DropboxSessionResume>,
-        on_progress_save: Option<F>,
+        mut on_progress_save: Option<F>,
+        on_bytes_sent: Option<std::sync::Arc<dyn Fn(u64) + Send + Sync>>,
     ) -> Result<Option<String>, CloudError>
     where
-        F: Fn(Option<&DropboxCursor>),
+        F: FnMut(Option<DropboxCursor>, bool),
     {
-        control.wait_if_paused().await?;
+        let flush_err = |cb: &mut Option<F>, cursor: Option<DropboxCursor>, err: CloudError| {
+            if let Some(cb) = cb.as_mut() {
+                cb(cursor, true);
+            }
+            err
+        };
+
+        if let Err(e) = control.wait_if_paused().await {
+            return Err(flush_err(&mut on_progress_save, None, e.into()));
+        }
         let mut file = tokio::fs::File::open(local_path).await?;
         let mut buf = vec![0u8; CHUNK_SIZE];
         let (session_id, mut offset) = if let Some(resume) = resume.filter(|r| r.offset > 0) {
@@ -899,21 +973,35 @@ impl DropboxClient {
                 session_id: resume.session_id.clone(),
                 offset: resume.offset,
             };
-            if let Some(cb) = on_progress_save.as_ref() {
-                cb(Some(&cursor));
+            if let Some(cb) = on_progress_save.as_mut() {
+                cb(Some(cursor.clone()), false);
             }
             (resume.session_id, resume.offset)
         } else {
             let n = read_chunk(&mut file, &mut buf).await?;
             let start_arg = json!({ "close": false });
-            let start = self
-                .content_upload(
+            let chunk_n = n as u64;
+            let on_bytes = on_bytes_sent.clone();
+            let on_send = std::sync::Arc::new(move |sent: u64| {
+                let abs = sent.min(chunk_n);
+                emit_chunk_progress(abs, file_size, base_bytes_uploaded, total_job_size);
+                if let Some(ref cb) = on_bytes {
+                    cb(abs);
+                }
+            }) as std::sync::Arc<dyn Fn(u64) + Send + Sync>;
+            let start = match self
+                .content_upload_with_progress(
                     "/files/upload_session/start",
                     &start_arg,
-                    buf[..n].to_vec(),
+                    Bytes::copy_from_slice(&buf[..n]),
                     control,
+                    Some(on_send),
                 )
-                .await?;
+                .await
+            {
+                Ok(v) => v,
+                Err(e) => return Err(flush_err(&mut on_progress_save, None, e)),
+            };
             let session_id = start
                 .get("session_id")
                 .and_then(Value::as_str)
@@ -924,50 +1012,110 @@ impl DropboxClient {
                 session_id: session_id.clone(),
                 offset,
             };
-            if let Some(cb) = on_progress_save.as_ref() {
-                cb(Some(&cursor));
+            if let Some(cb) = on_progress_save.as_mut() {
+                cb(Some(cursor.clone()), false);
             }
             (session_id, offset)
         };
         emit_chunk_progress(offset, file_size, base_bytes_uploaded, total_job_size);
 
         while file_size.saturating_sub(offset) > CHUNK_SIZE as u64 {
-            control.wait_if_paused().await?;
+            let cursor_now = DropboxCursor {
+                session_id: session_id.clone(),
+                offset,
+            };
+            if let Err(e) = control.wait_if_paused().await {
+                return Err(flush_err(&mut on_progress_save, Some(cursor_now.clone()), e.into()));
+            }
             let n = read_chunk(&mut file, &mut buf).await?;
             if n == 0 {
                 break;
             }
             let arg = session_append_arg(&session_id, offset, false);
-            self.content_upload(
-                "/files/upload_session/append_v2",
-                &arg,
-                buf[..n].to_vec(),
-                control,
-            )
-            .await?;
+            let base_off = offset;
+            let chunk_n = n as u64;
+            let on_bytes = on_bytes_sent.clone();
+            let on_send = std::sync::Arc::new(move |sent: u64| {
+                let abs = base_off.saturating_add(sent.min(chunk_n));
+                emit_chunk_progress(abs, file_size, base_bytes_uploaded, total_job_size);
+                if let Some(ref cb) = on_bytes {
+                    cb(abs);
+                }
+            }) as std::sync::Arc<dyn Fn(u64) + Send + Sync>;
+            if let Err(e) = self
+                .content_upload_with_progress(
+                    "/files/upload_session/append_v2",
+                    &arg,
+                    Bytes::copy_from_slice(&buf[..n]),
+                    control,
+                    Some(on_send),
+                )
+                .await
+            {
+                return Err(flush_err(
+                    &mut on_progress_save,
+                    Some(DropboxCursor {
+                        session_id: session_id.clone(),
+                        offset,
+                    }),
+                    e,
+                ));
+            }
             offset += n as u64;
             emit_chunk_progress(offset, file_size, base_bytes_uploaded, total_job_size);
-            if let Some(cb) = on_progress_save.as_ref() {
-                cb(Some(&DropboxCursor {
-                    session_id: session_id.clone(),
-                    offset,
-                }));
+            if let Some(cb) = on_progress_save.as_mut() {
+                cb(Some(DropboxCursor {
+                        session_id: session_id.clone(),
+                        offset,
+                    }),
+                    false,
+                );
             }
         }
 
-        control.wait_if_paused().await?;
+        let cursor_now = DropboxCursor {
+            session_id: session_id.clone(),
+            offset,
+        };
+        if let Err(e) = control.wait_if_paused().await {
+            return Err(flush_err(&mut on_progress_save, Some(cursor_now.clone()), e.into()));
+        }
         let n = read_chunk(&mut file, &mut buf).await?;
         let finish_arg = session_finish_arg(&session_id, offset, dropbox_path);
-        let finished = self
-            .content_upload(
+        let base_off = offset;
+        let chunk_n = n as u64;
+        let on_bytes = on_bytes_sent.clone();
+        let on_send = std::sync::Arc::new(move |sent: u64| {
+            let abs = base_off.saturating_add(sent.min(chunk_n)).min(file_size);
+            emit_chunk_progress(abs, file_size, base_bytes_uploaded, total_job_size);
+            if let Some(ref cb) = on_bytes {
+                cb(abs);
+            }
+        }) as std::sync::Arc<dyn Fn(u64) + Send + Sync>;
+        let finished = match self
+            .content_upload_with_progress(
                 "/files/upload_session/finish",
                 &finish_arg,
-                buf[..n].to_vec(),
+                Bytes::copy_from_slice(&buf[..n]),
                 control,
+                Some(on_send),
             )
-            .await?;
-        if let Some(cb) = on_progress_save.as_ref() {
-            cb(None);
+            .await
+        {
+            Ok(v) => v,
+            Err(e) => {
+                return Err(flush_err(
+                    &mut on_progress_save,
+                    Some(DropboxCursor {
+                        session_id: session_id.clone(),
+                        offset,
+                    }),
+                    e,
+                ));
+            }
+        };
+        if let Some(cb) = on_progress_save.as_mut() {
+            cb(None, true);
         }
         events::emit_progress_file(100, file_size, file_size);
         let current_total = base_bytes_uploaded + file_size;
@@ -1152,7 +1300,7 @@ impl CloudClient for DropboxClient {
             ));
         }
 
-        let mut bytes_uploaded = if start_idx > 0 {
+        let bytes_uploaded = if start_idx > 0 {
             files.iter().take(start_idx).map(|f| f.size).sum()
         } else {
             0
@@ -1173,124 +1321,104 @@ impl CloudClient for DropboxClient {
             );
         }
 
-        events::emit_started(files.len() as i32);
-        for i in start_idx..files.len() {
-            let file = &files[i];
-            control.wait_if_paused().await?;
-            let mb = file.size as f64 / 1024.0 / 1024.0;
-            let status_msg = format!(
-                "Lade hoch: {} ({mb:.2} MB)",
-                file.local_path
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("")
-            );
-            events::emit_status(&status_msg);
-            events::emit_progress_message(format!(
-                "Datei {}/{}: {}",
-                i + 1,
-                files.len(),
-                file.rel_norm
-            ));
-            logging::log_debug(&status_msg);
-            events::emit_progress_file(0, 0, file.size);
+        events::emit_started_at(files.len() as i32, start_idx as u32);
 
-            let resume = if i == start_idx {
-                resume_db.clone()
-            } else {
-                None
-            };
-            let result = if file.size <= CHUNK_SIZE as u64 {
-                self.upload_small_file(&file.local_path, &file.dropbox_path, file.size, control)
-                    .await
-                    .map(|_| ())
-            } else {
-                let rel = file.rel_norm.clone();
-                let dp = file.dropbox_path.clone();
-                let dir = local_dir_path.to_path_buf();
-                let fp = manifest_fp.clone();
-                let remote = remote_base_path.to_string();
-                let ams = self.profile_ams_id();
-                let pool = self.profile_pool();
-                self.upload_large_file(
-                    &file.local_path,
-                    &file.dropbox_path,
-                    file.size,
-                    bytes_uploaded,
-                    total_size,
-                    control,
-                    resume,
-                    Some(move |cursor: Option<&DropboxCursor>| {
-                        let mut payload = if let Some(cursor) = cursor {
-                            json!({
-                                "kind": "dropbox_native",
-                                "manifest_fp": fp,
-                                "remote_base_path": remote,
-                                "total_size": total_size,
-                                "phase": "uploading",
-                                "next_file_index": i,
-                                "db_active": {
-                                    "rel_path": rel,
-                                    "session_id": cursor.session_id,
-                                    "offset": cursor.offset,
-                                    "dropbox_path": dp,
-                                },
-                            })
-                        } else {
-                            json!({
-                                "kind": "dropbox_native",
-                                "manifest_fp": fp,
-                                "remote_base_path": remote,
-                                "total_size": total_size,
-                                "phase": "uploading",
-                                "next_file_index": i,
-                                "db_active": Value::Null,
-                            })
-                        };
-                        if let Some(obj) = payload.as_object_mut() {
-                            merge_checkpoint_binding(obj, ams.as_deref(), Some(pool));
-                        }
-                        let _ = save_checkpoint(&dir, &payload);
-                    }),
-                )
-                .await
-                .map(|_| ())
-            };
+        let dir = local_dir_path.to_path_buf();
+        let fp = manifest_fp.clone();
+        let remote = remote_base_path.to_string();
+        let ams = self.profile_ams_id();
+        let pool = self.profile_pool();
+        let files_for_ck = files.clone();
+        let ck_saver = std::sync::Mutex::new(ThrottledCheckpointSaver::new(
+            CK_MIN_INTERVAL_SECS,
+            CHUNK_SIZE as u64,
+        ));
 
-            match result {
-                Ok(()) => {
-                    bytes_uploaded += file.size;
-                    let total_progress = percent(bytes_uploaded, total_size);
-                    events::emit_progress_total(total_progress, bytes_uploaded, total_size);
-                    let _ = save_checkpoint(
-                        local_dir_path,
-                        &self.checkpoint_payload(json!({
-                            "kind": "dropbox_native",
-                            "manifest_fp": manifest_fp,
-                            "remote_base_path": remote_base_path,
-                            "total_size": total_size,
-                            "phase": "uploading",
-                            "next_file_index": i + 1,
-                            "db_active": Value::Null,
-                        })),
-                    );
+        let result = dropbox_batch::upload_files_hybrid(
+            self,
+            &files,
+            start_idx,
+            total_size,
+            bytes_uploaded,
+            control,
+            resume_db,
+            |file_idx, cursor, force| {
+                let i = file_idx.min(files_for_ck.len().saturating_sub(1));
+                let file = &files_for_ck[i];
+                let offset = cursor.as_ref().map(|c| c.offset).unwrap_or(0);
+                let clear_active = cursor.is_none();
+                let mut payload = if let Some(cursor) = cursor {
+                    json!({
+                        "kind": "dropbox_native",
+                        "manifest_fp": fp,
+                        "remote_base_path": remote,
+                        "total_size": total_size,
+                        "phase": "uploading",
+                        "next_file_index": i,
+                        "db_active": {
+                            "rel_path": file.rel_norm,
+                            "session_id": cursor.session_id,
+                            "offset": cursor.offset,
+                            "dropbox_path": file.dropbox_path,
+                        },
+                    })
+                } else {
+                    json!({
+                        "kind": "dropbox_native",
+                        "manifest_fp": fp,
+                        "remote_base_path": remote,
+                        "total_size": total_size,
+                        "phase": "uploading",
+                        "next_file_index": i,
+                        "db_active": Value::Null,
+                    })
+                };
+                if let Some(obj) = payload.as_object_mut() {
+                    merge_checkpoint_binding(obj, ams.as_deref(), Some(pool));
                 }
-                Err(e) if e.is_cancelled() => return Err(e),
-                Err(e) => {
-                    logging::log_error(&format!(
-                        "Fehler beim Upload von {}: {e}",
-                        file.local_path.display()
-                    ));
-                    events::emit_status(format!("Fehler: {e}"));
-                    return Ok(false);
+                if let Ok(mut saver) = ck_saver.lock() {
+                    let _ = saver.update(&dir, &payload, offset, force);
+                    if clear_active {
+                        let _ = saver.flush();
+                    }
                 }
+            },
+            |next_idx, _bytes, _uploaded: &[HybridUploaded]| {
+                if let Ok(mut saver) = ck_saver.lock() {
+                    let _ = saver.flush();
+                }
+                let mut payload = json!({
+                    "kind": "dropbox_native",
+                    "manifest_fp": fp,
+                    "remote_base_path": remote,
+                    "total_size": total_size,
+                    "phase": "uploading",
+                    "next_file_index": next_idx,
+                    "db_active": Value::Null,
+                });
+                if let Some(obj) = payload.as_object_mut() {
+                    merge_checkpoint_binding(obj, ams.as_deref(), Some(pool));
+                }
+                let _ = save_checkpoint(&dir, &payload);
+                Ok(())
+            },
+        )
+        .await;
+
+        match result {
+            Ok(()) => {
+                clear_checkpoint(local_dir_path);
+                events::emit_status(format!("Upload für '{remote_base_path}' abgeschlossen."));
+                logging::log_info(&format!("Upload für '{remote_base_path}' abgeschlossen."));
+                Ok(true)
+            }
+            Err(e) if e.is_cancelled() => Err(e),
+            Err(e) => {
+                logging::log_error(&format!("Fehler beim Dropbox-Upload: {e}"));
+                events::emit_status(format!("Fehler: {e}"));
+                Ok(false)
             }
         }
-
-        clear_checkpoint(local_dir_path);
-        events::emit_status(format!("Upload für '{remote_base_path}' abgeschlossen."));
-        logging::log_info(&format!("Upload für '{remote_base_path}' abgeschlossen."));
-        Ok(true)
     }
 
     async fn get_shareable_link(&self, remote_path: &str) -> Result<Option<String>, CloudError> {
@@ -1569,7 +1697,7 @@ pub fn retry_delay_secs(attempt: u32) -> f64 {
     (2.0_f64.powi(attempt as i32)).min(60.0)
 }
 
-fn percent(current: u64, total: u64) -> i32 {
+pub(crate) fn percent(current: u64, total: u64) -> i32 {
     if total == 0 {
         0
     } else {
@@ -1577,17 +1705,39 @@ fn percent(current: u64, total: u64) -> i32 {
     }
 }
 
-fn emit_chunk_progress(bytes_sent: u64, file_size: u64, base: u64, total_job: u64) {
+pub(crate) fn emit_chunk_progress(bytes_sent: u64, file_size: u64, base: u64, total_job: u64) {
     let file_progress = percent(bytes_sent, file_size);
     events::emit_progress_file(file_progress, bytes_sent, file_size);
     let current_total = base + bytes_sent;
     events::emit_progress_total(percent(current_total, total_job), current_total, total_job);
 }
 
-async fn read_chunk(file: &mut tokio::fs::File, buf: &mut [u8]) -> Result<usize, CloudError> {
+/// Read up to `buf.len()` bytes, looping past short OS `read`s (like Python `f.read(n)`).
+/// Returns 0 only at EOF; otherwise fills the buffer completely unless the file ends first.
+pub(crate) async fn read_chunk(
+    file: &mut tokio::fs::File,
+    buf: &mut [u8],
+) -> Result<usize, CloudError> {
+    read_chunk_into(file, buf).await
+}
+
+pub(crate) async fn read_chunk_into<R: tokio::io::AsyncRead + Unpin>(
+    file: &mut R,
+    buf: &mut [u8],
+) -> Result<usize, CloudError> {
     use tokio::io::AsyncReadExt;
-    let n = file.read(buf).await?;
-    Ok(n)
+    if buf.is_empty() {
+        return Ok(0);
+    }
+    let mut filled = 0usize;
+    while filled < buf.len() {
+        let n = file.read(&mut buf[filled..]).await?;
+        if n == 0 {
+            break;
+        }
+        filled += n;
+    }
+    Ok(filled)
 }
 
 fn first_shared_link_url(result: &Value) -> Option<String> {
@@ -1606,6 +1756,70 @@ mod tests {
     use crate::model::marker::{MARKER_FERTIG, MARKER_PROCESSING};
     use crate::upload::checkpoint::CHECKPOINT_FILENAME;
     use tempfile::tempdir;
+
+    #[test]
+    fn chunk_and_small_file_thresholds() {
+        assert_eq!(CHUNK_SIZE, 32 * 1024 * 1024);
+        assert_eq!(SMALL_FILE_BYTES, 4 * 1024 * 1024);
+        assert!(SMALL_FILE_BYTES < CHUNK_SIZE);
+        assert_eq!(BATCH_PARALLEL_WORKERS, 4);
+        assert_eq!(BATCH_MAX_FILES, 1000);
+        assert_eq!(CK_MIN_INTERVAL_SECS, 10.0);
+    }
+
+    /// `AsyncRead` that yields at most `max_per_read` bytes per call (simulates OS short reads).
+    struct PartialReader {
+        data: Vec<u8>,
+        pos: usize,
+        max_per_read: usize,
+    }
+
+    impl tokio::io::AsyncRead for PartialReader {
+        fn poll_read(
+            mut self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+            buf: &mut tokio::io::ReadBuf<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            if self.pos >= self.data.len() {
+                return std::task::Poll::Ready(Ok(()));
+            }
+            let want = buf.remaining().min(self.max_per_read);
+            let end = (self.pos + want).min(self.data.len());
+            let slice = &self.data[self.pos..end];
+            buf.put_slice(slice);
+            self.pos = end;
+            std::task::Poll::Ready(Ok(()))
+        }
+    }
+
+    #[tokio::test]
+    async fn read_chunk_fills_buffer_despite_short_os_reads() {
+        let payload = vec![0xABu8; 50_000];
+        let mut reader = PartialReader {
+            data: payload.clone(),
+            pos: 0,
+            max_per_read: 2048,
+        };
+        let mut buf = vec![0u8; 50_000];
+        let n = read_chunk_into(&mut reader, &mut buf).await.unwrap();
+        assert_eq!(n, 50_000);
+        assert_eq!(buf, payload);
+        let n_eof = read_chunk_into(&mut reader, &mut buf).await.unwrap();
+        assert_eq!(n_eof, 0);
+    }
+
+    #[tokio::test]
+    async fn read_chunk_returns_short_at_eof() {
+        let mut reader = PartialReader {
+            data: vec![1, 2, 3, 4, 5],
+            pos: 0,
+            max_per_read: 2,
+        };
+        let mut buf = [0u8; 16];
+        let n = read_chunk_into(&mut reader, &mut buf).await.unwrap();
+        assert_eq!(n, 5);
+        assert_eq!(&buf[..5], &[1, 2, 3, 4, 5]);
+    }
 
     #[test]
     fn join_dropbox_path_normalizes_separators() {

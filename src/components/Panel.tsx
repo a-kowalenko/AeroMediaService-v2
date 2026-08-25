@@ -41,7 +41,10 @@ export function Panel({
               </h2>
             ) : null}
             {description ? (
-              <p className="mt-0.5 text-xs leading-relaxed text-muted sm:text-sm">
+              <p
+                className="mt-0.5 min-w-0 truncate text-xs leading-relaxed text-muted sm:text-sm"
+                title={description}
+              >
                 {description}
               </p>
             ) : null}

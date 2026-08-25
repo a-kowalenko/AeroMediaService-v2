@@ -32,7 +32,8 @@ chrono = "0.4"
 uuid = { version = "1", features = ["v4"] }
 encoding_rs = "0.8"
 tokio = { version = "1", features = ["macros", "time", "sync", "rt-multi-thread", "fs", "io-util"] }
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "charset", "multipart"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "charset", "multipart", "stream"] }
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
 async-trait = "0.1"
 sha2 = "0.10"
 lettre = { version = "0.11", default-features = false, features = ["builder", "hostname", "smtp-transport", "tokio1-rustls-tls"] }
@@ -44,6 +45,7 @@ axum = { version = "0.8", default-features = false, features = ["macros", "json"
 mdns-sd = "0.15"
 hostname = "0.4"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+bytes = "1"
 
 [target."cfg(any(target_os = \"macos\", windows, target_os = \"linux\"))".dependencies]
 tauri-plugin-updater = "2"

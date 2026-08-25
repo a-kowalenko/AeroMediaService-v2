@@ -4,6 +4,7 @@
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -93,7 +94,13 @@ pub fn load_checkpoint(local_dir: &Path) -> Option<Value> {
     }
 }
 
+/// Durable checkpoint write (`fsync`).
 pub fn save_checkpoint(local_dir: &Path, data: &Value) -> io::Result<()> {
+    save_checkpoint_ex(local_dir, data, true)
+}
+
+/// Checkpoint write; `sync=true` calls `sync_all` (durable), `sync=false` only flush.
+pub fn save_checkpoint_ex(local_dir: &Path, data: &Value, sync: bool) -> io::Result<()> {
     let path = checkpoint_path(local_dir);
     let mut payload = match data {
         Value::Object(map) => Value::Object(map.clone()),
@@ -117,7 +124,9 @@ pub fn save_checkpoint(local_dir: &Path, data: &Value) -> io::Result<()> {
         let mut file = fs::File::create(&tmp)?;
         file.write_all(&encoded)?;
         file.flush()?;
-        file.sync_all()?;
+        if sync {
+            file.sync_all()?;
+        }
         drop(file);
         replace_file(&tmp, &path)
     })();
@@ -141,6 +150,61 @@ pub fn clear_checkpoint(local_dir: &Path) {
     }
     if let Err(e) = fs::remove_file(&path) {
         logging::log_debug(&format!("Checkpoint entfernen: {e}"));
+    }
+}
+
+
+/// Throttled checkpoint writer (legacy `_ThrottledCheckpointSaver`).
+///
+/// Saves at most every `min_interval` **or** every `min_bytes` of offset progress.
+/// `force` / `flush` always write with `sync=true`.
+pub struct ThrottledCheckpointSaver {
+    min_interval: Duration,
+    min_bytes: u64,
+    last_save_t: Option<Instant>,
+    last_offset: u64,
+    pending: Option<(PathBuf, Value)>,
+}
+
+impl ThrottledCheckpointSaver {
+    pub fn new(min_interval_secs: f64, min_bytes: u64) -> Self {
+        Self {
+            min_interval: Duration::from_secs_f64(min_interval_secs.max(0.0)),
+            min_bytes,
+            last_save_t: None,
+            last_offset: 0,
+            pending: None,
+        }
+    }
+
+    pub fn update(
+        &mut self,
+        local_dir: &Path,
+        data: &Value,
+        current_offset: u64,
+        force: bool,
+    ) -> io::Result<()> {
+        self.pending = Some((local_dir.to_path_buf(), data.clone()));
+        let now = Instant::now();
+        let due_time = self
+            .last_save_t
+            .map(|t| now.duration_since(t) >= self.min_interval)
+            .unwrap_or(true);
+        let due_bytes = current_offset.abs_diff(self.last_offset) >= self.min_bytes;
+        if force || due_time || due_bytes {
+            save_checkpoint_ex(local_dir, data, force)?;
+            self.last_save_t = Some(now);
+            self.last_offset = current_offset;
+            self.pending = None;
+        }
+        Ok(())
+    }
+
+    pub fn flush(&mut self) -> io::Result<()> {
+        if let Some((dir, data)) = self.pending.take() {
+            save_checkpoint_ex(&dir, &data, true)?;
+        }
+        Ok(())
     }
 }
 
@@ -194,6 +258,69 @@ mod tests {
         clear_checkpoint(dir.path());
         assert!(load_checkpoint(dir.path()).is_none());
         assert!(!checkpoint_path(dir.path()).is_file());
+    }
+
+
+    #[test]
+    fn save_checkpoint_ex_without_sync_still_loads() {
+        let dir = tempdir().unwrap();
+        save_checkpoint_ex(
+            dir.path(),
+            &json!({ "kind": "dropbox_native", "n": 7 }),
+            false,
+        )
+        .unwrap();
+        let loaded = load_checkpoint(dir.path()).unwrap();
+        assert_eq!(loaded["n"], 7);
+        assert_eq!(loaded["version"], CHECKPOINT_VERSION);
+    }
+
+    #[test]
+    fn throttled_saver_skips_until_interval_or_bytes_or_force() {
+        let dir = tempdir().unwrap();
+        let mut saver = ThrottledCheckpointSaver::new(60.0, 1_000_000);
+        saver
+            .update(dir.path(), &json!({ "off": 0 }), 0, false)
+            .unwrap();
+        assert_eq!(load_checkpoint(dir.path()).unwrap()["off"], 0);
+
+        saver
+            .update(dir.path(), &json!({ "off": 100 }), 100, false)
+            .unwrap();
+        assert_eq!(
+            load_checkpoint(dir.path()).unwrap()["off"],
+            0,
+            "small progress within interval must not overwrite"
+        );
+
+        saver
+            .update(dir.path(), &json!({ "off": 100 }), 100, true)
+            .unwrap();
+        assert_eq!(load_checkpoint(dir.path()).unwrap()["off"], 100);
+
+        let mut saver2 = ThrottledCheckpointSaver::new(60.0, 50);
+        saver2
+            .update(dir.path(), &json!({ "off": 0 }), 0, true)
+            .unwrap();
+        saver2
+            .update(dir.path(), &json!({ "off": 60 }), 60, false)
+            .unwrap();
+        assert_eq!(load_checkpoint(dir.path()).unwrap()["off"], 60);
+    }
+
+    #[test]
+    fn throttled_saver_flush_writes_pending() {
+        let dir = tempdir().unwrap();
+        let mut saver = ThrottledCheckpointSaver::new(3600.0, 1_000_000_000);
+        saver
+            .update(dir.path(), &json!({ "phase": "a" }), 0, true)
+            .unwrap();
+        saver
+            .update(dir.path(), &json!({ "phase": "pending" }), 1, false)
+            .unwrap();
+        assert_eq!(load_checkpoint(dir.path()).unwrap()["phase"], "a");
+        saver.flush().unwrap();
+        assert_eq!(load_checkpoint(dir.path()).unwrap()["phase"], "pending");
     }
 
     #[test]

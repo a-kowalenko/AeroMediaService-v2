@@ -6,11 +6,13 @@ import { ProgressBar } from "./ProgressBar";
 import { Button } from "@/components/ui/button";
 import {
   STABILITY_PENDING_CHANGED,
+  UPLOAD_ACTIVITY,
   UPLOAD_CONTROL_CHANGED,
   UPLOAD_FAILED,
   UPLOAD_FINISHED,
   UPLOAD_JOB_ACTIVE,
   UPLOAD_PROGRESS_FILE,
+  UPLOAD_PROGRESS_SLOTS,
   UPLOAD_PROGRESS_TOTAL,
   UPLOAD_QUEUE_CHANGED,
   UPLOAD_STATUS_UPDATE,
@@ -25,13 +27,21 @@ import {
   type ByteProgress,
   type QueueSnapshotItem,
   type StabilityPendingItem,
+  type UploadActivity,
+  type UploadActivityPhase,
   type UploadControlState,
+  type UploadSlotsProgress,
 } from "@/lib/tauri";
 import { cn } from "@/lib/utils";
 import { showAppToast } from "@/lib/toast";
 import { useUiStore } from "@/store/uiStore";
 
 const EMPTY_PROGRESS: ByteProgress = { percent: 0, current: 0, total: 0 };
+const EMPTY_SLOTS: UploadSlotsProgress = {
+  files_done: 0,
+  files_total: 0,
+  slots: [],
+};
 const IDLE_CONTROL: UploadControlState = {
   paused: false,
   holding: false,
@@ -44,6 +54,37 @@ type PausePhase = "running" | "pausing" | "paused";
 function pausePhaseFrom(control: UploadControlState): PausePhase {
   if (!control.paused) return "running";
   return control.holding ? "paused" : "pausing";
+}
+
+function activityPhaseLabel(phase: UploadActivityPhase): string {
+  switch (phase) {
+    case "idle":
+      return "Wartet";
+    case "starting":
+      return "Startet";
+    case "uploading":
+      return "Lädt hoch";
+    case "finalizing":
+      return "Finalisiert";
+    case "registering":
+      return "Registriert Order";
+    case "linking":
+      return "Verknüpft Dateien";
+    case "paused":
+      return "Pausiert";
+    case "pausing":
+      return "Wird pausiert…";
+    case "appending":
+      return "Nachreichen";
+    case "success":
+      return "Erfolgreich";
+    case "failed":
+      return "Fehler";
+    case "cancelled":
+      return "Abgebrochen";
+    default:
+      return "Upload";
+  }
 }
 
 type PendingView = StabilityPendingItem & { receivedAt: number };
@@ -130,8 +171,10 @@ type Props = {
 export function UploadPanel({ className, compact = false }: Props) {
   const [active, setActive] = useState(false);
   const [status, setStatus] = useState("Warte auf nächsten Auftrag…");
+  const [activity, setActivity] = useState<UploadActivity | null>(null);
   const [file, setFile] = useState<ByteProgress>(EMPTY_PROGRESS);
   const [total, setTotal] = useState<ByteProgress>(EMPTY_PROGRESS);
+  const [slots, setSlots] = useState<UploadSlotsProgress>(EMPTY_SLOTS);
   const [queue, setQueue] = useState<QueueSnapshotItem[]>([]);
   const [pending, setPending] = useState<PendingView[]>([]);
   const [now, setNow] = useState(() => Date.now());
@@ -169,12 +212,20 @@ export function UploadPanel({ className, compact = false }: Props) {
     };
     add<boolean>(UPLOAD_JOB_ACTIVE, (next) => {
       setActive(next);
-      if (!next) setControl(IDLE_CONTROL);
+      if (!next) {
+        setControl(IDLE_CONTROL);
+        setActivity(null);
+        setSlots(EMPTY_SLOTS);
+        setFile(EMPTY_PROGRESS);
+        setTotal(EMPTY_PROGRESS);
+      }
     });
     add<string>(UPLOAD_STATUS_UPDATE, setStatus);
+    add<UploadActivity>(UPLOAD_ACTIVITY, setActivity);
     add<UploadControlState>(UPLOAD_CONTROL_CHANGED, setControl);
     add<ByteProgress>(UPLOAD_PROGRESS_FILE, setFile);
     add<ByteProgress>(UPLOAD_PROGRESS_TOTAL, setTotal);
+    add<UploadSlotsProgress>(UPLOAD_PROGRESS_SLOTS, setSlots);
     add<QueueSnapshotItem[]>(UPLOAD_QUEUE_CHANGED, setQueue);
     add<StabilityPendingItem[]>(STABILITY_PENDING_CHANGED, (items) => {
       setPending(stampPending(items));
@@ -261,7 +312,7 @@ export function UploadPanel({ className, compact = false }: Props) {
       ? "Upload pausiert"
       : pausePhase === "pausing"
         ? "Wird pausiert…"
-        : activeJob?.dir_name || "Upload läuft"
+        : activeJob?.dir_name || activity?.dir_name || "Upload läuft"
     : onlyHandoff
       ? handoffPending.length === 1
         ? "Neuer Auftrag…"
@@ -273,6 +324,43 @@ export function UploadPanel({ className, compact = false }: Props) {
         : queue.length > 0
           ? queueLabel
           : undefined;
+
+  const activityLine =
+    activity != null
+      ? activity.phase === "failed" && activity.message?.trim()
+        ? activity.message.trim()
+        : activity.message?.trim() || activityPhaseLabel(activity.phase)
+      : null;
+  const relPath = activity?.rel_path?.trim() || "";
+  const showPath =
+    Boolean(relPath) &&
+    activity != null &&
+    activity.phase !== "paused" &&
+    activity.phase !== "pausing" &&
+    activity.phase !== "idle";
+  const filesTotal =
+    slots.files_total > 0
+      ? slots.files_total
+      : activity?.file_count != null
+        ? activity.file_count
+        : 0;
+  const filesDone = slots.files_total > 0 ? slots.files_done : 0;
+  const filesCounterLabel =
+    filesTotal > 0 ? `${filesDone}/${filesTotal} fertig` : null;
+  const totalProgressLabel = filesCounterLabel
+    ? `Gesamt · ${filesCounterLabel} · ${formatBytes(total.current)} / ${formatBytes(total.total)}`
+    : `Gesamt · ${formatBytes(total.current)} / ${formatBytes(total.total)}`;
+  const activeSlots = slots.slots;
+  // Only fall back to the single-file bar when the slot tracker never started
+  // (older emits / non-batch paths without slots).
+  const showLegacyFileBar =
+    slots.files_total === 0 &&
+    activeSlots.length === 0 &&
+    (file.total > 0 || file.current > 0 || file.percent > 0);
+  const legacyFileLabel =
+    activity?.file_index != null && activity?.file_count != null
+      ? `Datei ${activity.file_index}/${activity.file_count} · ${formatBytes(file.current)} / ${formatBytes(file.total)}`
+      : `Datei · ${formatBytes(file.current)} / ${formatBytes(file.total)}`;
 
   return (
     <Panel
@@ -403,20 +491,73 @@ export function UploadPanel({ className, compact = false }: Props) {
         <>
           <div className="mb-3 flex items-start gap-2 text-sm text-muted">
             <CloudUpload className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
-            <span className="min-w-0 leading-snug">{status}</span>
+            <div className="min-w-0 flex-1 space-y-0.5">
+              {activityLine != null ? (
+                <>
+                  <p
+                    className={cn(
+                      "min-w-0 leading-snug text-foreground",
+                      activity?.phase === "failed"
+                        ? "break-words"
+                        : "truncate",
+                    )}
+                    title={activityLine}
+                  >
+                    {activityLine}
+                  </p>
+                  {showPath ? (
+                    <p
+                      className="min-w-0 truncate text-xs text-muted [overflow-wrap:anywhere]"
+                      title={relPath}
+                    >
+                      {relPath}
+                    </p>
+                  ) : null}
+                </>
+              ) : (
+                <span className="min-w-0 break-words leading-snug">{status}</span>
+              )}
+            </div>
           </div>
 
           <div className={cn("space-y-3", isPausedLike && "opacity-70")}>
             <ProgressBar
-              percent={file.percent}
-              label={`Datei · ${formatBytes(file.current)} / ${formatBytes(file.total)}`}
-              detail={`${Math.round(file.percent)}%`}
-            />
-            <ProgressBar
               percent={total.percent}
-              label={`Gesamt · ${formatBytes(total.current)} / ${formatBytes(total.total)}`}
+              label={totalProgressLabel}
               detail={`${Math.round(total.percent)}%`}
+              indeterminate={
+                active &&
+                total.percent === 0 &&
+                total.current === 0 &&
+                (activity?.phase === "uploading" || activity?.phase === "appending")
+              }
             />
+            {activeSlots.length > 0 ? (
+              <ul className="space-y-2">
+                {activeSlots.map((slot) => (
+                  <li key={`${slot.file_index}-${slot.name}`}>
+                    <ProgressBar
+                      size="sm"
+                      percent={slot.percent}
+                      label={slot.name}
+                      detail={
+                        slot.percent === 0 && slot.current === 0
+                          ? "…"
+                          : `${Math.round(slot.percent)}%`
+                      }
+                      indeterminate={slot.percent === 0 && slot.current === 0}
+                    />
+                  </li>
+                ))}
+              </ul>
+            ) : showLegacyFileBar ? (
+              <ProgressBar
+                percent={file.percent}
+                label={legacyFileLabel}
+                detail={`${Math.round(file.percent)}%`}
+                indeterminate={file.percent === 0 && file.current === 0}
+              />
+            ) : null}
           </div>
 
           <div className="mt-3.5 flex flex-wrap gap-1.5">
