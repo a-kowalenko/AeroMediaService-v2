@@ -8,6 +8,16 @@ Patch ohne Unreleased-Text: Notes der Vorgängerversion werden übernommen.
 
 ## [Unreleased]
 
+### Verbessert
+
+- Download-Links, Dropbox-Autorisierung und Update-Installer öffnen zuverlässiger im Standard-Browser — besonders unter **Linux (AppImage)**
+- Archivordner aus der Historie lassen sich stabiler im Dateimanager öffnen
+
+### Behoben
+
+- Auto-Update: Releases mit mehreren Plattformen (Windows, macOS, Linux) liefern wieder das korrekte Update-Paket für jedes Betriebssystem
+- Parallele Uploads: Datei-Zähler und Slot-Anzeige blieben hängen, wenn direkt nach Abschluss einer Datei die nächste in derselben Reihe startete
+
 ## [0.1.10] - 2026-08-25
 
 ### Verbessert
