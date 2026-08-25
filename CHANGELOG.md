@@ -8,6 +8,8 @@ Patch ohne Unreleased-Text: Notes der Vorgängerversion werden übernommen.
 
 ## [Unreleased]
 
+## [0.1.8] - 2026-08-25
+
 ### Verbessert
 
 - **Dropbox-Uploads** reagieren bei Rate-Limits automatisch — weniger parallele Dateien, danach schrittweise wieder hoch, statt Fehler oder Stillstand

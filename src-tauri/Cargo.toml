@@ -1,6 +1,6 @@
 [package]
 name = "aero-media-service"
-version = "0.1.7"
+version = "0.1.8"
 description = "Aero Media Service — folder monitor, cloud upload, customer notifications"
 authors = ["AKSoftware"]
 edition = "2021"
