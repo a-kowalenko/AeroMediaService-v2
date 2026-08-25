@@ -8,6 +8,11 @@ Patch ohne Unreleased-Text: Notes der Vorgängerversion werden übernommen.
 
 ## [Unreleased]
 
+### Verbessert
+
+- Parallele Uploads: jede laufende Datei behält ihre Zeile — wenn eine Datei fertig ist, startet die nächste in derselben Reihe, ohne dass die Liste springt
+- Upload-Bereich zeigt nur noch tatsächlich laufende Dateien, keine leeren Platzhalter-Zeilen mehr
+
 ## [0.1.9] - 2026-08-25
 
 ### Verbessert
