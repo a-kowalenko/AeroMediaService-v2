@@ -8,6 +8,8 @@ Patch ohne Unreleased-Text: Notes der Vorgängerversion werden übernommen.
 
 ## [Unreleased]
 
+## [0.1.7] - 2026-08-25
+
 ### Verbessert
 
 - Dropbox-Autorisierung: Autorisierungs-Link per **Link kopieren** in die Zwischenablage, wenn sich kein Browser öffnet
