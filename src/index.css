@@ -220,10 +220,44 @@
   animation: ams-chip-success 0.52s cubic-bezier(0.22, 1, 0.36, 1) 1;
 }
 
+/* Parallel upload slots — grid collapse + slide (UploadSlotList) */
+.ams-slot-collapse {
+  display: grid;
+  grid-template-rows: 1fr;
+}
+.ams-slot-collapse[data-collapsed="true"] {
+  grid-template-rows: 0fr;
+}
+.ams-slot-collapse-inner {
+  overflow: hidden;
+}
+
+.ams-upload-slot {
+  opacity: 1;
+  transform: translateY(0);
+  transition:
+    opacity 140ms cubic-bezier(0.22, 1, 0.36, 1),
+    transform 200ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.ams-upload-slot[data-phase="enter"] {
+  opacity: 0;
+  transform: translateY(8px);
+}
+.ams-upload-slot[data-phase="exit"] {
+  opacity: 0;
+  transform: translateY(-6px) scale(0.985);
+  transition-duration: 100ms, 180ms;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .ams-chip-active,
   .ams-chip-success-flash {
     animation: none;
+  }
+  .ams-slot-collapse,
+  .ams-upload-slot,
+  .ams-slot-row {
+    transition: none !important;
   }
 }
 

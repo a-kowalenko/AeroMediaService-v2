@@ -1,8 +1,9 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { CloudUpload, Pause, Play, Radio, Timer, X } from "lucide-react";
 import { Panel } from "./Panel";
 import { ProgressBar } from "./ProgressBar";
+import { UploadSlotList, PARALLEL_SLOT_CAP } from "./UploadSlotList";
 import { Button } from "@/components/ui/button";
 import {
   STABILITY_PENDING_CHANGED,
@@ -101,6 +102,11 @@ function formatBytes(value: number): string {
   return `${n.toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
 }
 
+function formatSpeed(bps: number): string {
+  if (!Number.isFinite(bps) || bps <= 0) return "";
+  return `${formatBytes(bps)}/s`;
+}
+
 function stampPending(items: StabilityPendingItem[]): PendingView[] {
   const receivedAt = Date.now();
   return items.map((item) => ({ ...item, receivedAt }));
@@ -180,6 +186,9 @@ export function UploadPanel({ className, compact = false }: Props) {
   const [now, setNow] = useState(() => Date.now());
   const [busy, setBusy] = useState(false);
   const [control, setControl] = useState<UploadControlState>(IDLE_CONTROL);
+  const [speedBps, setSpeedBps] = useState(0);
+  const [reservedSlotRows, setReservedSlotRows] = useState(0);
+  const speedSampleRef = useRef<{ t: number; bytes: number } | null>(null);
   const confirm = useUiStore((s) => s.confirm);
   const pausePhase = pausePhaseFrom(control);
   const isPausedLike = pausePhase !== "running";
@@ -195,6 +204,50 @@ export function UploadPanel({ className, compact = false }: Props) {
     const id = window.setInterval(() => setNow(Date.now()), 1000);
     return () => window.clearInterval(id);
   }, [pending.length]);
+
+  useEffect(() => {
+    if (!active || isPausedLike) {
+      if (!active) {
+        speedSampleRef.current = null;
+        setSpeedBps(0);
+      }
+      return;
+    }
+    const now = performance.now();
+    const bytes = total.current;
+    const prev = speedSampleRef.current;
+    if (prev == null) {
+      speedSampleRef.current = { t: now, bytes };
+      return;
+    }
+    const dt = (now - prev.t) / 1000;
+    if (dt < 0.35) return;
+    const delta = bytes - prev.bytes;
+    speedSampleRef.current = { t: now, bytes };
+    if (delta < 0) {
+      setSpeedBps(0);
+      return;
+    }
+    const instant = delta / dt;
+    setSpeedBps((s) => (s <= 0 ? instant : s * 0.65 + instant * 0.35));
+  }, [total.current, active, isPausedLike]);
+
+  useEffect(() => {
+    if (!active) {
+      setReservedSlotRows(0);
+      return;
+    }
+    if (slots.files_total <= 1) {
+      setReservedSlotRows(slots.slots.length > 0 ? 1 : 0);
+      return;
+    }
+    const remaining = Math.max(0, slots.files_total - slots.files_done);
+    const target = Math.min(
+      PARALLEL_SLOT_CAP,
+      Math.max(slots.slots.length, Math.min(PARALLEL_SLOT_CAP, remaining || 1)),
+    );
+    setReservedSlotRows((prev) => Math.max(prev, Math.max(target, 1)));
+  }, [active, slots.files_total, slots.files_done, slots.slots.length]);
 
   useEffect(() => {
     let cancelled = false;
@@ -218,6 +271,9 @@ export function UploadPanel({ className, compact = false }: Props) {
         setSlots(EMPTY_SLOTS);
         setFile(EMPTY_PROGRESS);
         setTotal(EMPTY_PROGRESS);
+        setSpeedBps(0);
+        setReservedSlotRows(0);
+        speedSampleRef.current = null;
       }
     });
     add<string>(UPLOAD_STATUS_UPDATE, setStatus);
@@ -292,10 +348,13 @@ export function UploadPanel({ className, compact = false }: Props) {
   const stabilityPending = pending.filter((item) => !isHandoffItem(item));
   const onlyHandoff = hasPending && stabilityPending.length === 0;
   const activeJob = queue.find((item) => item.state === "active");
+  const waitingQueue = queue.filter((item) => item.state !== "active");
   const queueLabel =
-    queue.length === 0
+    waitingQueue.length === 0
       ? "Keine Aufträge"
-      : `${queue.length} in Warteschlange`;
+      : waitingQueue.length === 1
+        ? "1 wartet"
+        : `${waitingQueue.length} warten`;
   const chipLabel = active
     ? pausePhase === "paused"
       ? "Pausiert"
@@ -307,12 +366,15 @@ export function UploadPanel({ className, compact = false }: Props) {
       : hasPending
         ? "Wartet"
         : "Idle";
+  const activeDirName =
+    activeJob?.dir_name?.trim() || activity?.dir_name?.trim() || "";
+  const activeCustomerLabel = activeJob?.customer_label?.trim() || "";
+  const hasActiveCustomerLabel =
+    activeCustomerLabel !== "" && activeCustomerLabel !== "—";
   const description = active
-    ? pausePhase === "paused"
-      ? "Upload pausiert"
-      : pausePhase === "pausing"
-        ? "Wird pausiert…"
-        : activeJob?.dir_name || activity?.dir_name || "Upload läuft"
+    ? hasActiveCustomerLabel
+      ? activeCustomerLabel
+      : activeDirName || "Upload läuft"
     : onlyHandoff
       ? handoffPending.length === 1
         ? "Neuer Auftrag…"
@@ -321,9 +383,11 @@ export function UploadPanel({ className, compact = false }: Props) {
         ? pending.length === 1
           ? "Stabilität prüfen…"
           : `${pending.length} Ordner warten`
-        : queue.length > 0
+        : waitingQueue.length > 0
           ? queueLabel
           : undefined;
+  const subDescription =
+    active && hasActiveCustomerLabel && activeDirName ? activeDirName : undefined;
 
   const activityLine =
     activity != null
@@ -346,60 +410,73 @@ export function UploadPanel({ className, compact = false }: Props) {
         : 0;
   const filesDone = slots.files_total > 0 ? slots.files_done : 0;
   const filesCounterLabel =
-    filesTotal > 0 ? `${filesDone}/${filesTotal} fertig` : null;
-  const totalProgressLabel = filesCounterLabel
-    ? `Gesamt · ${filesCounterLabel} · ${formatBytes(total.current)} / ${formatBytes(total.total)}`
-    : `Gesamt · ${formatBytes(total.current)} / ${formatBytes(total.total)}`;
+    filesTotal > 0 ? `${filesDone}/${filesTotal}` : null;
   const activeSlots = slots.slots;
+  const bytesLabel = (current: number, totalBytes: number) =>
+    `${formatBytes(current)} / ${formatBytes(totalBytes)}`;
+  const speedLabel = !isPausedLike ? formatSpeed(speedBps) : "";
+  const totalSizeParts: string[] = [];
+  if (total.total > 0 || total.current > 0) {
+    totalSizeParts.push(bytesLabel(total.current, total.total));
+  }
+  if (speedLabel) totalSizeParts.push(speedLabel);
+  const totalPercentDetail =
+    total.percent === 0 && total.current === 0
+      ? undefined
+      : `${Math.round(total.percent)}%`;
   // Only fall back to the single-file bar when the slot tracker never started
   // (older emits / non-batch paths without slots).
   const showLegacyFileBar =
     slots.files_total === 0 &&
     activeSlots.length === 0 &&
     (file.total > 0 || file.current > 0 || file.percent > 0);
-  const legacyFileLabel =
+  const legacyFileBadge =
     activity?.file_index != null && activity?.file_count != null
-      ? `Datei ${activity.file_index}/${activity.file_count} · ${formatBytes(file.current)} / ${formatBytes(file.total)}`
-      : `Datei · ${formatBytes(file.current)} / ${formatBytes(file.total)}`;
+      ? `${activity.file_index}/${activity.file_count}`
+      : undefined;
+  const showSlotList = reservedSlotRows > 0 || activeSlots.length > 0;
+
+  const statusChip = (
+    <span
+      className={cn(
+        "inline-flex items-center gap-1.5 rounded-md border px-2 py-0.5 text-[11px] font-medium",
+        active && isPausedLike
+          ? "border-warning/35 bg-warning/10 text-warning"
+          : active
+            ? "border-primary/35 bg-primary/10 text-primary"
+            : onlyHandoff
+              ? "border-primary/35 bg-primary/10 text-primary"
+              : hasPending
+                ? "border-warning/35 bg-warning/10 text-warning"
+                : "border-border bg-card-elevated/80 text-muted",
+      )}
+    >
+      <span
+        className={cn(
+          "h-1.5 w-1.5 rounded-full",
+          active && isPausedLike
+            ? "bg-warning ams-chip-active"
+            : active
+              ? "bg-primary ams-chip-active"
+              : onlyHandoff
+                ? "bg-primary ams-chip-active"
+                : hasPending
+                  ? "bg-warning ams-chip-active"
+                  : "bg-muted",
+        )}
+      />
+      {chipLabel}
+    </span>
+  );
 
   return (
     <Panel
       className={className}
       compact={compact}
       title="Upload"
+      titleAdornment={statusChip}
       description={description}
-      actions={
-        <span
-          className={cn(
-            "inline-flex items-center gap-1.5 rounded-md border px-2 py-0.5 text-[11px] font-medium",
-            active && isPausedLike
-              ? "border-warning/35 bg-warning/10 text-warning"
-              : active
-                ? "border-primary/35 bg-primary/10 text-primary"
-                : onlyHandoff
-                  ? "border-primary/35 bg-primary/10 text-primary"
-                  : hasPending
-                    ? "border-warning/35 bg-warning/10 text-warning"
-                    : "border-border bg-card-elevated/80 text-muted",
-          )}
-        >
-          <span
-            className={cn(
-              "h-1.5 w-1.5 rounded-full",
-              active && isPausedLike
-                ? "bg-warning ams-chip-active"
-                : active
-                  ? "bg-primary ams-chip-active"
-                  : onlyHandoff
-                    ? "bg-primary ams-chip-active"
-                    : hasPending
-                      ? "bg-warning ams-chip-active"
-                      : "bg-muted",
-            )}
-          />
-          {chipLabel}
-        </span>
-      }
+      subDescription={subDescription}
     >
       {!active && !hasPending && queue.length === 0 ? (
         <div className="mb-1 flex items-start gap-2 text-sm text-muted">
@@ -474,9 +551,12 @@ export function UploadPanel({ className, compact = false }: Props) {
                       <ProgressBar
                         percent={stabilityProgress(item, now)}
                         label="Datei-Stabilität"
-                        detail={
-                          left <= 0 ? "bereit" : `${Math.ceil(left)} / ${Math.round(item.required_seconds)} s`
+                        sizeDetail={
+                          left <= 0
+                            ? "bereit"
+                            : `${Math.ceil(left)} / ${Math.round(item.required_seconds)} s`
                         }
+                        detail={`${Math.round(stabilityProgress(item, now))}%`}
                       />
                     </div>
                   ) : null}
@@ -520,11 +600,17 @@ export function UploadPanel({ className, compact = false }: Props) {
             </div>
           </div>
 
-          <div className={cn("space-y-3", isPausedLike && "opacity-70")}>
+          <div className={cn("space-y-2.5", isPausedLike && "opacity-70")}>
             <ProgressBar
               percent={total.percent}
-              label={totalProgressLabel}
-              detail={`${Math.round(total.percent)}%`}
+              label="Gesamt"
+              badge={filesCounterLabel ?? undefined}
+              sizeDetail={
+                totalSizeParts.length > 0
+                  ? totalSizeParts.join(" · ")
+                  : undefined
+              }
+              detail={totalPercentDetail}
               indeterminate={
                 active &&
                 total.percent === 0 &&
@@ -532,29 +618,27 @@ export function UploadPanel({ className, compact = false }: Props) {
                 (activity?.phase === "uploading" || activity?.phase === "appending")
               }
             />
-            {activeSlots.length > 0 ? (
-              <ul className="space-y-2">
-                {activeSlots.map((slot) => (
-                  <li key={`${slot.file_index}-${slot.name}`}>
-                    <ProgressBar
-                      size="sm"
-                      percent={slot.percent}
-                      label={slot.name}
-                      detail={
-                        slot.percent === 0 && slot.current === 0
-                          ? "…"
-                          : `${Math.round(slot.percent)}%`
-                      }
-                      indeterminate={slot.percent === 0 && slot.current === 0}
-                    />
-                  </li>
-                ))}
-              </ul>
+            {showSlotList ? (
+              <UploadSlotList
+                slots={activeSlots}
+                reservedRows={reservedSlotRows}
+                formatSize={bytesLabel}
+              />
             ) : showLegacyFileBar ? (
               <ProgressBar
                 percent={file.percent}
-                label={legacyFileLabel}
-                detail={`${Math.round(file.percent)}%`}
+                label="Datei"
+                badge={legacyFileBadge}
+                sizeDetail={
+                  file.total > 0 || file.current > 0
+                    ? bytesLabel(file.current, file.total)
+                    : undefined
+                }
+                detail={
+                  file.percent === 0 && file.current === 0
+                    ? undefined
+                    : `${Math.round(file.percent)}%`
+                }
                 indeterminate={file.percent === 0 && file.current === 0}
               />
             ) : null}
@@ -600,13 +684,13 @@ export function UploadPanel({ className, compact = false }: Props) {
         </>
       ) : null}
 
-      {queue.length > 0 ? (
+      {waitingQueue.length > 0 ? (
         <div className={cn("border-t border-border/70 pt-3", active || hasPending ? "mt-4" : "mt-3")}>
           <p className="mb-2 text-[11px] font-semibold tracking-[0.08em] text-muted uppercase">
             Warteschlange
           </p>
           <ul className="space-y-1.5">
-            {queue.map((item) => (
+            {waitingQueue.map((item) => (
               <li
                 key={`${item.position}-${item.dir_name}`}
                 className="rounded-lg border border-border/70 bg-card-elevated/60 px-2.5 py-2 text-sm"
@@ -615,21 +699,12 @@ export function UploadPanel({ className, compact = false }: Props) {
                   <strong className="truncate text-foreground">
                     {item.dir_name}
                   </strong>
-                  <span
-                    className={cn(
-                      "shrink-0 rounded-md px-1.5 py-0.5 text-[10px] font-medium",
-                      item.state === "active"
-                        ? "bg-primary/15 text-primary"
-                        : "bg-background/70 text-muted",
-                    )}
-                  >
-                    {item.state === "active"
-                      ? "läuft"
-                      : `wartet${
-                          item.wait_seconds
-                            ? ` · ${Math.round(item.wait_seconds)}s`
-                            : ""
-                        }`}
+                  <span className="shrink-0 rounded-md bg-background/70 px-1.5 py-0.5 text-[10px] font-medium text-muted">
+                    {`wartet${
+                      item.wait_seconds
+                        ? ` · ${Math.round(item.wait_seconds)}s`
+                        : ""
+                    }`}
                   </span>
                 </div>
                 <p className="mt-0.5 truncate text-xs text-muted">

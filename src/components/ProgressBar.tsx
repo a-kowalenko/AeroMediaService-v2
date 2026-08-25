@@ -1,7 +1,12 @@
 type ProgressBarProps = {
   percent: number;
   label?: string;
+  /** Right-side value under the track, e.g. "32%". */
   detail?: string;
+  /** Left-side size under the track, e.g. "1.2 MB / 3.8 MB". */
+  sizeDetail?: string;
+  /** Compact chip next to the label, e.g. "3/120". */
+  badge?: string;
   indeterminate?: boolean;
   /** Thinner bar for secondary parallel-slot rows. */
   size?: "default" | "sm";
@@ -11,26 +16,38 @@ export function ProgressBar({
   percent,
   label,
   detail,
+  sizeDetail,
+  badge,
   indeterminate = false,
   size = "default",
 }: ProgressBarProps) {
   const clamped = Math.max(0, Math.min(100, percent));
   const gradient =
     "linear-gradient(90deg, var(--ams-progress-from), var(--ams-progress-to))";
-  const trackH = size === "sm" ? "h-1.5" : "h-2.5";
-  const labelClass =
-    size === "sm"
-      ? "min-w-0 flex-1 truncate text-xs text-muted"
-      : "min-w-0 flex-1 truncate text-sm font-medium text-foreground";
-  const detailClass =
-    size === "sm"
-      ? "shrink-0 text-[10px] tabular-nums text-muted"
-      : "shrink-0 text-xs tabular-nums text-muted";
+  const isSm = size === "sm";
+  const trackH = isSm ? "h-1.5" : "h-2";
+  const labelClass = isSm
+    ? "min-w-0 flex-1 truncate text-[11px] leading-snug text-muted"
+    : "min-w-0 flex-1 break-all text-xs font-medium leading-snug text-foreground sm:text-sm";
+  const metaClass = isSm
+    ? "text-[10px] tabular-nums leading-none text-muted"
+    : "text-[11px] tabular-nums leading-none text-muted sm:text-xs";
+  const showHeader = Boolean(label || badge);
+  const resolvedDetail =
+    detail ?? (!indeterminate ? `${clamped.toFixed(0)}%` : undefined);
+  const showMeta = Boolean(sizeDetail || resolvedDetail);
 
   return (
-    <div className="space-y-1.5" role="progressbar" aria-valuenow={indeterminate ? undefined : clamped} aria-valuemin={0} aria-valuemax={100} aria-label={label ?? "Fortschritt"}>
-      {(label || detail) && (
-        <div className="flex items-baseline justify-between gap-3">
+    <div
+      className={isSm ? "space-y-1" : "space-y-1.5"}
+      role="progressbar"
+      aria-valuenow={indeterminate ? undefined : clamped}
+      aria-valuemin={0}
+      aria-valuemax={100}
+      aria-label={label ?? "Fortschritt"}
+    >
+      {showHeader ? (
+        <div className="flex items-start justify-between gap-2">
           {label ? (
             <p className={labelClass} title={label}>
               {label}
@@ -38,15 +55,19 @@ export function ProgressBar({
           ) : (
             <span />
           )}
-          {detail ? (
-            <p className={detailClass}>{detail}</p>
-          ) : !indeterminate ? (
-            <p className={size === "sm" ? detailClass : "shrink-0 text-sm tabular-nums text-muted"}>
-              {clamped.toFixed(0)}%
-            </p>
+          {badge ? (
+            <span
+              className={
+                isSm
+                  ? "shrink-0 pt-px text-[10px] tabular-nums text-muted"
+                  : "shrink-0 pt-0.5 text-[11px] tabular-nums text-muted sm:text-xs"
+              }
+            >
+              {badge}
+            </span>
           ) : null}
         </div>
-      )}
+      ) : null}
       <div className={`${trackH} overflow-hidden rounded-full bg-border/60`}>
         {indeterminate ? (
           <div
@@ -63,6 +84,18 @@ export function ProgressBar({
           />
         )}
       </div>
+      {isSm || showMeta ? (
+        <div
+          className={`flex min-h-[0.875rem] items-baseline justify-between gap-2 ${metaClass}`}
+        >
+          <span className="min-w-0">{sizeDetail ?? "\u00a0"}</span>
+          {resolvedDetail ? (
+            <span className="shrink-0 font-medium text-foreground/80">
+              {resolvedDetail}
+            </span>
+          ) : null}
+        </div>
+      ) : null}
     </div>
   );
 }

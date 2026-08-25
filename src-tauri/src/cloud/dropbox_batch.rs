@@ -743,10 +743,7 @@ fn emit_file_status(file: &UploadFile, global_idx: usize, total: usize) {
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or(file.rel_norm.as_str());
-    events::emit_status(format!(
-        "Lade hoch: {name} ({}/{total})",
-        global_idx + 1
-    ));
+    events::emit_status(format!("Lade hoch: {name}"));
     events::emit_progress_message(format!(
         "Datei {}/{total}: {}",
         global_idx + 1,
