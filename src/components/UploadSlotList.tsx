@@ -3,26 +3,21 @@ import { ProgressBar } from "./ProgressBar";
 import { cn } from "@/lib/utils";
 import type { UploadActiveSlot } from "@/lib/tauri";
 
-/** Matches backend `BATCH_PARALLEL_WORKERS` — keep list height stable. */
+/** Matches backend `BATCH_PARALLEL_WORKERS`. */
 export const PARALLEL_SLOT_CAP = 4;
 
 const SLOT_ROW_PX = 52;
 const SLOT_GAP_PX = 6;
-/** Snappy but smooth — quick start, soft landing. */
 const COLLAPSE_MS = 210;
 const EASE = "cubic-bezier(0.22, 1, 0.36, 1)";
 
 type Phase = "enter" | "idle" | "exit";
 
 type DisplayRow = {
-  key: string;
+  key: number;
   slot: UploadActiveSlot;
   phase: Phase;
 };
-
-function slotKey(slot: UploadActiveSlot): string {
-  return `${slot.file_index}\0${slot.name}`;
-}
 
 function listMinHeightPx(rows: number): number | undefined {
   if (rows <= 0) return undefined;
@@ -35,21 +30,20 @@ function prefersReducedMotion(): boolean {
 
 type Props = {
   slots: UploadActiveSlot[];
-  reservedRows: number;
   formatSize: (current: number, total: number) => string;
 };
 
-export function UploadSlotList({ slots, reservedRows, formatSize }: Props) {
+export function UploadSlotList({ slots, formatSize }: Props) {
   const [rows, setRows] = useState<DisplayRow[]>([]);
-  const exitTimers = useRef<Map<string, number>>(new Map());
+  const exitTimers = useRef<Map<number, number>>(new Map());
 
   useEffect(() => {
     setRows((prev) => {
       const next: DisplayRow[] = [];
-      const seen = new Set<string>();
+      const seen = new Set<number>();
 
       for (const slot of slots) {
-        const key = slotKey(slot);
+        const key = slot.worker_index;
         seen.add(key);
         const existing = prev.find((r) => r.key === key);
         if (existing?.phase === "exit") {
@@ -99,12 +93,12 @@ export function UploadSlotList({ slots, reservedRows, formatSize }: Props) {
     };
   }, [rows]);
 
-  const removeRow = (key: string) => {
+  const removeRow = (key: number) => {
     exitTimers.current.delete(key);
     setRows((cur) => cur.filter((r) => r.key !== key));
   };
 
-  const scheduleExitRemoval = (key: string) => {
+  const scheduleExitRemoval = (key: number) => {
     if (exitTimers.current.has(key)) return;
     if (prefersReducedMotion()) {
       removeRow(key);
@@ -114,7 +108,7 @@ export function UploadSlotList({ slots, reservedRows, formatSize }: Props) {
     exitTimers.current.set(key, id);
   };
 
-  const finishExit = (key: string) => {
+  const finishExit = (key: number) => {
     const timer = exitTimers.current.get(key);
     if (timer != null) {
       window.clearTimeout(timer);
@@ -136,8 +130,9 @@ export function UploadSlotList({ slots, reservedRows, formatSize }: Props) {
     };
   }, []);
 
-  const listHeight = listMinHeightPx(reservedRows);
-  if (reservedRows <= 0 && rows.length === 0) return null;
+  const visibleRows = slots.length;
+  const listHeight = listMinHeightPx(visibleRows);
+  if (visibleRows <= 0 && rows.length === 0) return null;
 
   return (
     <ul

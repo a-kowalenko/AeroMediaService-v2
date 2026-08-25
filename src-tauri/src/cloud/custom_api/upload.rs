@@ -357,12 +357,13 @@ impl CustomApiClient {
         control: &UploadControl,
         mut on_chunk: impl FnMut(u64),
     ) -> Result<(), CloudError> {
+        const WORKER: usize = 0;
         let file_size = file.size;
         let emit = |sent: u64| {
             let pct = percent(sent, file_size);
             let combined = base_uploaded + sent;
             events::emit_progress_file(pct, sent, file_size.max(1));
-            events::upload_slots_progress(file_index, sent, file_size.max(1));
+            events::upload_slots_worker_progress(WORKER, sent, file_size.max(1));
             events::emit_progress_total(
                 percent(combined, total_job_size),
                 combined,
@@ -379,7 +380,7 @@ impl CustomApiClient {
                 .unwrap_or_default()
         ));
         events::emit_status(format!("Lade hoch: {}", file.name));
-        events::upload_slots_start(file_index, &file.name, file_size);
+        events::upload_slots_worker_start(WORKER, file_index, &file.name, file_size);
         emit(0);
         events::emit_progress_file(0, 0, file_size.max(1));
 
@@ -476,7 +477,7 @@ impl CustomApiClient {
 
         emit(file_size);
         events::emit_progress_file(100, file_size, file_size.max(1));
-        events::upload_slots_finish(file_index);
+        events::upload_slots_worker_finish(WORKER);
         let current = base_uploaded + file_size;
         events::emit_progress_total(percent(current, total_job_size), current, total_job_size);
         logging::log_info(&format!(

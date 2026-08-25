@@ -3,7 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import { CloudUpload, Pause, Play, Radio, Timer, X } from "lucide-react";
 import { Panel } from "./Panel";
 import { ProgressBar } from "./ProgressBar";
-import { UploadSlotList, PARALLEL_SLOT_CAP } from "./UploadSlotList";
+import { UploadSlotList } from "./UploadSlotList";
 import { Button } from "@/components/ui/button";
 import {
   STABILITY_PENDING_CHANGED,
@@ -187,7 +187,6 @@ export function UploadPanel({ className, compact = false }: Props) {
   const [busy, setBusy] = useState(false);
   const [control, setControl] = useState<UploadControlState>(IDLE_CONTROL);
   const [speedBps, setSpeedBps] = useState(0);
-  const [reservedSlotRows, setReservedSlotRows] = useState(0);
   const speedSampleRef = useRef<{ t: number; bytes: number } | null>(null);
   const confirm = useUiStore((s) => s.confirm);
   const pausePhase = pausePhaseFrom(control);
@@ -233,23 +232,6 @@ export function UploadPanel({ className, compact = false }: Props) {
   }, [total.current, active, isPausedLike]);
 
   useEffect(() => {
-    if (!active) {
-      setReservedSlotRows(0);
-      return;
-    }
-    if (slots.files_total <= 1) {
-      setReservedSlotRows(slots.slots.length > 0 ? 1 : 0);
-      return;
-    }
-    const remaining = Math.max(0, slots.files_total - slots.files_done);
-    const target = Math.min(
-      PARALLEL_SLOT_CAP,
-      Math.max(slots.slots.length, Math.min(PARALLEL_SLOT_CAP, remaining || 1)),
-    );
-    setReservedSlotRows((prev) => Math.max(prev, Math.max(target, 1)));
-  }, [active, slots.files_total, slots.files_done, slots.slots.length]);
-
-  useEffect(() => {
     let cancelled = false;
     const unlisteners: Array<() => void> = [];
     const add = <T,>(name: string, handler: (payload: T) => void) => {
@@ -272,7 +254,6 @@ export function UploadPanel({ className, compact = false }: Props) {
         setFile(EMPTY_PROGRESS);
         setTotal(EMPTY_PROGRESS);
         setSpeedBps(0);
-        setReservedSlotRows(0);
         speedSampleRef.current = null;
       }
     });
@@ -434,7 +415,7 @@ export function UploadPanel({ className, compact = false }: Props) {
     activity?.file_index != null && activity?.file_count != null
       ? `${activity.file_index}/${activity.file_count}`
       : undefined;
-  const showSlotList = reservedSlotRows > 0 || activeSlots.length > 0;
+  const showSlotList = activeSlots.length > 0;
 
   const statusChip = (
     <span
@@ -621,7 +602,6 @@ export function UploadPanel({ className, compact = false }: Props) {
             {showSlotList ? (
               <UploadSlotList
                 slots={activeSlots}
-                reservedRows={reservedSlotRows}
                 formatSize={bytesLabel}
               />
             ) : showLegacyFileBar ? (

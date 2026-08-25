@@ -72,9 +72,14 @@ pub struct ByteProgress {
     pub total: u64,
 }
 
-/// One in-flight file among parallel upload workers (UI secondary row).
+/// Max parallel upload worker lanes (keep in sync with `BATCH_PARALLEL_WORKERS`).
+pub const UPLOAD_WORKER_SLOTS: usize = 4;
+
+/// One in-flight file on a worker lane (UI secondary row).
 #[derive(Debug, Clone, Serialize)]
 pub struct UploadActiveSlot {
+    /// 0-based worker lane (`0` = top row when multiple lanes are visible).
+    pub worker_index: u32,
     /// 1-based file index within the job.
     pub file_index: u32,
     pub name: String,
@@ -95,8 +100,8 @@ pub struct UploadSlotsProgress {
 struct SlotsState {
     files_done: u32,
     files_total: u32,
-    /// Active slots keyed by 0-based file index (insertion order preserved via Vec).
-    slots: Vec<(usize, UploadActiveSlot)>,
+    /// One entry per worker lane; `None` when the lane is idle.
+    workers: [Option<UploadActiveSlot>; UPLOAD_WORKER_SLOTS],
 }
 
 static SLOTS: Lazy<Mutex<SlotsState>> = Lazy::new(|| Mutex::new(SlotsState::default()));
@@ -109,13 +114,23 @@ fn slot_percent(current: u64, total: u64) -> i32 {
     }
 }
 
+fn running_slots_sorted(state: &SlotsState) -> Vec<UploadActiveSlot> {
+    let mut slots: Vec<UploadActiveSlot> = state
+        .workers
+        .iter()
+        .filter_map(|w| w.clone())
+        .collect();
+    slots.sort_by_key(|s| s.worker_index);
+    slots
+}
+
 fn emit_slots_locked(state: &SlotsState) {
     emit(
         UPLOAD_PROGRESS_SLOTS,
         UploadSlotsProgress {
             files_done: state.files_done,
             files_total: state.files_total,
-            slots: state.slots.iter().map(|(_, s)| s.clone()).collect(),
+            slots: running_slots_sorted(state),
         },
     );
 }
@@ -127,7 +142,7 @@ pub fn upload_slots_begin(files_total: u32, files_done: u32) {
     };
     guard.files_total = files_total;
     guard.files_done = files_done.min(files_total);
-    guard.slots.clear();
+    guard.workers = Default::default();
     emit_slots_locked(&guard);
 }
 
@@ -140,36 +155,48 @@ pub fn upload_slots_set_done(files_done: u32) {
     emit_slots_locked(&guard);
 }
 
-/// Start or refresh an active slot (`file_index` is 0-based).
-pub fn upload_slots_start(file_index: usize, name: impl Into<String>, size: u64) {
+fn worker_slot_mut<'a>(
+    workers: &'a mut [Option<UploadActiveSlot>; UPLOAD_WORKER_SLOTS],
+    worker_index: usize,
+) -> Option<&'a mut UploadActiveSlot> {
+    workers.get_mut(worker_index)?.as_mut()
+}
+
+/// Start or refresh a worker lane (`worker_index` 0-based, `file_index` 0-based).
+pub fn upload_slots_worker_start(
+    worker_index: usize,
+    file_index: usize,
+    name: impl Into<String>,
+    size: u64,
+) {
+    if worker_index >= UPLOAD_WORKER_SLOTS {
+        return;
+    }
     let Ok(mut guard) = SLOTS.lock() else {
         return;
     };
-    let name = name.into();
-    let display = UploadActiveSlot {
+    guard.workers[worker_index] = Some(UploadActiveSlot {
+        worker_index: worker_index as u32,
         file_index: (file_index as u32).saturating_add(1),
-        name,
+        name: name.into(),
         percent: 0,
         current: 0,
         total: size.max(1),
-    };
-    if let Some(pos) = guard.slots.iter().position(|(i, _)| *i == file_index) {
-        guard.slots[pos].1 = display;
-    } else {
-        guard.slots.push((file_index, display));
-    }
+    });
     emit_slots_locked(&guard);
 }
 
-/// Update bytes for an active slot (`file_index` is 0-based).
-pub fn upload_slots_progress(file_index: usize, current: u64, total: u64) {
+/// Update bytes for a worker lane (`worker_index` is 0-based).
+pub fn upload_slots_worker_progress(worker_index: usize, current: u64, total: u64) {
+    if worker_index >= UPLOAD_WORKER_SLOTS {
+        return;
+    }
     let Ok(mut guard) = SLOTS.lock() else {
         return;
     };
-    let Some(pos) = guard.slots.iter().position(|(i, _)| *i == file_index) else {
+    let Some(slot) = worker_slot_mut(&mut guard.workers, worker_index) else {
         return;
     };
-    let slot = &mut guard.slots[pos].1;
     let total = total.max(1);
     slot.current = current.min(total);
     slot.total = total;
@@ -177,14 +204,15 @@ pub fn upload_slots_progress(file_index: usize, current: u64, total: u64) {
     emit_slots_locked(&guard);
 }
 
-/// Remove a slot and count the file as completed (`file_index` is 0-based).
-pub fn upload_slots_finish(file_index: usize) {
+/// Worker lane idle after a file completed (`worker_index` is 0-based).
+pub fn upload_slots_worker_finish(worker_index: usize) {
+    if worker_index >= UPLOAD_WORKER_SLOTS {
+        return;
+    }
     let Ok(mut guard) = SLOTS.lock() else {
         return;
     };
-    let before = guard.slots.len();
-    guard.slots.retain(|(i, _)| *i != file_index);
-    if guard.slots.len() < before {
+    if guard.workers[worker_index].take().is_some() {
         guard.files_done = guard.files_done.saturating_add(1).min(guard.files_total);
     }
     emit_slots_locked(&guard);
@@ -410,30 +438,42 @@ mod tests {
     }
 
     #[test]
-    fn upload_slots_progress_tracks_active_and_done() {
+    fn upload_slots_workers_sorted_by_lane_and_compact_on_finish() {
         upload_slots_clear();
-        upload_slots_begin(3, 1);
-        upload_slots_start(1, "a.jpg", 100);
-        upload_slots_start(2, "b.jpg", 200);
-        upload_slots_progress(1, 50, 100);
+        upload_slots_begin(4, 0);
+        upload_slots_worker_start(0, 0, "a.jpg", 100);
+        upload_slots_worker_start(2, 2, "c.jpg", 300);
+        upload_slots_worker_start(3, 3, "d.jpg", 400);
+        upload_slots_worker_progress(0, 50, 100);
         {
             let guard = SLOTS.lock().unwrap();
-            assert_eq!(guard.files_done, 1);
-            assert_eq!(guard.files_total, 3);
-            assert_eq!(guard.slots.len(), 2);
-            assert_eq!(guard.slots[0].1.percent, 50);
-            assert_eq!(guard.slots[0].1.file_index, 2);
+            let slots = running_slots_sorted(&guard);
+            assert_eq!(slots.len(), 3);
+            assert_eq!(slots[0].worker_index, 0);
+            assert_eq!(slots[0].percent, 50);
+            assert_eq!(slots[1].worker_index, 2);
+            assert_eq!(slots[2].worker_index, 3);
         }
-        upload_slots_finish(1);
+        upload_slots_worker_finish(2);
         {
             let guard = SLOTS.lock().unwrap();
-            assert_eq!(guard.files_done, 2);
-            assert_eq!(guard.slots.len(), 1);
-            assert_eq!(guard.slots[0].1.name, "b.jpg");
+            let slots = running_slots_sorted(&guard);
+            assert_eq!(guard.files_done, 1);
+            assert_eq!(slots.len(), 2);
+            assert_eq!(slots[0].worker_index, 0);
+            assert_eq!(slots[1].worker_index, 3);
+        }
+        upload_slots_worker_start(2, 4, "e.jpg", 500);
+        {
+            let guard = SLOTS.lock().unwrap();
+            let slots = running_slots_sorted(&guard);
+            assert_eq!(slots.len(), 3);
+            assert_eq!(slots[1].worker_index, 2);
+            assert_eq!(slots[1].name, "e.jpg");
         }
         upload_slots_clear();
         let guard = SLOTS.lock().unwrap();
         assert_eq!(guard.files_done, 0);
-        assert!(guard.slots.is_empty());
+        assert!(running_slots_sorted(&guard).is_empty());
     }
 }

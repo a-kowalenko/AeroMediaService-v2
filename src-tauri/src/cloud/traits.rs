@@ -27,21 +27,13 @@ impl CloudError {
     }
 }
 
-/// Files the uploader must not send (markers, checkpoints, OS junk).
+/// Files the uploader must not send (markers, handoff manifest, checkpoints, OS junk).
 /// Port of legacy `utils/upload_checkpoint.py::should_skip_upload_file`.
 pub fn should_skip_upload_file(filename: &str) -> bool {
-    if filename == crate::upload::checkpoint::CHECKPOINT_FILENAME {
+    if crate::model::handoff::is_ignored_handoff_name(filename) {
         return true;
     }
-    matches!(
-        filename,
-        crate::model::marker::MARKER_FERTIG
-            | crate::model::marker::MARKER_PROCESSING
-            | ".DS_Store"
-            | ".apdisk"
-            | "Thumbs.db"
-            | "desktop.ini"
-    ) || filename.starts_with("._")
+    matches!(filename, ".apdisk" | "desktop.ini") || filename.starts_with("._")
 }
 
 #[async_trait]
@@ -81,10 +73,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn skip_markers_checkpoint_and_os_junk() {
+    fn skip_markers_checkpoint_handoff_manifest_and_os_junk() {
         assert!(should_skip_upload_file("_fertig.txt"));
         assert!(should_skip_upload_file("_in_verarbeitung.txt"));
         assert!(should_skip_upload_file("_aero_upload_checkpoint.json"));
+        assert!(should_skip_upload_file(crate::model::handoff::MANIFEST_FILENAME));
         assert!(should_skip_upload_file(".DS_Store"));
         assert!(should_skip_upload_file("._hidden"));
         assert!(should_skip_upload_file("Thumbs.db"));

@@ -2006,6 +2006,11 @@ mod tests {
         fs::write(dir.path().join("a.jpg"), b"a").unwrap();
         fs::write(dir.path().join(MARKER_FERTIG), b"{}").unwrap();
         fs::write(dir.path().join(MARKER_PROCESSING), b"{}").unwrap();
+        fs::write(
+            dir.path().join(crate::model::handoff::MANIFEST_FILENAME),
+            b"{}",
+        )
+        .unwrap();
         fs::write(dir.path().join(CHECKPOINT_FILENAME), b"{}").unwrap();
         fs::write(dir.path().join(".DS_Store"), b"x").unwrap();
         let nested = dir.path().join("sub");

@@ -9,7 +9,6 @@ use std::collections::{HashSet, VecDeque};
 use std::sync::Arc;
 
 use serde_json::{json, Value};
-use tokio::sync::Mutex;
 use tokio::task::JoinSet;
 
 use super::dropbox::{
@@ -87,7 +86,7 @@ where
             let file = &files[idx];
             if r.rel_path == file.rel_norm && !skip_paths.contains(&file.rel_norm) {
                 control.wait_if_paused().await?;
-                emit_file_status(file, idx, files.len());
+                emit_file_status(file, idx, files.len(), 0);
                 let id = upload_one_serial(
                     client,
                     file,
@@ -134,7 +133,7 @@ where
             let local_i = pending[0];
             let file = &batch[local_i];
             let global_idx = batch_start + local_i;
-            emit_file_status(file, global_idx, files.len());
+            emit_file_status(file, global_idx, files.len(), 0);
             let id = upload_one_serial(
                 client,
                 file,
@@ -199,12 +198,13 @@ async fn upload_one_serial<F>(
 where
     F: FnMut(usize, Option<DropboxCursor>, bool),
 {
+    const WORKER: usize = 0;
     events::emit_progress_file(0, 0, file.size);
     if file.size <= SMALL_FILE_BYTES as u64 {
         let size = file.size;
         let on_send = std::sync::Arc::new(move |sent: u64| {
             let sent = sent.min(size);
-            events::upload_slots_progress(file_index, sent, size);
+            events::upload_slots_worker_progress(WORKER, sent, size);
             events::emit_progress_file(percent(sent, size), sent, size);
             emit_total(bytes_uploaded.saturating_add(sent), total_job_size);
         }) as std::sync::Arc<dyn Fn(u64) + Send + Sync>;
@@ -218,13 +218,13 @@ where
             )
             .await?;
         on_serial_progress(file_index, None, true);
-        events::upload_slots_progress(file_index, file.size, file.size);
-        emit_file_done(file_index);
+        events::upload_slots_worker_progress(WORKER, file.size, file.size);
+        emit_file_done(WORKER);
         Ok(id)
     } else {
         let size = file.size;
         let on_bytes = std::sync::Arc::new(move |sent: u64| {
-            events::upload_slots_progress(file_index, sent.min(size), size);
+            events::upload_slots_worker_progress(WORKER, sent.min(size), size);
         }) as std::sync::Arc<dyn Fn(u64) + Send + Sync>;
         let result = client
             .upload_large_file(
@@ -237,7 +237,7 @@ where
                 resume,
                 Some(|cursor: Option<DropboxCursor>, force: bool| {
                     if let Some(ref c) = cursor {
-                        events::upload_slots_progress(file_index, c.offset, file.size);
+                        events::upload_slots_worker_progress(WORKER, c.offset, file.size);
                     }
                     on_serial_progress(file_index, cursor, force);
                 }),
@@ -245,8 +245,8 @@ where
             )
             .await;
         if result.is_ok() {
-            events::upload_slots_progress(file_index, file.size, file.size);
-            emit_file_done(file_index);
+            events::upload_slots_worker_progress(WORKER, file.size, file.size);
+            emit_file_done(WORKER);
         }
         result
     }
@@ -355,25 +355,64 @@ where
     Ok(out)
 }
 
-/// Reusable worker indices `0..capacity` for [`BatchProgress`] inflight slots.
-struct WorkerSlotPool {
-    free: Mutex<Vec<usize>>,
+/// Try to start queued work on idle worker lanes up to `cap` in-flight tasks.
+fn try_spawn_worker_lanes<T, F, Fut>(
+    set: &mut JoinSet<(usize, Result<T, CloudError>)>,
+    lane_busy: &mut [bool; BATCH_PARALLEL_WORKERS],
+    cap: usize,
+    queue: &mut VecDeque<(usize, usize)>,
+    mut build: F,
+) where
+    F: FnMut(usize, (usize, usize)) -> Fut,
+    Fut: std::future::Future<Output = Result<T, CloudError>> + Send + 'static,
+    T: Send + 'static,
+{
+    for worker_id in 0..BATCH_PARALLEL_WORKERS {
+        if set.len() >= cap {
+            break;
+        }
+        if lane_busy[worker_id] {
+            continue;
+        }
+        let Some(item) = queue.pop_front() else {
+            break;
+        };
+        lane_busy[worker_id] = true;
+        let fut = build(worker_id, item);
+        set.spawn(async move {
+            let result = fut.await;
+            (worker_id, result)
+        });
+    }
 }
 
-impl WorkerSlotPool {
-    fn new(capacity: usize) -> Arc<Self> {
-        Arc::new(Self {
-            free: Mutex::new((0..capacity).collect()),
-        })
-    }
-
-    async fn acquire(&self) -> Option<usize> {
-        self.free.lock().await.pop()
-    }
-
-    async fn release(&self, slot: usize) {
-        let mut free = self.free.lock().await;
-        free.push(slot);
+fn try_spawn_large_lanes<T, F, Fut>(
+    set: &mut JoinSet<(usize, Result<T, CloudError>)>,
+    lane_busy: &mut [bool; BATCH_PARALLEL_WORKERS],
+    cap: usize,
+    queue: &mut VecDeque<usize>,
+    mut build: F,
+) where
+    F: FnMut(usize, usize) -> Fut,
+    Fut: std::future::Future<Output = Result<T, CloudError>> + Send + 'static,
+    T: Send + 'static,
+{
+    for worker_id in 0..BATCH_PARALLEL_WORKERS {
+        if set.len() >= cap {
+            break;
+        }
+        if lane_busy[worker_id] {
+            continue;
+        }
+        let Some(item) = queue.pop_front() else {
+            break;
+        };
+        lane_busy[worker_id] = true;
+        let fut = build(worker_id, item);
+        set.spawn(async move {
+            let result = fut.await;
+            (worker_id, result)
+        });
     }
 }
 
@@ -400,13 +439,14 @@ where
     }
     if indexed.len() == 1 {
         let (local_idx, global_idx) = indexed[0];
+        const WORKER: usize = 0;
         let file = &batch[local_idx];
         control.wait_if_paused().await?;
-        emit_file_status(file, global_idx, total_files_in_job);
+        emit_file_status(file, global_idx, total_files_in_job, WORKER);
         let size = file.size;
         let on_send = std::sync::Arc::new(move |sent: u64| {
             let sent = sent.min(size);
-            events::upload_slots_progress(global_idx, sent, size);
+            events::upload_slots_worker_progress(WORKER, sent, size);
             events::emit_progress_file(percent(sent, size), sent, size);
             emit_total(bytes_uploaded_base.saturating_add(sent), total_job_size);
         }) as std::sync::Arc<dyn Fn(u64) + Send + Sync>;
@@ -419,8 +459,8 @@ where
                 Some(on_send),
             )
             .await?;
-        events::upload_slots_progress(global_idx, file.size, file.size);
-        emit_file_done(global_idx);
+        events::upload_slots_worker_progress(WORKER, file.size, file.size);
+        emit_file_done(WORKER);
         *running_bytes = running_bytes.saturating_add(file.size);
         emit_total(*running_bytes, total_job_size);
         let row = HybridUploaded {
@@ -436,34 +476,28 @@ where
     let mut queue: VecDeque<(usize, usize)> = indexed.iter().copied().collect();
     let mut results = Vec::with_capacity(indexed.len());
     let batch_prog = BatchProgress::new(BATCH_PARALLEL_WORKERS, bytes_uploaded_base, total_job_size);
-    let slot_pool = WorkerSlotPool::new(BATCH_PARALLEL_WORKERS);
-    let mut set = JoinSet::new();
+    let mut lane_busy = [false; BATCH_PARALLEL_WORKERS];
+    let mut set: JoinSet<(usize, Result<(usize, usize, Option<String>), CloudError>)> =
+        JoinSet::new();
 
     while !queue.is_empty() || !set.is_empty() {
         control.wait_if_paused().await?;
         let cap = limiter.current_workers(worker_capacity(set.len(), queue.len()));
-        while set.len() < cap {
-            let Some((local_idx, global_idx)) = queue.pop_front() else {
-                break;
-            };
-            let Some(worker_slot) = slot_pool.acquire().await else {
-                queue.push_front((local_idx, global_idx));
-                break;
-            };
+        try_spawn_worker_lanes(&mut set, &mut lane_busy, cap, &mut queue, |worker_id, (local_idx, global_idx)| {
             let client = client.clone();
             let control = control.clone();
             let file = batch[local_idx].clone();
             let batch_prog = Arc::clone(&batch_prog);
-            set.spawn(async move {
+            async move {
                 control.wait_if_paused().await?;
-                emit_file_status(&file, global_idx, total_files_in_job);
+                emit_file_status(&file, global_idx, total_files_in_job, worker_id);
                 events::emit_progress_file(0, 0, file.size);
                 let size = file.size;
                 let bp = Arc::clone(&batch_prog);
                 let on_send = std::sync::Arc::new(move |sent: u64| {
                     let sent = sent.min(size);
-                    bp.report_inflight(worker_slot, sent, false);
-                    events::upload_slots_progress(global_idx, sent, size);
+                    bp.report_inflight(worker_id, sent, false);
+                    events::upload_slots_worker_progress(worker_id, sent, size);
                     events::emit_progress_file(percent(sent, size), sent, size);
                 }) as std::sync::Arc<dyn Fn(u64) + Send + Sync>;
                 let id = client
@@ -476,19 +510,18 @@ where
                     )
                     .await?;
                 events::emit_progress_file(100, file.size, file.size);
-                events::upload_slots_progress(global_idx, file.size, file.size);
-                emit_file_done(global_idx);
-                batch_prog.complete_slot(worker_slot, file.size);
-                Ok::<_, CloudError>((local_idx, global_idx, id, worker_slot))
-            });
-        }
+                events::upload_slots_worker_progress(worker_id, file.size, file.size);
+                batch_prog.complete_slot(worker_id, file.size);
+                Ok((local_idx, global_idx, id))
+            }
+        });
 
         let Some(joined) = set.join_next().await else {
             continue;
         };
         match joined {
-            Ok(Ok((local_idx, global_idx, id, worker_slot))) => {
-                slot_pool.release(worker_slot).await;
+            Ok((worker_id, Ok((local_idx, global_idx, id)))) => {
+                lane_busy[worker_id] = false;
                 let file = &batch[local_idx];
                 *running_bytes = running_bytes.saturating_add(file.size);
                 let row = HybridUploaded {
@@ -498,8 +531,52 @@ where
                 limiter.on_success();
                 on_file_done(global_idx + 1, *running_bytes, &row)?;
                 results.push((local_idx, id));
+
+                let cap = limiter.current_workers(worker_capacity(set.len(), queue.len()));
+                try_spawn_worker_lanes(
+                    &mut set,
+                    &mut lane_busy,
+                    cap,
+                    &mut queue,
+                    |worker_id, (local_idx, global_idx)| {
+                        let client = client.clone();
+                        let control = control.clone();
+                        let file = batch[local_idx].clone();
+                        let batch_prog = Arc::clone(&batch_prog);
+                        async move {
+                            control.wait_if_paused().await?;
+                            emit_file_status(&file, global_idx, total_files_in_job, worker_id);
+                            events::emit_progress_file(0, 0, file.size);
+                            let size = file.size;
+                            let bp = Arc::clone(&batch_prog);
+                            let on_send = std::sync::Arc::new(move |sent: u64| {
+                                let sent = sent.min(size);
+                                bp.report_inflight(worker_id, sent, false);
+                                events::upload_slots_worker_progress(worker_id, sent, size);
+                                events::emit_progress_file(percent(sent, size), sent, size);
+                            })
+                                as std::sync::Arc<dyn Fn(u64) + Send + Sync>;
+                            let id = client
+                                .upload_small_file_with_progress(
+                                    &file.local_path,
+                                    &file.dropbox_path,
+                                    file.size,
+                                    &control,
+                                    Some(on_send),
+                                )
+                                .await?;
+                            events::emit_progress_file(100, file.size, file.size);
+                            events::upload_slots_worker_progress(worker_id, file.size, file.size);
+                            batch_prog.complete_slot(worker_id, file.size);
+                            Ok((local_idx, global_idx, id))
+                        }
+                    },
+                );
+                if !lane_busy[worker_id] {
+                    emit_file_done(worker_id);
+                }
             }
-            Ok(Err(e)) => {
+            Ok((_, Err(e))) => {
                 set.abort_all();
                 return Err(e);
             }
@@ -535,13 +612,14 @@ where
         return Ok(Vec::new());
     }
     if n == 1 {
+        const WORKER: usize = 0;
         let file = large_files[0];
         let global_idx = global_indices[0];
         let file_size = file.size;
         control.wait_if_paused().await?;
-        emit_file_status(file, global_idx, total_files_in_job);
+        emit_file_status(file, global_idx, total_files_in_job, WORKER);
         let on_bytes = std::sync::Arc::new(move |sent: u64| {
-            events::upload_slots_progress(global_idx, sent.min(file_size), file_size);
+            events::upload_slots_worker_progress(WORKER, sent.min(file_size), file_size);
         }) as std::sync::Arc<dyn Fn(u64) + Send + Sync>;
         let id = client
             .upload_large_file(
@@ -554,14 +632,14 @@ where
                 None,
                 Some(|cursor: Option<DropboxCursor>, _force: bool| {
                     if let Some(c) = cursor {
-                        events::upload_slots_progress(global_idx, c.offset, file_size);
+                        events::upload_slots_worker_progress(WORKER, c.offset, file_size);
                     }
                 }),
                 Some(on_bytes),
             )
             .await?;
-        events::upload_slots_progress(global_idx, file.size, file.size);
-        emit_file_done(global_idx);
+        events::upload_slots_worker_progress(WORKER, file.size, file.size);
+        emit_file_done(WORKER);
         *running_bytes = running_bytes.saturating_add(file.size);
         let row = HybridUploaded {
             file_index: global_idx,
@@ -599,58 +677,47 @@ where
     let mut queue: VecDeque<usize> = (0..n).collect();
     let mut cursors: Vec<Option<DropboxCursor>> = vec![None; n];
     let batch_prog = BatchProgress::new(BATCH_PARALLEL_WORKERS, bytes_uploaded_base, total_job_size);
-    let slot_pool = WorkerSlotPool::new(BATCH_PARALLEL_WORKERS);
-    let mut set = JoinSet::new();
+    let mut lane_busy = [false; BATCH_PARALLEL_WORKERS];
+    let mut set: JoinSet<(usize, Result<(usize, usize, DropboxCursor), CloudError>)> = JoinSet::new();
+
+    let spawn_large = |worker_id: usize, batch_idx: usize| {
+        let client = client.clone();
+        let control = control.clone();
+        let file = (*large_files[batch_idx]).clone();
+        let session_id = session_ids[batch_idx].clone();
+        let global_idx = global_indices[batch_idx];
+        let batch_prog = Arc::clone(&batch_prog);
+        async move {
+            control.wait_if_paused().await?;
+            emit_file_status(&file, global_idx, total_files_in_job, worker_id);
+            let size = file.size;
+            let bp = Arc::clone(&batch_prog);
+            let emit = std::sync::Arc::new(move |sent: u64| {
+                let sent = sent.min(size);
+                bp.report_inflight(worker_id, sent, false);
+                events::upload_slots_worker_progress(worker_id, sent, size);
+                events::emit_progress_file(percent(sent, size), sent, size);
+            }) as std::sync::Arc<dyn Fn(u64) + Send + Sync>;
+            let cursor = append_file_to_session(&client, &file, &session_id, &control, emit).await?;
+            events::upload_slots_worker_progress(worker_id, file.size, file.size);
+            batch_prog.complete_slot(worker_id, file.size);
+            Ok((batch_idx, global_idx, cursor))
+        }
+    };
 
     while !queue.is_empty() || !set.is_empty() {
         control.wait_if_paused().await?;
         let cap = limiter.current_workers(worker_capacity(set.len(), queue.len()));
-        while set.len() < cap {
-            let Some(batch_idx) = queue.pop_front() else {
-                break;
-            };
-            let Some(worker_slot) = slot_pool.acquire().await else {
-                queue.push_front(batch_idx);
-                break;
-            };
-            let client = client.clone();
-            let control = control.clone();
-            let file = (*large_files[batch_idx]).clone();
-            let session_id = session_ids[batch_idx].clone();
-            let global_idx = global_indices[batch_idx];
-            let batch_prog = Arc::clone(&batch_prog);
-            set.spawn(async move {
-                control.wait_if_paused().await?;
-                emit_file_status(&file, global_idx, total_files_in_job);
-                let size = file.size;
-                let bp = Arc::clone(&batch_prog);
-                let emit = std::sync::Arc::new(move |sent: u64| {
-                    let sent = sent.min(size);
-                    bp.report_inflight(worker_slot, sent, false);
-                    events::upload_slots_progress(global_idx, sent, size);
-                    events::emit_progress_file(percent(sent, size), sent, size);
-                }) as std::sync::Arc<dyn Fn(u64) + Send + Sync>;
-                let cursor = append_file_to_session(
-                    &client,
-                    &file,
-                    &session_id,
-                    &control,
-                    emit,
-                )
-                .await?;
-                events::upload_slots_progress(global_idx, file.size, file.size);
-                emit_file_done(global_idx);
-                batch_prog.complete_slot(worker_slot, file.size);
-                Ok::<_, CloudError>((batch_idx, global_idx, cursor, worker_slot))
-            });
-        }
+        try_spawn_large_lanes(&mut set, &mut lane_busy, cap, &mut queue, |worker_id, batch_idx| {
+            spawn_large(worker_id, batch_idx)
+        });
 
         let Some(joined) = set.join_next().await else {
             continue;
         };
         match joined {
-            Ok(Ok((batch_idx, global_idx, cursor, worker_slot))) => {
-                slot_pool.release(worker_slot).await;
+            Ok((worker_id, Ok((batch_idx, global_idx, cursor)))) => {
+                lane_busy[worker_id] = false;
                 cursors[batch_idx] = Some(cursor);
                 let file = large_files[batch_idx];
                 *running_bytes = running_bytes.saturating_add(file.size);
@@ -660,8 +727,16 @@ where
                 };
                 limiter.on_success();
                 on_file_done(global_idx + 1, *running_bytes, &row)?;
+
+                let cap = limiter.current_workers(worker_capacity(set.len(), queue.len()));
+                try_spawn_large_lanes(&mut set, &mut lane_busy, cap, &mut queue, |worker_id, batch_idx| {
+                    spawn_large(worker_id, batch_idx)
+                });
+                if !lane_busy[worker_id] {
+                    emit_file_done(worker_id);
+                }
             }
-            Ok(Err(e)) => {
+            Ok((_, Err(e))) => {
                 set.abort_all();
                 return Err(e);
             }
@@ -869,7 +944,7 @@ async fn finish_batch_v2(client: &DropboxClient, entries: Vec<Value>) -> Result<
     Ok(result)
 }
 
-fn emit_file_status(file: &UploadFile, global_idx: usize, total: usize) {
+fn emit_file_status(file: &UploadFile, global_idx: usize, total: usize, worker_id: usize) {
     let name = file
         .local_path
         .file_name()
@@ -881,11 +956,11 @@ fn emit_file_status(file: &UploadFile, global_idx: usize, total: usize) {
         global_idx + 1,
         file.rel_norm
     ));
-    events::upload_slots_start(global_idx, name, file.size);
+    events::upload_slots_worker_start(worker_id, global_idx, name, file.size);
 }
 
-fn emit_file_done(global_idx: usize) {
-    events::upload_slots_finish(global_idx);
+fn emit_file_done(worker_id: usize) {
+    events::upload_slots_worker_finish(worker_id);
 }
 
 fn emit_total(current: u64, total: u64) {

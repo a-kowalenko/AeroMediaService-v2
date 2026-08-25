@@ -273,8 +273,10 @@ export type ByteProgress = {
     total: number;
 };
 
-/** One in-flight file among parallel upload workers. */
+/** One in-flight upload on a worker lane. */
 export type UploadActiveSlot = {
+    /** 0-based worker lane (top row = 0). */
+    worker_index: number;
     /** 1-based file index within the job. */
     file_index: number;
     name: string;
