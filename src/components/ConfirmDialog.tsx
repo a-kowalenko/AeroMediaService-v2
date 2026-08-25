@@ -16,8 +16,10 @@ type ConfirmProps = {
   message: string;
   primaryLabel?: string;
   secondaryLabel?: string;
+  tertiaryLabel?: string;
   destructive?: boolean;
   onConfirm: () => void;
+  onTertiary?: () => void;
   onCancel: () => void;
 };
 
@@ -27,8 +29,10 @@ export function ConfirmDialog({
   message,
   primaryLabel = "OK",
   secondaryLabel = "Abbrechen",
+  tertiaryLabel,
   destructive = false,
   onConfirm,
+  onTertiary,
   onCancel,
 }: ConfirmProps) {
   return (
@@ -49,10 +53,15 @@ export function ConfirmDialog({
             {message}
           </DialogDescription>
         </DialogHeader>
-        <DialogFooter>
+        <DialogFooter className={tertiaryLabel ? "gap-2 sm:gap-2" : undefined}>
           <Button type="button" variant="secondary" onClick={onCancel}>
             {secondaryLabel}
           </Button>
+          {tertiaryLabel && onTertiary ? (
+            <Button type="button" variant="outline" onClick={onTertiary}>
+              {tertiaryLabel}
+            </Button>
+          ) : null}
           <Button
             type="button"
             variant={destructive ? "destructive" : "default"}

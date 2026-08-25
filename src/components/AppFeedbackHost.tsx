@@ -14,6 +14,7 @@ export function AppFeedbackHost() {
   const dialogPrimaryAction = useUiStore((s) => s.dialogPrimaryAction);
   const dialogPrimaryLabel = useUiStore((s) => s.dialogPrimaryLabel);
   const dialogSecondaryLabel = useUiStore((s) => s.dialogSecondaryLabel);
+  const dialogTertiaryLabel = useUiStore((s) => s.dialogTertiaryLabel);
   const dialogDestructive = useUiStore((s) => s.dialogDestructive);
   const dialogPromptValue = useUiStore((s) => s.dialogPromptValue);
   const dialogPromptPlaceholder = useUiStore((s) => s.dialogPromptPlaceholder);
@@ -52,8 +53,12 @@ export function AppFeedbackHost() {
         message={dialogMessage}
         primaryLabel={dialogPrimaryLabel}
         secondaryLabel={dialogSecondaryLabel}
+        tertiaryLabel={dialogTertiaryLabel || undefined}
         destructive={dialogDestructive}
         onConfirm={() => resolveConfirm(true)}
+        onTertiary={
+          dialogTertiaryLabel ? () => resolveConfirm("tertiary") : undefined
+        }
         onCancel={() => resolveConfirm(false)}
       />
       <PromptDialog

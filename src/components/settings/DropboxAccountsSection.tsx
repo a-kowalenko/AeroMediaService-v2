@@ -282,23 +282,70 @@ function DropboxAccountPanel({
   );
 }
 
+async function copyAuthorizeUrl(authorizeUrl: string): Promise<boolean> {
+  try {
+    await navigator.clipboard.writeText(authorizeUrl);
+    return true;
+  } catch {
+    /* fallback below */
+  }
+  try {
+    const area = document.createElement("textarea");
+    area.value = authorizeUrl;
+    area.style.position = "fixed";
+    area.style.opacity = "0";
+    document.body.appendChild(area);
+    area.focus();
+    area.select();
+    const ok = document.execCommand("copy");
+    document.body.removeChild(area);
+    return ok;
+  } catch {
+    return false;
+  }
+}
+
 async function promptAuthCode(authorizeUrl: string): Promise<string | null> {
   const ui = useUiStore.getState();
-  const proceed = await ui.confirm(
+  const action = await ui.confirm(
     "Ein Browser-Fenster wird geöffnet, um die App zu autorisieren.\n\n" +
-      "Bitte kopieren Sie den angezeigten Code und fügen Sie ihn im nächsten Dialog ein.",
+      "Bitte kopieren Sie den angezeigten Code und fügen Sie ihn im nächsten Dialog ein.\n\n" +
+      "Falls sich kein Browser öffnet: „Link kopieren“ und die URL manuell im Browser einfügen.",
     {
       title: "Dropbox autorisieren",
       primaryLabel: "Browser öffnen",
+      tertiaryLabel: "Link kopieren",
       secondaryLabel: "Abbrechen",
     },
   );
-  if (!proceed) return null;
-  try {
-    await openUrl(authorizeUrl);
-  } catch {
-    window.open(authorizeUrl, "_blank", "noopener,noreferrer");
+  if (!action) return null;
+
+  if (action === "tertiary") {
+    const copied = await copyAuthorizeUrl(authorizeUrl);
+    if (copied) {
+      showAppToast("Autorisierungs-Link kopiert. Im Browser einfügen und autorisieren.", {
+        tone: "success",
+        title: "Dropbox",
+      });
+    } else {
+      ui.showWarning(
+        "Link konnte nicht in die Zwischenablage kopiert werden.\n\n" +
+          `Bitte diese URL manuell öffnen:\n${authorizeUrl}`,
+        "Dropbox autorisieren",
+      );
+    }
+  } else {
+    try {
+      await openUrl(authorizeUrl);
+    } catch (err) {
+      ui.showWarning(
+        `Browser konnte nicht geöffnet werden:\n${String(err)}\n\n` +
+          "Bitte erneut verbinden und „Link kopieren“ verwenden.",
+        "Dropbox autorisieren",
+      );
+    }
   }
+
   const code = await ui.prompt("Eingabe-Code von Dropbox:", {
     title: "Autorisierungscode",
     placeholder: "Code einfügen…",
@@ -343,7 +390,7 @@ function AccountCredentialsDialog({
               id="dbx-acc-label"
               value={draft.label}
               disabled={busy}
-              placeholder="z. B. Gera"
+              placeholder="z. B. Dropbox-Calden"
               onChange={(e) => onChange({ label: e.target.value })}
             />
           </div>
@@ -429,7 +476,7 @@ function EditAccountDialog({
               id="dbx-edit-label"
               value={draft.label}
               disabled={busy}
-              placeholder="z. B. Gera"
+              placeholder="z. B. Dropbox-Calden"
               onChange={(e) => onChange({ label: e.target.value })}
             />
           </div>

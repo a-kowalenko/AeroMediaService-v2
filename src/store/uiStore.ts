@@ -19,10 +19,13 @@ export type DialogPrimaryAction = {
   label: string;
 };
 
+export type ConfirmResult = boolean | "tertiary";
+
 export type ConfirmDialogOptions = {
   title?: string;
   primaryLabel?: string;
   secondaryLabel?: string;
+  tertiaryLabel?: string;
   destructive?: boolean;
 };
 
@@ -46,6 +49,7 @@ type UiState = {
   dialogPrimaryAction: DialogPrimaryAction | null;
   dialogPrimaryLabel: string;
   dialogSecondaryLabel: string;
+  dialogTertiaryLabel: string;
   dialogDestructive: boolean;
   dialogPromptValue: string;
   dialogPromptPlaceholder: string;
@@ -65,12 +69,12 @@ type UiState = {
     title?: string,
     options?: { autoCloseSecs?: number },
   ) => void;
-  /** Promise resolves true if primary confirmed. */
-  confirm: (message: string, options?: ConfirmDialogOptions) => Promise<boolean>;
+  /** Promise resolves true (primary), false (secondary/cancel), or "tertiary". */
+  confirm: (message: string, options?: ConfirmDialogOptions) => Promise<ConfirmResult>;
   /** Promise resolves string on OK, null on cancel. */
   prompt: (message: string, options?: PromptDialogOptions) => Promise<string | null>;
   closeDialog: () => void;
-  resolveConfirm: (accepted: boolean) => void;
+  resolveConfirm: (accepted: ConfirmResult) => void;
   resolvePrompt: (value: string | null) => void;
   setPromptValue: (value: string) => void;
 };
@@ -82,16 +86,17 @@ const emptyDialogFields = {
   dialogPrimaryAction: null as DialogPrimaryAction | null,
   dialogPrimaryLabel: "OK",
   dialogSecondaryLabel: "Abbrechen",
+  dialogTertiaryLabel: "",
   dialogDestructive: false,
   dialogPromptValue: "",
   dialogPromptPlaceholder: "",
   dialogPromptHint: "",
 };
 
-let confirmResolver: ((value: boolean) => void) | null = null;
+let confirmResolver: ((value: ConfirmResult) => void) | null = null;
 let promptResolver: ((value: string | null) => void) | null = null;
 
-function settleConfirm(value: boolean) {
+function settleConfirm(value: ConfirmResult) {
   const resolve = confirmResolver;
   confirmResolver = null;
   resolve?.(value);
@@ -159,7 +164,7 @@ export const useUiStore = create<UiState>((set, get) => ({
   },
 
   confirm: (message, options) =>
-    new Promise<boolean>((resolve) => {
+    new Promise<ConfirmResult>((resolve) => {
       settleConfirm(false);
       settlePrompt(null);
       confirmResolver = resolve;
@@ -170,6 +175,7 @@ export const useUiStore = create<UiState>((set, get) => ({
         dialogMessage: message,
         dialogPrimaryLabel: options?.primaryLabel ?? "OK",
         dialogSecondaryLabel: options?.secondaryLabel ?? "Abbrechen",
+        dialogTertiaryLabel: options?.tertiaryLabel ?? "",
         dialogDestructive: Boolean(options?.destructive),
       });
     }),
@@ -202,7 +208,7 @@ export const useUiStore = create<UiState>((set, get) => ({
     });
   },
 
-  resolveConfirm: (accepted) => {
+  resolveConfirm: (accepted: ConfirmResult) => {
     settleConfirm(accepted);
     set({
       dialogKind: null,
