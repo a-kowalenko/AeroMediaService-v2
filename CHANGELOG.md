@@ -8,6 +8,8 @@ Patch ohne Unreleased-Text: Notes der Vorgängerversion werden übernommen.
 
 ## [Unreleased]
 
+## [0.1.11] - 2026-08-26
+
 ### Verbessert
 
 - Download-Links, Dropbox-Autorisierung und Update-Installer öffnen zuverlässiger im Standard-Browser — besonders unter **Linux (AppImage)**
