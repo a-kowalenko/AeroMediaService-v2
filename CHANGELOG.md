@@ -8,6 +8,8 @@ Patch ohne Unreleased-Text: Notes der Vorgängerversion werden übernommen.
 
 ## [Unreleased]
 
+## [0.1.9] - 2026-08-25
+
 ### Verbessert
 
 - Parallele Upload-Slots: sobald eine Datei fertig ist, startet die nächste — die vier Slots bleiben durchgehend sichtbar statt alle kurz zu verschwinden
