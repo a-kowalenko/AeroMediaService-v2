@@ -188,6 +188,11 @@ pub struct DropboxClient {
     keys: DropboxSecretKeys,
 }
 
+/// True for `Verbunden` and legacy variants like `Verbunden (…)`.
+pub fn is_connected_status(status: &str) -> bool {
+    status.trim().starts_with("Verbunden")
+}
+
 impl Default for DropboxClient {
     fn default() -> Self {
         Self::new()
@@ -1682,6 +1687,10 @@ mod tests {
         );
         assert_eq!(info.display_name, "Ada Lovelace");
         assert_eq!(info.email, "ada@example.com");
+        assert!(is_connected_status("Verbunden"));
+        assert!(is_connected_status("Verbunden (Ada Lovelace)"));
+        assert!(!is_connected_status("Nicht verbunden"));
+        assert!(!is_connected_status("Verbindungsfehler"));
         assert_eq!(info.profile_photo_url, "https://example.com/ada.jpg");
         assert!(info.token_valid);
         assert_eq!(info.app_key_hint, "abcd…wxyz");

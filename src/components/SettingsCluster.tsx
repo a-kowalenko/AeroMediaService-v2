@@ -125,13 +125,14 @@ export function SettingsCluster({
         title="Einstellungen & mehr"
         disabled={disabled}
       >
-        <Settings
+        <span
           className={cn(
-            "h-4 w-4 origin-center transition-transform duration-[320ms] ease-[cubic-bezier(0.2,0.9,0.2,1)] motion-reduce:transition-none",
-            open ? "-rotate-[135deg]" : "rotate-0",
+            "inline-flex h-4 w-4 shrink-0 items-center justify-center transition-transform duration-[320ms] ease-[cubic-bezier(0.2,0.9,0.2,1)] motion-reduce:transition-none",
+            open ? "-rotate-90" : "rotate-0",
           )}
-          aria-hidden
-        />
+        >
+          <Settings className="h-4 w-4" aria-hidden />
+        </span>
         {showClusterBadge ? (
           <span
             className="absolute -right-0.5 -top-0.5 h-2.5 w-2.5 rounded-full bg-destructive ring-2 ring-card"

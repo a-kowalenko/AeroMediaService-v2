@@ -5,6 +5,7 @@ import { AppChrome } from "@/components/chrome";
 import { AppFeedbackHost } from "@/components/AppFeedbackHost";
 import { AtsClientsDialog } from "@/components/AtsClientsDialog";
 import { countConnectedAtsHosts } from "@/components/AtsHostListSections";
+import { CloudConnectionChips } from "@/components/CloudConnectionChips";
 import { ConnectionStatusIndicator } from "@/components/ConnectionStatusIndicator";
 import { CustomersPanel } from "@/components/CustomersPanel";
 import { HistoryTable } from "@/components/HistoryTable";
@@ -62,7 +63,7 @@ function App() {
   const [splashOpen, setSplashOpen] = useState(true);
   const [splashStatus, setSplashStatus] = useState("Wird gestartet…");
   const [splashError, setSplashError] = useState<string | null>(null);
-  const [statusLabel, setStatusLabel] = useState("Bereit.");
+  const [cloudChipsRefreshToken, setCloudChipsRefreshToken] = useState(0);
   const [updateDialogOpen, setUpdateDialogOpen] = useState(false);
   const [versionInstall, setVersionInstall] = useState<{
     fromVersion: string;
@@ -99,6 +100,10 @@ function App() {
   const openCustomerCount = useCustomerStore((s) => s.openCount);
   const refreshCustomerCounts = useCustomerStore((s) => s.refreshCounts);
   const connected = isCloudConnected(connectionStatus);
+
+  const bumpCloudChips = useCallback(() => {
+    setCloudChipsRefreshToken((n) => n + 1);
+  }, []);
 
   const syncMonitoringState = useCallback(async () => {
     try {
@@ -340,7 +345,6 @@ function App() {
             try {
               await startMonitoring();
               await syncMonitoringState();
-              if (!cancelled) setStatusLabel("Monitoring aktiv.");
             } catch (err) {
               showError(String(err), "Monitoring");
             }
@@ -363,30 +367,23 @@ function App() {
             shouldConnect = Boolean(refresh?.trim());
           }
 
-          if (!shouldConnect) {
-            if (!cancelled) setStatusLabel("Bereit.");
-          } else {
+          if (shouldConnect) {
             if (!cancelled) setSplashStatus("Verbindung wird hergestellt…");
-            setStatusLabel("Verbindung wird hergestellt…");
             const result = await autoConnectCloud();
             if (cancelled) return;
             if (result.success) {
               setConnectionStatus(result.status || "Verbunden");
-              setStatusLabel(result.message || "Bereit.");
+              bumpCloudChips();
               showAppToast(result.message || "Verbunden.", {
                 tone: "success",
                 title: "Cloud",
               });
-            } else {
-              setStatusLabel(result.message || "Bereit.");
-              if (result.status && result.status !== "Nicht verbunden") {
-                showError(result.message, "Auto-Connect");
-              }
+            } else if (result.status && result.status !== "Nicht verbunden") {
+              showError(result.message, "Auto-Connect");
             }
           }
         } catch (err) {
           if (!cancelled) {
-            setStatusLabel("Bereit.");
             setSplashError(String(err));
             showError(String(err), "Auto-Connect");
           }
@@ -403,14 +400,19 @@ function App() {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [setConnectionStatus, setupWizardOpen, showError, syncMonitoringState]);
+  }, [
+    setConnectionStatus,
+    setupWizardOpen,
+    showError,
+    syncMonitoringState,
+    bumpCloudChips,
+  ]);
 
   async function onStart() {
     setMonitorBusy(true);
     try {
       await startMonitoring();
       await syncMonitoringState();
-      setStatusLabel("Monitoring aktiv.");
       showAppToast("Monitoring gestartet.", { tone: "success" });
     } catch (err) {
       showError(String(err), "Monitoring");
@@ -424,7 +426,6 @@ function App() {
     try {
       await stopMonitoring();
       setMonitoring(false);
-      setStatusLabel("Monitoring gestoppt.");
       showAppToast("Monitoring gestoppt.", { tone: "info" });
     } catch (err) {
       showError(String(err), "Monitoring");
@@ -527,10 +528,7 @@ function App() {
             </div>
 
             <div className="border-t border-border bg-gradient-to-t from-card/90 to-card/40 px-3.5 py-2.5 backdrop-blur-sm">
-              <p className="truncate text-xs text-muted" title={statusLabel}>
-                {statusLabel}
-                {connectionStatus ? ` · ${connectionStatus}` : ""}
-              </p>
+              <CloudConnectionChips refreshToken={cloudChipsRefreshToken} />
             </div>
           </aside>
 
@@ -581,6 +579,7 @@ function App() {
         onClose={() => {
           if (updateDialogOpen || updateInstalling) return;
           setSettingsOpen(false);
+          bumpCloudChips();
         }}
         appVersion={version === "…" ? "" : version}
         platformHint={updaterPlatformHint}
@@ -603,7 +602,7 @@ function App() {
         open={setupWizardOpen}
         onComplete={() => {
           setSetupWizardOpen(false);
-          setStatusLabel("Einrichtung abgeschlossen.");
+          bumpCloudChips();
         }}
       />
 

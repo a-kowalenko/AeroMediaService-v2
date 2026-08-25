@@ -7,6 +7,7 @@ use crate::cloud::{
     guards::{self, OauthIdentityOutcome},
     oauth::OauthStart, CloudClient, CloudState, DropboxAccountInfo, DropboxPool, DropboxSecretKeys,
 };
+use crate::cloud::dropbox::is_connected_status;
 use crate::commands::ConfigState;
 use crate::notify::sms;
 use crate::storage::dropbox_accounts::{
@@ -432,7 +433,7 @@ async fn connect_dropbox_for_pure_contact_markers(cloud: &CloudState) {
         );
         return;
     }
-    if cloud.dropbox().connection_status() == "Verbunden" {
+    if is_connected_status(&cloud.dropbox().connection_status()) {
         return;
     }
     match cloud.dropbox().connect_session(false).await {

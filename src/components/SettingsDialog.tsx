@@ -1915,7 +1915,7 @@ export function SettingsDialog({
                                             </div>
                                         </SettingsSection>
 
-                                        <SettingsSection title="Custom-API Dropbox-Konto">
+                                        <SettingsSection title="Custom-API Dropbox-Konten">
                                             <DropboxAccountsSection
                                                 open={isOpen}
                                                 pool="custom_api"

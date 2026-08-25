@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
 use crate::cloud::custom_api::lookup_customer_url;
+use crate::cloud::dropbox::is_connected_status;
 use crate::cloud::{CloudClient, DropboxClient};
 use crate::model::kunde::{normalize_phone, Kunde};
 use crate::model::validation::{is_valid_email, is_valid_share_link};
@@ -189,7 +190,7 @@ async fn lookup_link_from_cloud(entry: &Value, selected_cloud: &str) -> Option<S
     if !client.connect().await.ok()? {
         return None;
     }
-    if client.connection_status() != "Verbunden" {
+    if !is_connected_status(&client.connection_status()) {
         return None;
     }
     client.get_shareable_link(&remote_path).await.ok().flatten()

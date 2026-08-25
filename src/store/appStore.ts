@@ -10,7 +10,7 @@ type AppState = {
 };
 
 export function isCloudConnected(status: string): boolean {
-  return status.trim() === "Verbunden";
+  return status.trim().startsWith("Verbunden");
 }
 
 export const useAppStore = create<AppState>((set) => ({
