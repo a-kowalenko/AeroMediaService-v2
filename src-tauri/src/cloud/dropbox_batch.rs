@@ -5,6 +5,7 @@
 //! - Large n==1: serial [`DropboxClient::upload_large_file`]
 //! - Groups of at most [`BATCH_MAX_FILES`]
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use serde_json::{json, Value};
@@ -13,7 +14,7 @@ use tokio::task::JoinSet;
 
 use super::dropbox::{
     percent, read_chunk, session_append_arg, DropboxClient, DropboxCursor, DropboxSessionResume,
-    UploadFile, BATCH_MAX_FILES, BATCH_PARALLEL_WORKERS, CHUNK_SIZE, SMALL_FILE_BYTES,
+    UploadFile, BATCH_MAX_FILES, CHUNK_SIZE, SMALL_FILE_BYTES,
 };
 use crate::cloud::traits::CloudError;
 use crate::events;
@@ -58,27 +59,33 @@ pub(crate) fn batch_slices(len: usize, max: usize) -> Vec<(usize, usize)> {
 }
 
 /// Drive hybrid upload from `start_idx` through the end of `files`.
-pub async fn upload_files_hybrid<F, G>(
+pub async fn upload_files_hybrid<F, G, H>(
     client: &DropboxClient,
     files: &[UploadFile],
     start_idx: usize,
     total_job_size: u64,
     mut bytes_uploaded: u64,
     control: &UploadControl,
+    skip_paths: &HashSet<String>,
     mut resume: Option<DropboxSessionResume>,
     mut on_serial_progress: F,
+    mut on_file_done: H,
     mut on_group_done: G,
 ) -> Result<(), CloudError>
 where
     F: FnMut(usize, Option<DropboxCursor>, bool),
     G: FnMut(usize, u64, &[HybridUploaded]) -> Result<(), CloudError>,
+    H: FnMut(usize, u64, &HybridUploaded) -> Result<(), CloudError>,
 {
     let mut idx = start_idx.min(files.len());
+    while idx < files.len() && skip_paths.contains(&files[idx].rel_norm) {
+        idx += 1;
+    }
 
     if let Some(r) = resume.take() {
         if idx < files.len() {
             let file = &files[idx];
-            if r.rel_path == file.rel_norm {
+            if r.rel_path == file.rel_norm && !skip_paths.contains(&file.rel_norm) {
                 control.wait_if_paused().await?;
                 emit_file_status(file, idx, files.len());
                 let id = upload_one_serial(
@@ -94,11 +101,13 @@ where
                 .await?;
                 bytes_uploaded += file.size;
                 emit_total(bytes_uploaded, total_job_size);
-                let uploaded = [HybridUploaded {
+                let uploaded = HybridUploaded {
                     file_index: idx,
                     dropbox_id: id,
-                }];
-                on_group_done(idx + 1, bytes_uploaded, &uploaded)?;
+                };
+                client.write_limiter().on_success();
+                on_file_done(idx + 1, bytes_uploaded, &uploaded)?;
+                on_group_done(idx + 1, bytes_uploaded, std::slice::from_ref(&uploaded))?;
                 idx += 1;
             }
         }
@@ -114,13 +123,22 @@ where
             continue;
         }
 
-        if batch.len() == 1 {
-            let file = &batch[0];
-            emit_file_status(file, batch_start, files.len());
+        let pending: Vec<usize> = (0..batch.len())
+            .filter(|&local_i| !skip_paths.contains(&batch[local_i].rel_norm))
+            .collect();
+        if pending.is_empty() {
+            continue;
+        }
+
+        if pending.len() == 1 {
+            let local_i = pending[0];
+            let file = &batch[local_i];
+            let global_idx = batch_start + local_i;
+            emit_file_status(file, global_idx, files.len());
             let id = upload_one_serial(
                 client,
                 file,
-                batch_start,
+                global_idx,
                 bytes_uploaded,
                 total_job_size,
                 control,
@@ -130,17 +148,19 @@ where
             .await?;
             bytes_uploaded += file.size;
             emit_total(bytes_uploaded, total_job_size);
-            let uploaded = [HybridUploaded {
-                file_index: batch_start,
+            let uploaded = HybridUploaded {
+                file_index: global_idx,
                 dropbox_id: id,
-            }];
-            on_group_done(batch_end, bytes_uploaded, &uploaded)?;
+            };
+            client.write_limiter().on_success();
+            on_file_done(global_idx + 1, bytes_uploaded, &uploaded)?;
+            on_group_done(global_idx + 1, bytes_uploaded, std::slice::from_ref(&uploaded))?;
             continue;
         }
 
         logging::log_info(&format!(
             "Dropbox Batch-Upload: {} Dateien (Index {}–{}).",
-            batch.len(),
+            pending.len(),
             batch_start,
             batch_end - 1
         ));
@@ -152,6 +172,8 @@ where
             total_job_size,
             bytes_uploaded,
             control,
+            skip_paths,
+            &mut on_file_done,
         )
         .await?;
         for u in &uploaded {
@@ -230,7 +252,7 @@ where
     }
 }
 
-async fn upload_batch_group(
+async fn upload_batch_group<H>(
     client: &DropboxClient,
     batch: &[UploadFile],
     batch_start_index: usize,
@@ -238,8 +260,21 @@ async fn upload_batch_group(
     total_job_size: u64,
     bytes_uploaded_base: u64,
     control: &UploadControl,
-) -> Result<Vec<HybridUploaded>, CloudError> {
+    skip_paths: &HashSet<String>,
+    on_file_done: &mut H,
+) -> Result<Vec<HybridUploaded>, CloudError>
+where
+    H: FnMut(usize, u64, &HybridUploaded) -> Result<(), CloudError>,
+{
     let (small_local, large_local) = partition_small_large(batch);
+    let small_local: Vec<usize> = small_local
+        .into_iter()
+        .filter(|&li| !skip_paths.contains(&batch[li].rel_norm))
+        .collect();
+    let large_local: Vec<usize> = large_local
+        .into_iter()
+        .filter(|&li| !skip_paths.contains(&batch[li].rel_norm))
+        .collect();
     let mut rows_by_local: Vec<Option<HybridUploaded>> = vec![None; batch.len()];
 
     if !small_local.is_empty() {
@@ -251,6 +286,7 @@ async fn upload_batch_group(
             .iter()
             .map(|&li| (li, batch_start_index + li))
             .collect();
+        let mut running_bytes = bytes_uploaded_base;
         let results = upload_small_parallel(
             client,
             batch,
@@ -259,6 +295,8 @@ async fn upload_batch_group(
             total_job_size,
             bytes_uploaded_base,
             control,
+            &mut running_bytes,
+            on_file_done,
         )
         .await?;
         for (local_idx, id) in results {
@@ -280,6 +318,7 @@ async fn upload_batch_group(
             large_files.len()
         ));
         let small_done: u64 = small_local.iter().map(|&i| batch[i].size).sum();
+        let mut running_bytes = bytes_uploaded_base + small_done;
         let results = upload_large_batch(
             client,
             &large_files,
@@ -288,6 +327,8 @@ async fn upload_batch_group(
             total_job_size,
             bytes_uploaded_base + small_done,
             control,
+            &mut running_bytes,
+            on_file_done,
         )
         .await?;
         for (pos, id) in results.into_iter().enumerate() {
@@ -299,8 +340,11 @@ async fn upload_batch_group(
         }
     }
 
-    let mut out = Vec::with_capacity(batch.len());
+    let mut out = Vec::new();
     for (i, slot) in rows_by_local.into_iter().enumerate() {
+        if skip_paths.contains(&batch[i].rel_norm) {
+            continue;
+        }
         out.push(slot.ok_or_else(|| {
             CloudError::Message(format!(
                 "Batch-Upload unvollständig für {}",
@@ -311,7 +355,7 @@ async fn upload_batch_group(
     Ok(out)
 }
 
-async fn upload_small_parallel(
+async fn upload_small_parallel<H>(
     client: &DropboxClient,
     batch: &[UploadFile],
     indexed: &[(usize, usize)],
@@ -319,7 +363,12 @@ async fn upload_small_parallel(
     total_job_size: u64,
     bytes_uploaded_base: u64,
     control: &UploadControl,
-) -> Result<Vec<(usize, Option<String>)>, CloudError> {
+    running_bytes: &mut u64,
+    on_file_done: &mut H,
+) -> Result<Vec<(usize, Option<String>)>, CloudError>
+where
+    H: FnMut(usize, u64, &HybridUploaded) -> Result<(), CloudError>,
+{
     if indexed.is_empty() {
         return Ok(Vec::new());
     }
@@ -346,75 +395,100 @@ async fn upload_small_parallel(
             .await?;
         events::upload_slots_progress(global_idx, file.size, file.size);
         emit_file_done(global_idx);
-        let current = bytes_uploaded_base + file.size;
-        emit_total(current, total_job_size);
+        *running_bytes = running_bytes.saturating_add(file.size);
+        emit_total(*running_bytes, total_job_size);
+        let row = HybridUploaded {
+            file_index: global_idx,
+            dropbox_id: id.clone(),
+        };
+        client.write_limiter().on_success();
+        on_file_done(global_idx + 1, *running_bytes, &row)?;
         return Ok(vec![(local_idx, id)]);
     }
 
-    let workers = BATCH_PARALLEL_WORKERS.min(indexed.len());
-    let sem = Arc::new(Semaphore::new(workers));
-    let mut set = JoinSet::new();
+    let limiter = client.write_limiter();
+    let mut queue: Vec<(usize, usize)> = indexed.to_vec();
+    let mut results = Vec::with_capacity(indexed.len());
     let batch_prog = BatchProgress::new(indexed.len(), bytes_uploaded_base, total_job_size);
 
-    for (slot_idx, &(local_idx, global_idx)) in indexed.iter().enumerate() {
-        let permit = sem
-            .clone()
-            .acquire_owned()
-            .await
-            .map_err(|e| CloudError::Message(e.to_string()))?;
-        let client = client.clone();
-        let control = control.clone();
-        let file = batch[local_idx].clone();
-        let batch_prog = Arc::clone(&batch_prog);
-        set.spawn(async move {
-            let _permit = permit;
-            control.wait_if_paused().await?;
-            emit_file_status(&file, global_idx, total_files_in_job);
-            events::emit_progress_file(0, 0, file.size);
-            let size = file.size;
-            let bp = Arc::clone(&batch_prog);
-            let on_send = std::sync::Arc::new(move |sent: u64| {
-                let sent = sent.min(size);
-                bp.report_inflight(slot_idx, sent, false);
-                events::upload_slots_progress(global_idx, sent, size);
-                events::emit_progress_file(percent(sent, size), sent, size);
-            }) as std::sync::Arc<dyn Fn(u64) + Send + Sync>;
-            let id = client
-                .upload_small_file_with_progress(
-                    &file.local_path,
-                    &file.dropbox_path,
-                    file.size,
-                    &control,
-                    Some(on_send),
-                )
-                .await?;
-            events::emit_progress_file(100, file.size, file.size);
-            events::upload_slots_progress(global_idx, file.size, file.size);
-            emit_file_done(global_idx);
-            batch_prog.complete_slot(slot_idx, file.size);
-            Ok::<_, CloudError>((local_idx, id))
-        });
-    }
+    while !queue.is_empty() {
+        control.wait_if_paused().await?;
+        let wave_size = limiter.current_workers(queue.len());
+        let wave: Vec<(usize, usize)> = queue.drain(..wave_size).collect();
+        let sem = Arc::new(Semaphore::new(wave.len()));
+        let mut set = JoinSet::new();
 
-    let mut results = Vec::with_capacity(indexed.len());
-    while let Some(joined) = set.join_next().await {
-        match joined {
-            Ok(Ok(row)) => results.push(row),
-            Ok(Err(e)) => {
-                set.abort_all();
-                return Err(e);
-            }
-            Err(e) => {
-                set.abort_all();
-                return Err(CloudError::Message(format!("Join-Fehler: {e}")));
+        for (slot_idx, (local_idx, global_idx)) in wave.into_iter().enumerate() {
+            let permit = sem
+                .clone()
+                .acquire_owned()
+                .await
+                .map_err(|e| CloudError::Message(e.to_string()))?;
+            let client = client.clone();
+            let control = control.clone();
+            let file = batch[local_idx].clone();
+            let batch_prog = Arc::clone(&batch_prog);
+            set.spawn(async move {
+                let _permit = permit;
+                control.wait_if_paused().await?;
+                emit_file_status(&file, global_idx, total_files_in_job);
+                events::emit_progress_file(0, 0, file.size);
+                let size = file.size;
+                let bp = Arc::clone(&batch_prog);
+                let on_send = std::sync::Arc::new(move |sent: u64| {
+                    let sent = sent.min(size);
+                    bp.report_inflight(slot_idx, sent, false);
+                    events::upload_slots_progress(global_idx, sent, size);
+                    events::emit_progress_file(percent(sent, size), sent, size);
+                }) as std::sync::Arc<dyn Fn(u64) + Send + Sync>;
+                let id = client
+                    .upload_small_file_with_progress(
+                        &file.local_path,
+                        &file.dropbox_path,
+                        file.size,
+                        &control,
+                        Some(on_send),
+                    )
+                    .await?;
+                events::emit_progress_file(100, file.size, file.size);
+                events::upload_slots_progress(global_idx, file.size, file.size);
+                emit_file_done(global_idx);
+                batch_prog.complete_slot(slot_idx, file.size);
+                Ok::<_, CloudError>((local_idx, global_idx, id))
+            });
+        }
+
+        while let Some(joined) = set.join_next().await {
+            match joined {
+                Ok(Ok((local_idx, global_idx, id))) => {
+                    let file = &batch[local_idx];
+                    *running_bytes = running_bytes.saturating_add(file.size);
+                    emit_total(*running_bytes, total_job_size);
+                    let row = HybridUploaded {
+                        file_index: global_idx,
+                        dropbox_id: id.clone(),
+                    };
+                    limiter.on_success();
+                    on_file_done(global_idx + 1, *running_bytes, &row)?;
+                    results.push((local_idx, id));
+                }
+                Ok(Err(e)) => {
+                    set.abort_all();
+                    return Err(e);
+                }
+                Err(e) => {
+                    set.abort_all();
+                    return Err(CloudError::Message(format!("Join-Fehler: {e}")));
+                }
             }
         }
     }
+
     results.sort_by_key(|(i, _)| *i);
     Ok(results)
 }
 
-async fn upload_large_batch(
+async fn upload_large_batch<H>(
     client: &DropboxClient,
     large_files: &[&UploadFile],
     global_indices: &[usize],
@@ -422,7 +496,12 @@ async fn upload_large_batch(
     total_job_size: u64,
     bytes_uploaded_base: u64,
     control: &UploadControl,
-) -> Result<Vec<Option<String>>, CloudError> {
+    running_bytes: &mut u64,
+    on_file_done: &mut H,
+) -> Result<Vec<Option<String>>, CloudError>
+where
+    H: FnMut(usize, u64, &HybridUploaded) -> Result<(), CloudError>,
+{
     let n = large_files.len();
     if n == 0 {
         return Ok(Vec::new());
@@ -455,6 +534,13 @@ async fn upload_large_batch(
             .await?;
         events::upload_slots_progress(global_idx, file.size, file.size);
         emit_file_done(global_idx);
+        *running_bytes = running_bytes.saturating_add(file.size);
+        let row = HybridUploaded {
+            file_index: global_idx,
+            dropbox_id: id.clone(),
+        };
+        client.write_limiter().on_success();
+        on_file_done(global_idx + 1, *running_bytes, &row)?;
         return Ok(vec![id]);
     }
 
@@ -481,63 +567,78 @@ async fn upload_large_batch(
         )));
     }
 
-    let workers = BATCH_PARALLEL_WORKERS.min(n);
-    let sem = Arc::new(Semaphore::new(workers));
-    let mut set = JoinSet::new();
+    let limiter = client.write_limiter();
+    let mut queue: Vec<usize> = (0..n).collect();
+    let mut cursors: Vec<Option<DropboxCursor>> = vec![None; n];
     let batch_prog = BatchProgress::new(n, bytes_uploaded_base, total_job_size);
 
-    for batch_idx in 0..n {
-        let permit = sem
-            .clone()
-            .acquire_owned()
-            .await
-            .map_err(|e| CloudError::Message(e.to_string()))?;
-        let client = client.clone();
-        let control = control.clone();
-        let file = (*large_files[batch_idx]).clone();
-        let session_id = session_ids[batch_idx].clone();
-        let global_idx = global_indices[batch_idx];
-        let batch_prog = Arc::clone(&batch_prog);
-        set.spawn(async move {
-            let _permit = permit;
-            control.wait_if_paused().await?;
-            emit_file_status(&file, global_idx, total_files_in_job);
-            let size = file.size;
-            let bp = Arc::clone(&batch_prog);
-            let emit = std::sync::Arc::new(move |sent: u64| {
-                let sent = sent.min(size);
-                bp.report_inflight(batch_idx, sent, false);
-                events::upload_slots_progress(global_idx, sent, size);
-                events::emit_progress_file(percent(sent, size), sent, size);
-            }) as std::sync::Arc<dyn Fn(u64) + Send + Sync>;
-            let cursor = append_file_to_session(
-                &client,
-                &file,
-                &session_id,
-                &control,
-                emit,
-            )
-            .await?;
-            events::upload_slots_progress(global_idx, file.size, file.size);
-            emit_file_done(global_idx);
-            batch_prog.complete_slot(batch_idx, file.size);
-            Ok::<_, CloudError>((batch_idx, cursor))
-        });
-    }
+    while !queue.is_empty() {
+        control.wait_if_paused().await?;
+        let wave_size = limiter.current_workers(queue.len());
+        let wave: Vec<usize> = queue.drain(..wave_size).collect();
+        let sem = Arc::new(Semaphore::new(wave.len()));
+        let mut set = JoinSet::new();
 
-    let mut cursors: Vec<Option<DropboxCursor>> = vec![None; n];
-    while let Some(joined) = set.join_next().await {
-        match joined {
-            Ok(Ok((batch_idx, cursor))) => {
-                cursors[batch_idx] = Some(cursor);
-            }
-            Ok(Err(e)) => {
-                set.abort_all();
-                return Err(e);
-            }
-            Err(e) => {
-                set.abort_all();
-                return Err(CloudError::Message(format!("Join-Fehler: {e}")));
+        for slot_idx in wave {
+            let permit = sem
+                .clone()
+                .acquire_owned()
+                .await
+                .map_err(|e| CloudError::Message(e.to_string()))?;
+            let client = client.clone();
+            let control = control.clone();
+            let file = (*large_files[slot_idx]).clone();
+            let session_id = session_ids[slot_idx].clone();
+            let global_idx = global_indices[slot_idx];
+            let batch_prog = Arc::clone(&batch_prog);
+            set.spawn(async move {
+                let _permit = permit;
+                control.wait_if_paused().await?;
+                emit_file_status(&file, global_idx, total_files_in_job);
+                let size = file.size;
+                let bp = Arc::clone(&batch_prog);
+                let emit = std::sync::Arc::new(move |sent: u64| {
+                    let sent = sent.min(size);
+                    bp.report_inflight(slot_idx, sent, false);
+                    events::upload_slots_progress(global_idx, sent, size);
+                    events::emit_progress_file(percent(sent, size), sent, size);
+                }) as std::sync::Arc<dyn Fn(u64) + Send + Sync>;
+                let cursor = append_file_to_session(
+                    &client,
+                    &file,
+                    &session_id,
+                    &control,
+                    emit,
+                )
+                .await?;
+                events::upload_slots_progress(global_idx, file.size, file.size);
+                emit_file_done(global_idx);
+                batch_prog.complete_slot(slot_idx, file.size);
+                Ok::<_, CloudError>((slot_idx, global_idx, cursor))
+            });
+        }
+
+        while let Some(joined) = set.join_next().await {
+            match joined {
+                Ok(Ok((batch_idx, global_idx, cursor))) => {
+                    cursors[batch_idx] = Some(cursor);
+                    let file = large_files[batch_idx];
+                    *running_bytes = running_bytes.saturating_add(file.size);
+                    let row = HybridUploaded {
+                        file_index: global_idx,
+                        dropbox_id: None,
+                    };
+                    limiter.on_success();
+                    on_file_done(global_idx + 1, *running_bytes, &row)?;
+                }
+                Ok(Err(e)) => {
+                    set.abort_all();
+                    return Err(e);
+                }
+                Err(e) => {
+                    set.abort_all();
+                    return Err(CloudError::Message(format!("Join-Fehler: {e}")));
+                }
             }
         }
     }

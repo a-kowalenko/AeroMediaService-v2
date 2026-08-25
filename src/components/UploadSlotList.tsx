@@ -136,17 +136,17 @@ export function UploadSlotList({ slots, reservedRows, formatSize }: Props) {
     };
   }, []);
 
-  const minHeight = listMinHeightPx(reservedRows);
+  const listHeight = listMinHeightPx(reservedRows);
   if (reservedRows <= 0 && rows.length === 0) return null;
 
   return (
     <ul
-      className="flex flex-col"
+      className="flex flex-col overflow-hidden"
       style={
-        minHeight != null
+        listHeight != null
           ? {
-              minHeight,
-              transition: `min-height ${COLLAPSE_MS}ms ${EASE}`,
+              height: listHeight,
+              transition: `height ${COLLAPSE_MS}ms ${EASE}`,
             }
           : undefined
       }

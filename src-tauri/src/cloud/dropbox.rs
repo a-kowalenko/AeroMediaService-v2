@@ -3,6 +3,7 @@
 //!
 //! Secrets are read only from the OS keyring.
 
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -17,6 +18,7 @@ use serde::Serialize;
 use serde_json::{json, Value};
 
 use crate::cloud::dropbox_batch::{self, HybridUploaded};
+use crate::cloud::dropbox_parallel::ParallelWriteLimiter;
 use crate::cloud::guards::{assert_checkpoint_binding_matches, merge_checkpoint_binding};
 use crate::cloud::oauth::{self, OauthStart};
 use crate::cloud::traits::{should_skip_upload_file, CloudClient, CloudError};
@@ -196,6 +198,7 @@ pub struct DropboxClient {
     access_token: Arc<Mutex<Option<String>>>,
     connection_verified: Arc<AtomicBool>,
     keys: DropboxSecretKeys,
+    write_limiter: ParallelWriteLimiter,
 }
 
 /// True for `Verbunden` and legacy variants like `Verbunden (…)`.
@@ -228,7 +231,16 @@ impl DropboxClient {
             access_token: Arc::new(Mutex::new(None)),
             connection_verified: Arc::new(AtomicBool::new(false)),
             keys,
+            write_limiter: ParallelWriteLimiter::new(BATCH_PARALLEL_WORKERS),
         }
+    }
+
+    pub(crate) fn write_limiter(&self) -> ParallelWriteLimiter {
+        self.write_limiter.clone()
+    }
+
+    pub(crate) fn reset_write_limiter(&self) {
+        self.write_limiter.reset();
     }
 
     fn token(&self) -> Option<String> {
@@ -736,6 +748,7 @@ impl DropboxClient {
                     }
                     if should_retry_status(status) && attempt < MAX_RETRY_ATTEMPTS {
                         let body = response.text().await.unwrap_or_default();
+                        note_rate_limit_from_body(self, &body);
                         last_err = CloudError::Http(format!("{tag}: {status} {body}"));
                     } else if status.is_success() {
                         return Ok(response);
@@ -751,7 +764,8 @@ impl DropboxClient {
                     last_err = e;
                 }
             }
-            let delay = retry_delay_secs(attempt);
+            let err_body = last_err.to_string();
+            let delay = compute_retry_delay_secs(attempt, &err_body);
             logging::log_warn(&format!(
                 "{tag}: Versuch {attempt}/{MAX_RETRY_ATTEMPTS} fehlgeschlagen, warte {delay:.1}s — {last_err}"
             ));
@@ -835,6 +849,7 @@ impl DropboxClient {
                     }
                     if should_retry_status(status) && attempt < MAX_RETRY_ATTEMPTS {
                         let body_text = response.text().await.unwrap_or_default();
+                        note_rate_limit_from_body(self, &body_text);
                         last_err = CloudError::Http(format!("{path}: {status} {body_text}"));
                     } else if status.is_success() {
                         return Ok(response);
@@ -851,7 +866,8 @@ impl DropboxClient {
                     last_err = err;
                 }
             }
-            let delay = retry_delay_secs(attempt);
+            let err_body = last_err.to_string();
+            let delay = compute_retry_delay_secs(attempt, &err_body);
             logging::log_warn(&format!(
                 "{path}: Versuch {attempt}/{MAX_RETRY_ATTEMPTS} fehlgeschlagen, warte {delay:.1}s — {last_err}"
             ));
@@ -1321,6 +1337,9 @@ impl CloudClient for DropboxClient {
             );
         }
 
+        self.reset_write_limiter();
+        let skip_paths = HashSet::new();
+
         events::emit_started_at(files.len() as i32, start_idx as u32);
 
         let dir = local_dir_path.to_path_buf();
@@ -1341,6 +1360,7 @@ impl CloudClient for DropboxClient {
             total_size,
             bytes_uploaded,
             control,
+            &skip_paths,
             resume_db,
             |file_idx, cursor, force| {
                 let i = file_idx.min(files_for_ck.len().saturating_sub(1));
@@ -1382,6 +1402,27 @@ impl CloudClient for DropboxClient {
                         let _ = saver.flush();
                     }
                 }
+            },
+            |next_idx, _bytes, _uploaded: &HybridUploaded| {
+                let mut payload = json!({
+                    "kind": "dropbox_native",
+                    "manifest_fp": fp,
+                    "remote_base_path": remote,
+                    "total_size": total_size,
+                    "phase": "uploading",
+                    "next_file_index": next_idx,
+                    "db_active": Value::Null,
+                });
+                if let Some(obj) = payload.as_object_mut() {
+                    merge_checkpoint_binding(obj, ams.as_deref(), Some(pool));
+                }
+                if let Ok(mut saver) = ck_saver.lock() {
+                    let _ = saver.update(&dir, &payload, next_idx as u64, false);
+                    if next_idx % 25 == 0 {
+                        let _ = saver.flush();
+                    }
+                }
+                Ok(())
             },
             |next_idx, _bytes, _uploaded: &[HybridUploaded]| {
                 if let Ok(mut saver) = ck_saver.lock() {
@@ -1697,6 +1738,74 @@ pub fn retry_delay_secs(attempt: u32) -> f64 {
     (2.0_f64.powi(attempt as i32)).min(60.0)
 }
 
+/// Parse Dropbox `retry_after` from a 429 JSON body (seconds).
+pub(crate) fn parse_retry_after_secs(body: &str) -> Option<f64> {
+    let value: Value = serde_json::from_str(body).ok()?;
+    let retry = value
+        .get("error")
+        .and_then(|e| e.get("retry_after"))
+        .or_else(|| value.get("retry_after"))?;
+    retry
+        .as_f64()
+        .or_else(|| retry.as_u64().map(|n| n as f64))
+        .or_else(|| retry.as_i64().map(|n| n.max(0) as f64))
+}
+
+pub(crate) fn is_write_rate_limit_body(body: &str) -> bool {
+    let lowered = body.to_ascii_lowercase();
+    lowered.contains("too_many_write_operations") || lowered.contains("too_many_requests")
+}
+
+pub(crate) fn compute_retry_delay_secs(attempt: u32, err_body: &str) -> f64 {
+    let exp = retry_delay_secs(attempt);
+    let api = parse_retry_after_secs(err_body).unwrap_or(0.0);
+    exp.max(api).min(60.0)
+}
+
+fn note_rate_limit_from_body(client: &DropboxClient, body: &str) {
+    if is_write_rate_limit_body(body) {
+        client.write_limiter().on_rate_limit();
+    }
+}
+
+/// Resume index: honour checkpoint index and skip paths already in `uploaded_files`.
+pub(crate) fn effective_resume_index(
+    files: &[UploadFile],
+    next_file_index: usize,
+    done: &HashSet<String>,
+) -> usize {
+    let mut start = next_file_index.min(files.len());
+    if !done.is_empty() {
+        let max_done_plus = files
+            .iter()
+            .enumerate()
+            .filter(|(_, f)| done.contains(&f.rel_norm))
+            .map(|(i, _)| i + 1)
+            .max()
+            .unwrap_or(0);
+        start = start.max(max_done_plus);
+    }
+    while start < files.len() && done.contains(&files[start].rel_norm) {
+        start += 1;
+    }
+    start
+}
+
+pub(crate) fn bytes_for_done_files(files: &[UploadFile], done: &HashSet<String>) -> u64 {
+    files
+        .iter()
+        .filter(|f| done.contains(&f.rel_norm))
+        .map(|f| f.size)
+        .sum()
+}
+
+pub(crate) fn files_done_count(files: &[UploadFile], done: &HashSet<String>) -> u32 {
+    files
+        .iter()
+        .filter(|f| done.contains(&f.rel_norm))
+        .count() as u32
+}
+
 pub(crate) fn percent(current: u64, total: u64) -> i32 {
     if total == 0 {
         0
@@ -1853,6 +1962,41 @@ mod tests {
         assert_eq!(retry_delay_secs(1), 2.0);
         assert_eq!(retry_delay_secs(2), 4.0);
         assert_eq!(retry_delay_secs(10), 60.0);
+        let body = r#"{"error":{"reason":{".tag":"too_many_write_operations"},"retry_after":1},"error_summary":""}"#;
+        assert_eq!(parse_retry_after_secs(body), Some(1.0));
+        assert!(is_write_rate_limit_body(body));
+        assert_eq!(compute_retry_delay_secs(1, body), 2.0);
+        assert_eq!(compute_retry_delay_secs(3, body), 8.0);
+    }
+
+    #[test]
+    fn effective_resume_index_skips_checkpointed_files() {
+        let files = vec![
+            UploadFile {
+                local_path: PathBuf::from("a.jpg"),
+                dropbox_path: "/Job/a.jpg".into(),
+                size: 1,
+                rel_norm: "a.jpg".into(),
+            },
+            UploadFile {
+                local_path: PathBuf::from("b.jpg"),
+                dropbox_path: "/Job/b.jpg".into(),
+                size: 2,
+                rel_norm: "b.jpg".into(),
+            },
+            UploadFile {
+                local_path: PathBuf::from("c.jpg"),
+                dropbox_path: "/Job/c.jpg".into(),
+                size: 3,
+                rel_norm: "c.jpg".into(),
+            },
+        ];
+        let mut done = HashSet::new();
+        done.insert("a.jpg".into());
+        done.insert("b.jpg".into());
+        assert_eq!(effective_resume_index(&files, 0, &done), 2);
+        assert_eq!(bytes_for_done_files(&files, &done), 3);
+        assert_eq!(files_done_count(&files, &done), 2);
     }
 
     #[test]
