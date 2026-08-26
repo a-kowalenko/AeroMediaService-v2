@@ -11,7 +11,13 @@ Patch ohne Unreleased-Text: Notes der Vorgängerversion werden übernommen.
 ### Neu
 
 - Einstellung **Betatester** unter Wartung → Software-Update: Vorabversionen anzeigen und per Auto-Update erhalten
-- Release-Flow mit Beta- und Stable-Kanal (Vorabversionen als Prerelease, Stable wird nach dem Build automatisch „Latest“)
+- In den Einstellungen gezielt auf eine **andere Version wechseln** (Upgrade oder Downgrade mit Bestätigung)
+
+### Verbessert
+
+- Upload **Abbrechen**: Status „Abbruch…“, Button „Wird abgebrochen…“ — Pause und erneutes Abbrechen sind während des Abbruchs gesperrt
+- Update-Dialog: Hinweis bei **Vorabversionen (Beta)**; Patchnotes aufklappbar
+- Versionsliste in den Einstellungen mit Kennzeichnung (Neueste, Beta, Installiert)
 
 ## [0.1.13] - 2026-08-26
 
