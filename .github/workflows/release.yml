@@ -183,7 +183,8 @@ jobs:
       matrix:
         include:
           - platform: windows-latest
-            args: ""
+            # NSIS only — MSI/WiX rejects SemVer pre-release (e.g. 0.1.14-beta.1).
+            args: "--bundles nsis"
           # Apple Silicon (M1+) — native on macos-latest (arm64)
           - platform: macos-latest
             args: "--target aarch64-apple-darwin"

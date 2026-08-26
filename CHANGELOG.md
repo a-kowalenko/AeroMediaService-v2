@@ -19,6 +19,10 @@ Patch ohne Unreleased-Text: Notes der Vorgängerversion werden übernommen.
 - Update-Dialog: Hinweis bei **Vorabversionen (Beta)**; Patchnotes aufklappbar
 - Versionsliste in den Einstellungen mit Kennzeichnung (Neueste, Beta, Installiert)
 
+### Behoben
+
+- Windows-Release-Builds nutzen nur noch **NSIS** (kein MSI), damit Beta-Tags wie `0.1.14-beta.1` in CI durchlaufen
+
 
 ## [0.1.14-beta.1] - 2026-08-26
 
