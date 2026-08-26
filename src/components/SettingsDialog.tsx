@@ -48,6 +48,10 @@ import {
 } from "@/lib/tauri";
 import {AtsHostActivitySection} from "@/components/AtsHostActivitySection";
 import {DropboxAccountsSection} from "@/components/settings/DropboxAccountsSection";
+import {
+    BrochureSettingsSection,
+    type BrochureForm,
+} from "@/components/settings/BrochureSettingsSection";
 import {ExtrasSettingsSection} from "@/components/settings/ExtrasSettingsSection";
 import {
     atsPresenceChipLabel,
@@ -133,6 +137,7 @@ type SettingsFormSnapshot = {
         bridge_display_name: string;
         bridge_token: string;
     };
+    brochure: BrochureForm;
     cloudService: "dropbox" | "custom_api";
     dropbox: { db_app_key: string; db_app_secret: string };
     customApi: {
@@ -390,6 +395,11 @@ export function SettingsDialog({
         bridge_display_name: "",
         bridge_token: "",
     });
+    const [brochure, setBrochure] = useState<BrochureForm>({
+        brochure_enabled: false,
+        brochure_export_name: "Infobroschuere.pdf",
+        brochure_subdir: "",
+    });
     const [bridgeStatusLabel, setBridgeStatusLabel] = useState("—");
     const [bridgeInstanceId, setBridgeInstanceId] = useState("");
     const [bridgeBusy, setBridgeBusy] = useState(false);
@@ -472,6 +482,7 @@ export function SettingsDialog({
             captureSettingsFormSnapshot({
                 themeMode,
                 general,
+                brochure,
                 cloudService,
                 dropbox,
                 customApi,
@@ -480,7 +491,7 @@ export function SettingsDialog({
                 shortener,
                 whatsapp,
             }),
-        [themeMode, general, cloudService, dropbox, customApi, email, sms, shortener, whatsapp],
+        [themeMode, general, brochure, cloudService, dropbox, customApi, email, sms, shortener, whatsapp],
     );
 
     const isDirty =
@@ -639,6 +650,9 @@ export function SettingsDialog({
                 link_shortener_enabled,
                 shortener_expires_preset,
                 twilio_whatsapp_from,
+                brochure_enabled,
+                brochure_export_name,
+                brochure_subdir,
             ] = await Promise.all([
                 getSetting("monitor_path", ""),
                 getSetting("archive_path", ""),
@@ -670,6 +684,9 @@ export function SettingsDialog({
                 getSetting("link_shortener_enabled", "false"),
                 getSetting("shortener_expires_preset", "permanent"),
                 getSetting("twilio_whatsapp_from", ""),
+                getSetting("brochure_enabled", "false"),
+                getSetting("brochure_export_name", "Infobroschuere.pdf"),
+                getSetting("brochure_subdir", ""),
             ]);
 
             setGeneral({
@@ -683,6 +700,11 @@ export function SettingsDialog({
                 bridge_bind: bridge_bind || "0.0.0.0:8787",
                 bridge_display_name: bridge_display_name ?? "",
                 bridge_token: "",
+            });
+            setBrochure({
+                brochure_enabled: boolFromSetting(brochure_enabled),
+                brochure_export_name: brochure_export_name || "Infobroschuere.pdf",
+                brochure_subdir: brochure_subdir ?? "",
             });
             setBridgeStatusLoading(true);
             void getBridgeStatus()
@@ -858,6 +880,11 @@ export function SettingsDialog({
                             bridge_display_name: bridge_display_name ?? "",
                             bridge_token: bridge_token ?? "",
                         },
+                        brochure: {
+                            brochure_enabled: boolFromSetting(brochure_enabled),
+                            brochure_export_name: brochure_export_name || "Infobroschuere.pdf",
+                            brochure_subdir: brochure_subdir ?? "",
+                        },
                         cloudService:
                             selected_cloud_service === "custom_api" ? "custom_api" : "dropbox",
                         dropbox: {
@@ -1031,6 +1058,15 @@ export function SettingsDialog({
                 "bridge_display_name",
                 general.bridge_display_name.trim(),
             );
+            await saveSetting(
+                "brochure_enabled",
+                brochure.brochure_enabled ? "true" : "false",
+            );
+            await saveSetting(
+                "brochure_export_name",
+                brochure.brochure_export_name.trim() || "Infobroschuere.pdf",
+            );
+            await saveSetting("brochure_subdir", brochure.brochure_subdir.trim());
             await saveSetting("ui_theme", themeMode);
             await saveSetting("selected_cloud_service", cloudService);
             await saveSetting(
@@ -1115,6 +1151,7 @@ export function SettingsDialog({
                 captureSettingsFormSnapshot({
                     themeMode,
                     general: savedGeneral,
+                    brochure,
                     cloudService,
                     dropbox,
                     customApi,
@@ -1720,6 +1757,12 @@ export function SettingsDialog({
                                         )}
                                     </div>
                                 </SettingsSection>
+
+                                <BrochureSettingsSection
+                                    active={isOpen && tab === "general"}
+                                    value={brochure}
+                                    onChange={setBrochure}
+                                />
 
                                 <SettingsSection
                                     title="Darstellung"

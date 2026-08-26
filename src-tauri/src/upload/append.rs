@@ -885,10 +885,12 @@ async fn append_via_dropbox(
     control: &UploadControl,
     kunde: &crate::model::kunde::Kunde,
 ) -> Result<bool, String> {
-    client
+    client.set_append_upload(true);
+    let result = client
         .upload_directory(local_dir, remote_path, control, kunde)
-        .await
-        .map_err(|e| e.to_string())
+        .await;
+    client.set_append_upload(false);
+    result.map_err(|e| e.to_string())
 }
 
 async fn append_via_custom_api(
@@ -900,9 +902,11 @@ async fn append_via_custom_api(
     order_id: Option<&str>,
 ) -> Result<bool, String> {
     client.set_append_order_id(order_id.map(str::to_string));
+    client.set_append_upload(true);
     let result = client
         .upload_directory(local_dir, remote_path, control, kunde)
         .await;
+    client.set_append_upload(false);
     client.set_append_order_id(None);
     result.map_err(|e| e.to_string())
 }

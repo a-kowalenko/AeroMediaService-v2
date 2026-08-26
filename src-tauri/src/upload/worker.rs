@@ -358,6 +358,7 @@ async fn process_append_job(
     );
 
     client.set_append_order_id(append.order_id.clone());
+    client.set_append_upload(true);
     let outcome = match upload_with_retries(
         client,
         local_dir_path,
@@ -375,6 +376,7 @@ async fn process_append_job(
         Err(e) if e.is_cancelled() => JobOutcome::Cancelled,
         Err(e) => JobOutcome::Failed(e.to_string()),
     };
+    client.set_append_upload(false);
     client.set_append_order_id(None);
     events::emit_job_active(false);
 

@@ -37,6 +37,8 @@ pub struct CustomApiClient {
     last_order_id: Mutex<Option<String>>,
     last_kunde: Mutex<Option<Kunde>>,
     append_order_id: Mutex<Option<String>>,
+    /// Phase 14/15 append — suppress Infobroschüre injection (even without order_id).
+    append_upload: AtomicBool,
     dropbox: ActiveDropboxSlot,
 }
 
@@ -70,6 +72,7 @@ impl CustomApiClient {
             last_order_id: Mutex::new(None),
             last_kunde: Mutex::new(None),
             append_order_id: Mutex::new(None),
+            append_upload: AtomicBool::new(false),
             dropbox,
         }
     }
@@ -233,6 +236,17 @@ impl CloudClient for CustomApiClient {
 
     fn set_append_order_id(&self, id: Option<String>) {
         CustomApiClient::set_append_order_id(self, id);
+    }
+
+    fn set_append_upload(&self, active: bool) {
+        self.append_upload.store(active, Ordering::SeqCst);
+        self.dropbox_client().set_append_upload(active);
+    }
+
+    fn is_append_upload(&self) -> bool {
+        self.append_upload.load(Ordering::SeqCst)
+            || self.append_order_id().is_some()
+            || self.dropbox_client().is_append_upload()
     }
 }
 

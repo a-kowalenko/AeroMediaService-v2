@@ -1435,6 +1435,17 @@ mod tests {
         cloud: &'a str,
         archive: &'a str,
     ) -> EnqueueContext<'a> {
+        ctx_with_active(registry, jobs, cloud, archive, "", "")
+    }
+
+    fn ctx_with_active<'a>(
+        registry: &'a UploadQueueRegistry,
+        jobs: &'a UnboundedSender<UploadJob>,
+        cloud: &'a str,
+        archive: &'a str,
+        active_dropbox: &'a str,
+        active_custom: &'a str,
+    ) -> EnqueueContext<'a> {
         EnqueueContext {
             registry,
             jobs,
@@ -1442,9 +1453,18 @@ mod tests {
             archive_path: archive,
             customer_lookup: None,
             manifest_required: false,
-            active_dropbox_account_id: "",
-            active_custom_dropbox_account_id: "",
+            active_dropbox_account_id: active_dropbox,
+            active_custom_dropbox_account_id: active_custom,
         }
+    }
+
+    /// Prefer a real Custom-API profile so freeze_active_binding works on developer machines.
+    fn first_custom_dropbox_ams_id() -> String {
+        DropboxAccountStore::open_default()
+            .ok()
+            .and_then(|store| store.list(DropboxPool::CustomApi).ok())
+            .and_then(|rows| rows.into_iter().next().map(|r| r.id))
+            .unwrap_or_default()
     }
 
     fn mock_lookup(_query: &ApiMarkerQuery, _mode: LookupMode) -> Result<Kunde, String> {
@@ -1542,7 +1562,15 @@ mod tests {
         .unwrap();
         let registry = UploadQueueRegistry::new();
         let (tx, mut rx) = unbounded_channel();
-        let context = ctx(&registry, &tx, "custom_api", "");
+        let active_custom = first_custom_dropbox_ams_id();
+        let context = ctx_with_active(
+            &registry,
+            &tx,
+            "custom_api",
+            "",
+            "",
+            active_custom.as_str(),
+        );
         assert_eq!(
             try_claim_and_enqueue(dir.path(), &context).await,
             ClaimResult::Queued
@@ -1558,7 +1586,15 @@ mod tests {
         write_fertig_marker(dir.path(), contact_marker()).unwrap();
         let registry = UploadQueueRegistry::new();
         let (tx, mut rx) = unbounded_channel();
-        let context = ctx(&registry, &tx, "custom_api", "");
+        let active_custom = first_custom_dropbox_ams_id();
+        let context = ctx_with_active(
+            &registry,
+            &tx,
+            "custom_api",
+            "",
+            "",
+            active_custom.as_str(),
+        );
         assert_eq!(
             try_claim_and_enqueue(dir.path(), &context).await,
             ClaimResult::Queued

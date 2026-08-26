@@ -1,4 +1,5 @@
 pub mod bridge;
+pub mod brochure;
 pub mod cloud;
 pub mod customers;
 pub mod history;
@@ -12,6 +13,7 @@ pub use bridge::{
     apply_bridge_config, get_ats_host_activity, get_ats_host_details, get_ats_hosts_summary,
     get_ats_jobs_by_host, get_bridge_status, remove_ats_host, remove_inactive_long_ats_hosts,
 };
+pub use brochure::{get_brochure_status, import_brochure, open_brochure, remove_brochure};
 pub use cloud::{
     auto_connect_cloud, connect_active_cloud, connect_custom_api, connect_dropbox,
     create_dropbox_account, delete_dropbox_account, disconnect_active_cloud, disconnect_custom_api,

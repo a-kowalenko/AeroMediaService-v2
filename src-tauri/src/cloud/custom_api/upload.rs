@@ -11,7 +11,7 @@ use super::{extract_customer_url, guess_mime, parse_next_offset, CustomApiClient
 use crate::cloud::dropbox::{self, DropboxSessionResume};
 use crate::cloud::guards::{assert_checkpoint_binding_matches, merge_checkpoint_binding};
 use crate::cloud::manifest::build_manifest_v11;
-use crate::cloud::traits::{should_skip_upload_file, CloudError};
+use crate::cloud::traits::{should_skip_upload_file, CloudClient, CloudError};
 use crate::events;
 use crate::model::kunde::Kunde;
 use crate::storage::config::runtime_setting;
@@ -66,6 +66,29 @@ impl CustomApiClient {
         kunde: &Kunde,
     ) -> Result<bool, CloudError> {
         let mut files = collect_proxied_files(local_dir_path);
+        if files.is_empty() {
+            // Brochure alone can still make a valid upload.
+        }
+        let is_append = self.is_append_upload();
+        if !is_append {
+            let existing: Vec<String> = files.iter().map(|f| f.name.clone()).collect();
+            if let Some((name, local_path, size)) =
+                crate::upload::brochure::resolve_brochure_proxied_entry(false, &existing)
+            {
+                if let Some(idx) = files.iter().position(|f| f.name == name) {
+                    files[idx].local_path = local_path;
+                    files[idx].size = size;
+                    files[idx].mime = "application/pdf".into();
+                } else {
+                    files.push(ProxiedFile {
+                        name,
+                        size,
+                        mime: "application/pdf".into(),
+                        local_path,
+                    });
+                }
+            }
+        }
         if files.is_empty() {
             logging::log_error("Keine Dateien zum Hochladen gefunden.");
             return Ok(false);
@@ -591,7 +614,27 @@ impl CustomApiClient {
         control: &UploadControl,
         kunde: &Kunde,
     ) -> Result<bool, CloudError> {
-        let files = dropbox::collect_upload_files(local_dir_path, remote_base_path);
+        let mut files = dropbox::collect_upload_files(local_dir_path, remote_base_path);
+        let is_append = self.is_append_upload();
+        if !is_append {
+            let settings = crate::upload::brochure::brochure_settings_from_runtime();
+            let remote_exists = if settings.enabled {
+                let rel = crate::upload::brochure::brochure_rel_norm(
+                    &settings.subdir,
+                    &settings.export_name,
+                );
+                let target = dropbox::join_dropbox_path(remote_base_path, &rel);
+                self.dropbox_client().remote_path_is_file(&target).await
+            } else {
+                false
+            };
+            crate::upload::brochure::inject_brochure_for_upload(
+                &mut files,
+                remote_base_path,
+                false,
+                remote_exists,
+            );
+        }
         if files.is_empty() {
             logging::log_error("Keine Dateien zum Hochladen gefunden.");
             return Ok(false);

@@ -47,8 +47,8 @@ impl ConfigState {
 }
 
 #[derive(Debug, Serialize, Clone)]
-struct SettingsChangedPayload {
-    key: String,
+pub(crate) struct SettingsChangedPayload {
+    pub key: String,
 }
 
 #[tauri::command]

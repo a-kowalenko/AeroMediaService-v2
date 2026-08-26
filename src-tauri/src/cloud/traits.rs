@@ -66,6 +66,15 @@ pub trait CloudClient: Send + Sync {
     fn set_append_order_id(&self, id: Option<String>) {
         let _ = (self, id);
     }
+
+    /// Mark the next `upload_directory` as media append (Phase 14/15) — no brochure inject.
+    fn set_append_upload(&self, active: bool) {
+        let _ = (self, active);
+    }
+
+    fn is_append_upload(&self) -> bool {
+        false
+    }
 }
 
 #[cfg(test)]

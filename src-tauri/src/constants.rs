@@ -80,6 +80,9 @@ pub fn setting_default(key: &str) -> Option<&'static str> {
         "setup_completed" => Some("false"),
         "legacy_migration_done" => Some("false"),
         "ui_theme" => Some("dark"),
+        "brochure_enabled" => Some("false"),
+        "brochure_export_name" => Some("Infobroschuere.pdf"),
+        "brochure_subdir" => Some(""),
         _ => None,
     }
 }
@@ -232,6 +235,12 @@ mod tests {
         assert_eq!(setting_default("setup_completed"), Some("false"));
         assert_eq!(setting_default("legacy_migration_done"), Some("false"));
         assert_eq!(setting_default("ui_theme"), Some("dark"));
+        assert_eq!(setting_default("brochure_enabled"), Some("false"));
+        assert_eq!(
+            setting_default("brochure_export_name"),
+            Some("Infobroschuere.pdf")
+        );
+        assert_eq!(setting_default("brochure_subdir"), Some(""));
         assert_eq!(setting_default("unknown_key"), None);
     }
 

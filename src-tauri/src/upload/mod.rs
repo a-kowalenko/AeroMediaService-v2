@@ -1,5 +1,6 @@
 pub mod append;
 pub mod booking_flags;
+pub mod brochure;
 pub mod checkpoint;
 pub mod control;
 pub mod preview_watermark;

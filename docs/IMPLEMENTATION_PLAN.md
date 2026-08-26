@@ -70,9 +70,9 @@
 | Medien nachreichen (bestehende Order) | ✅ Phase 14 |
 | ATS-Nachreichen (Append-Handoff) | ✅ Phase 15 |
 | Multi-Dropbox-Konten (Native + Custom-API) | ✅ Phase 16 — 16a ✅ · 16b ✅ · 16c ✅ · 16d ✅ |
-| Infobroschüre PDF (Erst-Upload) | ⬜ Phase 17 |
+| Infobroschüre PDF (Erst-Upload) | ✅ Phase 17 |
 
-**Nächste Phase:** Phase 17 (Infobroschüre); optional Phase 13 / P5+ ([`HANDOFF.md`](./HANDOFF.md))
+**Nächste Phase:** optional Phase 13 / P5+ ([`HANDOFF.md`](./HANDOFF.md))
 
 ---
 
@@ -865,7 +865,7 @@ Danach cargo test && npm run tauri dev.
 
 ### Phase 17 — Infobroschüre PDF (Erst-Upload)
 
-**Status:** ⬜ Offen  
+**Status:** ✅ Fertig  
 **Ziel:** Optional eine Infobroschüre-PDF beim **Erst-Upload** in denselben Cloud-Job-Ordner legen (neuer Share). Keine Änderung an E-Mail/SMS/WhatsApp. Keine Injektion bei Append.
 
 **Leitprinzipien**
@@ -887,25 +887,25 @@ Danach cargo test && npm run tauri dev.
 
 **Upload-Verhalten**
 
-- [ ] Erst-Upload: wenn enabled und Quelldatei ok → Extra-Eintrag in Upload-Liste unter `{remote}/{subdir?}/{export_name}`
-- [ ] Append: **nie** injizieren
-- [ ] Retry / Resume: nur injizieren, wenn Remote-Zieldatei noch nicht existiert (Idempotenz); sonst skip
-- [ ] enabled, aber keine Broschüre hinterlegt: Job **nicht** failen; einmal warnen/loggen, ohne PDF weiter
-- [ ] Namenskollision (gleicher Relativpfad schon in Medien oder remote): **AMS überschreibt**, Warnung im Log
-- [ ] Custom-API Dropbox / Manifest v1.1 `paths_only`: PDF mit aufnehmen, sobald sie remote landet; kein neuer `STANDARD_CATEGORIES`-Ordner
-- [ ] Binding: über bestehendes Job-Dropbox-Binding (Phase 16), kein Extra-Konto-Pfad
-- [ ] Keine Notify-Text-Änderungen; Historie: **nur Log** („Infobroschüre hochgeladen“ / Warnungen), kein History-Flag
+- [x] Erst-Upload: wenn enabled und Quelldatei ok → Extra-Eintrag in Upload-Liste unter `{remote}/{subdir?}/{export_name}`
+- [x] Append: **nie** injizieren
+- [x] Retry / Resume: nur injizieren, wenn Remote-Zieldatei noch nicht existiert (Idempotenz); sonst skip
+- [x] enabled, aber keine Broschüre hinterlegt: Job **nicht** failen; einmal warnen/loggen, ohne PDF weiter
+- [x] Namenskollision (gleicher Relativpfad schon in Medien oder remote): **AMS überschreibt**, Warnung im Log
+- [x] Custom-API Dropbox / Manifest v1.1 `paths_only`: PDF mit aufnehmen, sobald sie remote landet; kein neuer `STANDARD_CATEGORIES`-Ordner
+- [x] Binding: über bestehendes Job-Dropbox-Binding (Phase 16), kein Extra-Konto-Pfad
+- [x] Keine Notify-Text-Änderungen; Historie: **nur Log** („Infobroschüre hochgeladen“ / Warnungen), kein History-Flag
 
 **Settings-UI**
 
-- [ ] Abschnitt Infobroschüre (z. B. unter Allgemein oder eigener klarer Block): Toggle, Drop-Zone, Export-Name, optional Unterordner, Vorschau (Name/Größe), Öffnen, Entfernen
-- [ ] Drop sofort speichern (nicht an Dialog-Save koppeln); Ersetzen überschreibt App-Data-Kopie
+- [x] Abschnitt Infobroschüre (z. B. unter Allgemein oder eigener klarer Block): Toggle, Drop-Zone, Export-Name, optional Unterordner, Vorschau (Name/Größe), Öffnen, Entfernen
+- [x] Drop sofort speichern (nicht an Dialog-Save koppeln); Ersetzen überschreibt App-Data-Kopie
 
 **Tests / DoD**
 
-- [ ] Unit: enabled/disabled; Append skip; Retry idempotent; fehlende Quelle warnt; Export-Name-Härtung; Subdir leer vs. gesetzt; 5 MB-Limit; Kollision überschreibt + Log
+- [x] Unit: enabled/disabled; Append skip; Retry idempotent; fehlende Quelle warnt; Export-Name-Härtung; Subdir leer vs. gesetzt; 5 MB-Limit; Kollision überschreibt + Log
 - [ ] Manuell: Settings Drop → Erst-Upload zeigt PDF im Cloud-Root; Append ohne zweite PDF; Notify unverändert
-- [ ] `cargo test` + `npm run tauri dev`
+- [x] `cargo test` + `npm run tauri dev`
 
 **Abhängigkeiten:** Phase 4 (Upload/Dropbox), 5 (Custom API / Manifest), 9 (Settings), 14/15 (Append-Guards), 16 (Binding).  
 **Nicht-Ziele:** Notify ändern; ATS-Handoff/Manifest erweitern; PDF in lokalen Job kopieren; Append-Support; History-Flag.
@@ -962,4 +962,4 @@ Updater-Endpoint und Signing: siehe [`docs/RELEASE.md`](./RELEASE.md) (analog Ae
 | 14 | Medien nachreichen | ✅ |
 | 15 | ATS-Nachreichen (Append) | ✅ |
 | 16 | Multi-Dropbox-Konten (Native + Custom-API) | ✅ 16a ✅ · 16b ✅ · 16c ✅ · 16d ✅ |
-| 17 | Infobroschüre PDF (Erst-Upload) | ⬜ |
+| 17 | Infobroschüre PDF (Erst-Upload) | ✅ |

@@ -197,6 +197,8 @@ pub struct DropboxClient {
     http: reqwest::Client,
     access_token: Arc<Mutex<Option<String>>>,
     connection_verified: Arc<AtomicBool>,
+    /// Phase 14/15 append — suppress Infobroschüre injection.
+    append_upload: Arc<AtomicBool>,
     keys: DropboxSecretKeys,
     write_limiter: ParallelWriteLimiter,
 }
@@ -230,8 +232,30 @@ impl DropboxClient {
             http,
             access_token: Arc::new(Mutex::new(None)),
             connection_verified: Arc::new(AtomicBool::new(false)),
+            append_upload: Arc::new(AtomicBool::new(false)),
             keys,
             write_limiter: ParallelWriteLimiter::new(BATCH_PARALLEL_WORKERS),
+        }
+    }
+
+    /// True when the Dropbox path is an existing file (not folder / missing).
+    pub async fn remote_path_is_file(&self, path: &str) -> bool {
+        let path = path.trim();
+        if path.is_empty() {
+            return false;
+        }
+        match self
+            .rpc(
+                "/files/get_metadata",
+                json!({
+                    "path": path,
+                    "include_deleted": false,
+                }),
+            )
+            .await
+        {
+            Ok(payload) => payload.get(".tag").and_then(Value::as_str) == Some("file"),
+            Err(_) => false,
         }
     }
 
@@ -1252,7 +1276,27 @@ impl CloudClient for DropboxClient {
             local_dir_path.display()
         ));
 
-        let files = collect_upload_files(local_dir_path, remote_base_path);
+        let mut files = collect_upload_files(local_dir_path, remote_base_path);
+        let is_append = self.is_append_upload();
+        if !is_append {
+            let settings = crate::upload::brochure::brochure_settings_from_runtime();
+            let remote_exists = if settings.enabled {
+                let rel = crate::upload::brochure::brochure_rel_norm(
+                    &settings.subdir,
+                    &settings.export_name,
+                );
+                let target = join_dropbox_path(remote_base_path, &rel);
+                self.remote_path_is_file(&target).await
+            } else {
+                false
+            };
+            crate::upload::brochure::inject_brochure_for_upload(
+                &mut files,
+                remote_base_path,
+                false,
+                remote_exists,
+            );
+        }
         let total_size: u64 = files.iter().map(|f| f.size).sum();
         if total_size == 0 {
             logging::log_error("Keine Dateien (oder nur leere Dateien) zum Hochladen gefunden.");
@@ -1467,6 +1511,14 @@ impl CloudClient for DropboxClient {
             Some(url) => Ok(Some(link_shortener::shorten(&url).await)),
             None => Ok(None),
         }
+    }
+
+    fn set_append_upload(&self, active: bool) {
+        self.append_upload.store(active, Ordering::SeqCst);
+    }
+
+    fn is_append_upload(&self) -> bool {
+        self.append_upload.load(Ordering::SeqCst)
     }
 }
 

@@ -36,6 +36,33 @@ export function saveSecret(key: string, value: string): Promise<void> {
     return invoke("save_secret", {key, value});
 }
 
+export type BrochureSourceInfo = {
+    present: boolean;
+    path: string;
+    size_bytes: number;
+    display_name: string;
+};
+
+export type BrochureStatus = {
+    source: BrochureSourceInfo;
+};
+
+export function getBrochureStatus(): Promise<BrochureStatus> {
+    return invoke<BrochureStatus>("get_brochure_status");
+}
+
+export function importBrochure(path: string): Promise<BrochureStatus> {
+    return invoke<BrochureStatus>("import_brochure", {path});
+}
+
+export function removeBrochure(): Promise<BrochureStatus> {
+    return invoke<BrochureStatus>("remove_brochure");
+}
+
+export function openBrochure(): Promise<void> {
+    return invoke("open_brochure");
+}
+
 export type MigrateReport = {
     skipped: boolean;
     settings_imported: number;

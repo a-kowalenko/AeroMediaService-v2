@@ -95,9 +95,9 @@ Vollständiges Mapping: `@docs/MIGRATION.md`
 - ✅ Phase 14: Medien nachreichen in bestehenden Dropbox-/Cloud-Ordner (gleiche Order, gleicher Link)
 - ✅ Phase 15: ATS-Nachreichen (`kind=append`, gleicher Link, keine Notify)
 - ✅ Phase 16: Multi-Dropbox-Konten (Native + Custom-API-Dropbox; Binding, Guards, UI) — 16a–16d
-- ⬜ Phase 17: Infobroschüre PDF (Erst-Upload; Settings Drag-Drop; kein Append/Notify)
+- ✅ Phase 17: Infobroschüre PDF (Erst-Upload; Settings Drag-Drop; kein Append/Notify)
 
-**Nächster Schritt:** Phase 17 (Infobroschüre). Optional Phase 13 / P5+ — Spec: `@docs/HANDOFF.md`
+**Nächster Schritt:** Optional Phase 13 / P5+ — Spec: `@docs/HANDOFF.md`
 
 ---
 
