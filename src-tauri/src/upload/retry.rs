@@ -217,6 +217,7 @@ pub async fn retry_upload_from_history(
         "ist_bezahlt_outside_video": kunde.ist_bezahlt_outside_video,
     });
     merge_binding_into_history(&mut history_update, binding_for_history.as_ref());
+    crate::storage::history::touch_last_updated(&mut history_update);
     events::emit(events::UPLOAD_HISTORY_UPDATE, history_update);
     events::emit_status(format!("Erneut eingereiht: {dir_name}"));
 

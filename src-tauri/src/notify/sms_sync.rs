@@ -1,7 +1,6 @@
 //! Match upload history against the seven.io outbound journal.
 //! Port of legacy `core/sms_history_sync.py`.
 
-use chrono::Local;
 use serde_json::Value;
 
 use crate::events;
@@ -174,14 +173,6 @@ pub fn apply_journal_message_to_item(item: &mut Value, matched_msg: &Value) -> b
         }
     }
 
-    if changed {
-        if let Some(obj) = item.as_object_mut() {
-            obj.insert(
-                "last_updated".into(),
-                Value::String(Local::now().format("%Y-%m-%dT%H:%M:%S%.f").to_string()),
-            );
-        }
-    }
     changed
 }
 
@@ -308,6 +299,7 @@ mod tests {
         assert_eq!(updated.len(), 1);
         assert_eq!(json_str(&item, "sms_status"), "Zugestellt");
         assert_eq!(json_str(&item, "sms_id"), "77123456789");
+        assert_eq!(json_str(&item, "last_updated"), ref_ts);
     }
 
     #[test]

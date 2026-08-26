@@ -76,6 +76,8 @@ function buildDetailRows(
   dropboxLabelHint: string,
 ): Array<[string, (item: HistoryEntry) => string]> {
   return [
+    ["Erstellt", (i) => formatHistoryDate(i.created_at) || "—"],
+    ["Zuletzt aktualisiert", (i) => formatHistoryDate(i.last_updated) || "—"],
     ["Verzeichnis", (i) => i.dir_name || "—"],
     ["E-Mail", (i) => i.email || "—"],
     ["Telefon", (i) => i.phone || "—"],
@@ -326,7 +328,7 @@ export function HistoryTable() {
     const id = selected.id;
     let cancelled = false;
     setFlagsRefreshing(true);
-    void resolveHistoryBookingFlags(id, "force")
+    void resolveHistoryBookingFlags(id, "cache")
       .then((resolved) => {
         if (cancelled) return;
         setFlagOverlay(resolved);
@@ -1106,7 +1108,7 @@ export function HistoryTable() {
                       }}
                     >
                       <span className="whitespace-nowrap text-xs text-muted">
-                        {formatHistoryDate(item.last_updated)}
+                        {formatHistoryDate(item.created_at)}
                       </span>
                       <div className="min-w-0">
                         <p className="truncate font-medium text-foreground">

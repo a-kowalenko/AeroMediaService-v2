@@ -367,6 +367,8 @@ impl HistoryStore {
              );
              CREATE INDEX IF NOT EXISTS idx_history_last_updated
                 ON history(last_updated DESC);
+             CREATE INDEX IF NOT EXISTS idx_history_created_at
+                ON history(created_at DESC);
              CREATE TABLE IF NOT EXISTS history_meta (
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
@@ -450,7 +452,7 @@ impl HistoryStore {
             )
             .optional()?;
 
-        let now = Local::now().format("%Y-%m-%dT%H:%M:%S%.f").to_string();
+        let now = history_timestamp_now();
         let mut entry = existing.unwrap_or_else(|| HistoryEntry {
             id: json_str_if_present(data, "id").unwrap_or_else(|| Uuid::new_v4().to_string()),
             dir_name: dir_name.clone(),
@@ -461,9 +463,8 @@ impl HistoryStore {
         });
 
         merge_patch(&mut entry, data);
-        if json_str_if_present(data, "last_updated").is_none() {
-            entry.last_updated = now;
-        }
+        // `last_updated` only changes when the patch sets it explicitly (or on insert above).
+        // Metadata patches (booking flags, contact, archive path, SMS DLR) must not touch it.
         entry.dir_name = dir_name;
         entry.refresh_computed();
         upsert_entry(&conn, &entry)?;
@@ -562,7 +563,7 @@ impl HistoryStore {
     ) -> Result<Vec<HistoryEntry>, HistoryError> {
         let conn = self.connect()?;
         let mut stmt =
-            conn.prepare("SELECT * FROM history ORDER BY last_updated DESC, created_at DESC")?;
+            conn.prepare("SELECT * FROM history ORDER BY created_at DESC, last_updated DESC")?;
         let rows = stmt.query_map([], row_to_entry)?;
         let needle = search_text.trim().to_lowercase();
         let mut items = Vec::new();
@@ -633,6 +634,21 @@ fn json_bool_if_present(data: &Value, key: &str) -> Option<bool> {
     }
 }
 
+/// Local timestamp for history `created_at` / `last_updated`.
+pub fn history_timestamp_now() -> String {
+    Local::now().format("%Y-%m-%dT%H:%M:%S%.f").to_string()
+}
+
+/// Stamp `last_updated` on an activity payload so `add_or_update` refreshes it.
+pub fn touch_last_updated(payload: &mut Value) {
+    if let Some(obj) = payload.as_object_mut() {
+        obj.insert(
+            "last_updated".into(),
+            Value::String(history_timestamp_now()),
+        );
+    }
+}
+
 fn merge_patch(entry: &mut HistoryEntry, data: &Value) {
     if let Some(v) = json_str_if_present(data, "status") {
         entry.status = v;
@@ -697,6 +713,9 @@ fn merge_patch(entry: &mut HistoryEntry, data: &Value) {
         if entry.created_at.is_empty() {
             entry.created_at = v;
         }
+    }
+    if let Some(v) = json_str_if_present(data, "last_updated") {
+        entry.last_updated = v;
     }
     if let Some(obj) = data.as_object() {
         for (key, value) in obj {
@@ -1002,22 +1021,84 @@ mod tests {
     }
 
     #[test]
-    fn pagination_newest_first() {
+    fn pagination_newest_created_first() {
         let (_dir, mut store) = open_tmp();
         store
-            .add_or_update(&json!({"dir_name": "A", "last_updated": "2024-01-01T00:00:00"}))
+            .add_or_update(&json!({
+                "dir_name": "A",
+                "created_at": "2024-01-01T00:00:00",
+                "last_updated": "2024-12-01T00:00:00"
+            }))
             .unwrap();
         store
-            .add_or_update(&json!({"dir_name": "B", "last_updated": "2024-06-01T00:00:00"}))
+            .add_or_update(&json!({
+                "dir_name": "B",
+                "created_at": "2024-06-01T00:00:00",
+                "last_updated": "2024-06-02T00:00:00"
+            }))
             .unwrap();
         store
-            .add_or_update(&json!({"dir_name": "C", "last_updated": "2024-03-01T00:00:00"}))
+            .add_or_update(&json!({
+                "dir_name": "C",
+                "created_at": "2024-03-01T00:00:00",
+                "last_updated": "2024-11-01T00:00:00"
+            }))
             .unwrap();
         let page = store.get_filtered_page("", 0, 2).unwrap();
         assert_eq!(page.total, 3);
         assert_eq!(page.items.len(), 2);
         assert_eq!(page.items[0].dir_name, "B");
         assert_eq!(page.items[1].dir_name, "C");
+    }
+
+    #[test]
+    fn metadata_patch_does_not_bump_last_updated() {
+        let (_dir, mut store) = open_tmp();
+        let created = store
+            .add_or_update(&json!({
+                "dir_name": "Flug_meta",
+                "status": "Erfolgreich",
+                "created_at": "2024-01-01T10:00:00",
+                "last_updated": "2024-01-01T10:00:00",
+            }))
+            .unwrap()
+            .unwrap();
+        let updated = store
+            .add_or_update(&json!({
+                "dir_name": "Flug_meta",
+                "email": "new@example.de",
+                "handcam_video": true,
+            }))
+            .unwrap()
+            .unwrap();
+        assert_eq!(updated.id, created.id);
+        assert_eq!(updated.email, "new@example.de");
+        assert_eq!(updated.last_updated, "2024-01-01T10:00:00");
+        assert_eq!(updated.created_at, "2024-01-01T10:00:00");
+    }
+
+    #[test]
+    fn explicit_last_updated_is_applied() {
+        let (_dir, mut store) = open_tmp();
+        store
+            .add_or_update(&json!({
+                "dir_name": "Flug_touch",
+                "status": "Gestartet",
+                "created_at": "2024-01-01T10:00:00",
+                "last_updated": "2024-01-01T10:00:00",
+            }))
+            .unwrap();
+        let updated = store
+            .add_or_update(&json!({
+                "dir_name": "Flug_touch",
+                "status": "Erfolgreich",
+                "last_updated": "2024-02-01T12:00:00",
+            }))
+            .unwrap()
+            .unwrap();
+        assert_eq!(updated.status, "Erfolgreich");
+        assert_eq!(updated.last_updated, "2024-02-01T12:00:00");
+        assert_eq!(updated.created_at, "2024-01-01T10:00:00");
     }
 
     #[test]

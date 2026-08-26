@@ -696,6 +696,7 @@ pub fn build_append_parent_history_update(
         }
         merge_kunde_media_flags(&mut history, kunde);
     }
+    crate::storage::history::touch_last_updated(&mut history);
     history
 }
 
@@ -848,6 +849,7 @@ pub async fn append_media_from_history(
         updates["order_id"] = json!(oid);
     }
 
+    crate::storage::history::touch_last_updated(&mut updates);
     events::emit(events::UPLOAD_HISTORY_UPDATE, &updates);
     events::emit_status(format!("Nachgereicht: {remote_path}"));
     Ok(updates)

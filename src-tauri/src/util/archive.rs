@@ -189,6 +189,7 @@ pub fn handle_marker_failure(
     if let Some(raw) = raw {
         payload["marker_raw"] = serde_json::Value::String(raw);
     }
+    crate::storage::history::touch_last_updated(&mut payload);
     crate::events::emit(crate::events::UPLOAD_HISTORY_UPDATE, payload);
     archive_directory(archive_base, local_dir_path, ARCHIVE_ERROR)
 }

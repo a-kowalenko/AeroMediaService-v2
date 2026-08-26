@@ -169,6 +169,7 @@ fn failure_history(
         "error_msg": error,
     });
     merge_binding_into_history(&mut history, binding);
+    crate::storage::history::touch_last_updated(&mut history);
     history
 }
 
@@ -638,6 +639,7 @@ fn kunde_history(
     });
     crate::model::marker::merge_kunde_media_flags(&mut history, kunde);
     merge_binding_into_history(&mut history, binding);
+    crate::storage::history::touch_last_updated(&mut history);
     history
 }
 
@@ -672,6 +674,7 @@ fn success_history(
         history["correlation_id"] = serde_json::Value::String(cid.to_string());
     }
     merge_binding_into_history(&mut history, binding);
+    crate::storage::history::touch_last_updated(&mut history);
     history
 }
 

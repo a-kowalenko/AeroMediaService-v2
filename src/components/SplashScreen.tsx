@@ -86,7 +86,7 @@ export function SplashScreen({ open, status, version, error, className }: Props)
         ) : null}
 
         <p className="mt-1 text-[11px] text-muted/50">
-          © {new Date().getFullYear()} Aero Media
+          © {new Date().getFullYear()} Andreas Kowalenko
         </p>
       </div>
     </div>

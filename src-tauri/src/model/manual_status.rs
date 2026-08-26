@@ -262,6 +262,10 @@ pub fn build_manual_status_update(
     }
 
     updates.insert("status_change_log".into(), Value::Array(status_change_log));
+    updates.insert(
+        "last_updated".into(),
+        Value::String(now),
+    );
     Ok(Value::Object(updates))
 }
 
