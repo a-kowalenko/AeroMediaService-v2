@@ -164,8 +164,8 @@ Normale Commits auf `master` starten **keinen** App-Build. Volle Bundles nur bei
 
 | OS | Bundle |
 |----|--------|
-| Windows | NSIS `-setup.exe` (+ Updater-Signatur); kein MSI (WiX unterstützt `-beta.N` nicht) |
-| macOS | `.dmg` (aarch64 + x64) |
+| Windows | NSIS `-setup.exe` (+ Updater-Signatur); kein MSI — CI setzt `--bundles nsis` (WiX/`‑beta.N`) |
+| macOS | `.dmg` (aarch64 + x64) + `.app.tar.gz` (+ `.sig`) für Auto-Update; CI lädt Updater-Bundles explizit hoch |
 | Linux | `.AppImage` (amd64) |
 
 ## Hinweise

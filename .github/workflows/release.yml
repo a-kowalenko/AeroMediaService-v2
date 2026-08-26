@@ -265,11 +265,44 @@ jobs:
           uploadUpdaterJson: false
           args: ${{ matrix.args }}
 
+      # tauri-action uploads DMG/NSIS/AppImage; macOS updater .app.tar.gz (+ .sig) need
+      # an explicit upload when bundle.targets is narrowed — belt-and-suspenders with
+      # targets "all" (see 0.1.13). merge-updater-manifest requires these on the release.
+      - name: Upload macOS updater bundles
+        if: matrix.platform == 'macos-latest'
+        env:
+          GH_TOKEN: ${{ secrets.RELEASES_GITHUB_TOKEN }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          REPO="${RELEASES_OWNER}/${RELEASES_REPO}"
+          shopt -s nullglob
+          files=()
+          for dir in \
+            src-tauri/target/release/bundle/macos \
+            src-tauri/target/aarch64-apple-darwin/release/bundle/macos \
+            src-tauri/target/x86_64-apple-darwin/release/bundle/macos; do
+            for f in "$dir"/*.app.tar.gz "$dir"/*.app.tar.gz.sig; do
+              if [ -f "$f" ]; then
+                files+=("$f")
+              fi
+            done
+          done
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "ERROR: No macOS .app.tar.gz updater bundles found under src-tauri/target" >&2
+            find src-tauri/target -name '*.app.tar.gz' -o -name '*.app.tar.gz.sig' 2>/dev/null || true
+            exit 1
+          fi
+          echo "Uploading macOS updater bundles:"
+          printf '  %s\n' "${files[@]}"
+          gh release upload "${TAG}" "${files[@]}" --repo "${REPO}" --clobber
+
   # Merge signed updater manifest from all release assets (fixes macOS keys lost when
   # the last matrix job overwrote latest.json with Windows/Linux-only entries).
   merge-updater-manifest:
     needs: [prepare, release]
-    if: ${{ !cancelled() && needs.prepare.result == 'success' }}
+    if: ${{ !cancelled() && needs.prepare.result == 'success' && needs.release.result == 'success' }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -294,6 +327,16 @@ jobs:
             echo "Missing secret RELEASES_GITHUB_TOKEN" >&2
             exit 1
           fi
+          REPO="${RELEASES_OWNER}/${RELEASES_REPO}"
+          ASSETS="$(gh release view "${TAG}" --repo "${REPO}" --json assets --jq '.assets[].name')"
+          echo "Release assets on ${TAG}:"
+          echo "${ASSETS}"
+          for pattern in '_aarch64\.app\.tar\.gz$' '_x64\.app\.tar\.gz$' '_x64-setup\.exe$' '_amd64\.AppImage$'; do
+            if ! echo "${ASSETS}" | grep -qE "${pattern}"; then
+              echo "ERROR: Missing release asset matching /${pattern}/ — run failed matrix jobs first." >&2
+              exit 1
+            fi
+          done
           NOTES_FILE="$(mktemp)"
           node scripts/changelog.mjs extract "${TAG#v}" > "${NOTES_FILE}" || true
           node scripts/merge-updater-manifest.mjs \

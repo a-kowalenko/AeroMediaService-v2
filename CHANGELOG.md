@@ -22,6 +22,7 @@ Patch ohne Unreleased-Text: Notes der Vorgängerversion werden übernommen.
 ### Behoben
 
 - Windows-Release-Builds nutzen nur noch **NSIS** (kein MSI), damit Beta-Tags wie `0.1.14-beta.1` in CI durchlaufen
+- **Auto-Update** wieder vollständig: macOS-Updater-Archive (`.app.tar.gz`) werden in CI zuverlässig hochgeladen; `latest.json`-Merge erst nach grünem Matrix-Build
 
 
 
