@@ -70,8 +70,9 @@
 | Medien nachreichen (bestehende Order) | ✅ Phase 14 |
 | ATS-Nachreichen (Append-Handoff) | ✅ Phase 15 |
 | Multi-Dropbox-Konten (Native + Custom-API) | ✅ Phase 16 — 16a ✅ · 16b ✅ · 16c ✅ · 16d ✅ |
+| Infobroschüre PDF (Erst-Upload) | ⬜ Phase 17 |
 
-**Nächste Phase:** optional Phase 13 / P5+ ([`HANDOFF.md`](./HANDOFF.md)); Phase 16 abgeschlossen
+**Nächste Phase:** Phase 17 (Infobroschüre); optional Phase 13 / P5+ ([`HANDOFF.md`](./HANDOFF.md))
 
 ---
 
@@ -862,10 +863,69 @@ Danach cargo test && npm run tauri dev.
 
 ---
 
+### Phase 17 — Infobroschüre PDF (Erst-Upload)
+
+**Status:** ⬜ Offen  
+**Ziel:** Optional eine Infobroschüre-PDF beim **Erst-Upload** in denselben Cloud-Job-Ordner legen (neuer Share). Keine Änderung an E-Mail/SMS/WhatsApp. Keine Injektion bei Append.
+
+**Leitprinzipien**
+
+1. Quelle nur App-verwaltete Kopie (Settings Drag-Drop), kein freier Externpfad als Wahrheitsquelle.
+2. Injektion nur in die **Upload-Dateiliste** — nie in den lokalen Monitor-/Job-Ordner schreiben (kein Fingerprint-/Manifest-/Archiv-Drift).
+3. Nur Erst-Upload; Append nie; Retry/Resume nur idempotent (Remote-Zieldatei fehlt noch).
+4. Notify-Templates und Historie-UI unverändert; Transparenz nur über Logs.
+
+**Settings**
+
+| Key / UI | Default | Regel |
+|----------|---------|--------|
+| `brochure_enabled` | `false` | an / aus |
+| Quell-PDF | — | Drag-Drop → sofort nach App-Data committen (z. B. `brochure/source.pdf`); Meldung „Broschüre gesetzt“; einsehen / ersetzen / entfernen |
+| `brochure_export_name` | `Infobroschuere.pdf` | Remote-Dateiname; nur Basename, auf `.pdf` normalisieren |
+| `brochure_subdir` | `""` (leer) | optional; leer = Job-Root → `/<Job>/Infobroschuere.pdf` |
+| Validierung | — | nur `.pdf`, max. **5 MB**; sonst Import ablehnen |
+
+**Upload-Verhalten**
+
+- [ ] Erst-Upload: wenn enabled und Quelldatei ok → Extra-Eintrag in Upload-Liste unter `{remote}/{subdir?}/{export_name}`
+- [ ] Append: **nie** injizieren
+- [ ] Retry / Resume: nur injizieren, wenn Remote-Zieldatei noch nicht existiert (Idempotenz); sonst skip
+- [ ] enabled, aber keine Broschüre hinterlegt: Job **nicht** failen; einmal warnen/loggen, ohne PDF weiter
+- [ ] Namenskollision (gleicher Relativpfad schon in Medien oder remote): **AMS überschreibt**, Warnung im Log
+- [ ] Custom-API Dropbox / Manifest v1.1 `paths_only`: PDF mit aufnehmen, sobald sie remote landet; kein neuer `STANDARD_CATEGORIES`-Ordner
+- [ ] Binding: über bestehendes Job-Dropbox-Binding (Phase 16), kein Extra-Konto-Pfad
+- [ ] Keine Notify-Text-Änderungen; Historie: **nur Log** („Infobroschüre hochgeladen“ / Warnungen), kein History-Flag
+
+**Settings-UI**
+
+- [ ] Abschnitt Infobroschüre (z. B. unter Allgemein oder eigener klarer Block): Toggle, Drop-Zone, Export-Name, optional Unterordner, Vorschau (Name/Größe), Öffnen, Entfernen
+- [ ] Drop sofort speichern (nicht an Dialog-Save koppeln); Ersetzen überschreibt App-Data-Kopie
+
+**Tests / DoD**
+
+- [ ] Unit: enabled/disabled; Append skip; Retry idempotent; fehlende Quelle warnt; Export-Name-Härtung; Subdir leer vs. gesetzt; 5 MB-Limit; Kollision überschreibt + Log
+- [ ] Manuell: Settings Drop → Erst-Upload zeigt PDF im Cloud-Root; Append ohne zweite PDF; Notify unverändert
+- [ ] `cargo test` + `npm run tauri dev`
+
+**Abhängigkeiten:** Phase 4 (Upload/Dropbox), 5 (Custom API / Manifest), 9 (Settings), 14/15 (Append-Guards), 16 (Binding).  
+**Nicht-Ziele:** Notify ändern; ATS-Handoff/Manifest erweitern; PDF in lokalen Job kopieren; Append-Support; History-Flag.
+
+**Agent-Prompt:**
+
+```
+Implementiere Phase 17 aus @docs/IMPLEMENTATION_PLAN.md
+Regeln: @AGENTS.md
+Nur Phase 17 (Infobroschüre PDF). Notify und Append-Pipeline-Verhalten nicht erweitern.
+Danach cargo test && npm run tauri dev.
+```
+
+---
+
 ## 10. Teststrategie
 
 - Rust Unit-Tests für Marker, Status, Payload-Builder, Checkpoint-Logik
 - Ab Phase 13: Manifest-Validierung, Gate (Legacy vs. Handoff), Ignore `.ams-handoff`
+- Ab Phase 17: Broschüre-Injektion (Erst-Upload only, Append skip, Idempotenz, 5 MB-Limit)
 - Legacy `_test_*.py` als Spezifikation, nicht ausführen
 - Manuelle Abnahme: Monitor → Upload → Notify → Archiv
 - Ab Phase 10: CI auf Win/Mac/Linux
@@ -902,3 +962,4 @@ Updater-Endpoint und Signing: siehe [`docs/RELEASE.md`](./RELEASE.md) (analog Ae
 | 14 | Medien nachreichen | ✅ |
 | 15 | ATS-Nachreichen (Append) | ✅ |
 | 16 | Multi-Dropbox-Konten (Native + Custom-API) | ✅ 16a ✅ · 16b ✅ · 16c ✅ · 16d ✅ |
+| 17 | Infobroschüre PDF (Erst-Upload) | ⬜ |
