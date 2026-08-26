@@ -8,6 +8,12 @@ Patch ohne Unreleased-Text: Notes der Vorgängerversion werden übernommen.
 
 ## [Unreleased]
 
+### Verbessert
+
+- Historie sortiert nach **Erstelldatum** — Einträge rutschen nicht mehr nach oben, wenn nur Kontaktdaten, Buchungsinfos oder Archivpfad nachgezogen werden
+- Detailansicht zeigt **Erstellt** und **Zuletzt aktualisiert** getrennt
+- „Zuletzt aktualisiert“ ändert sich nur noch bei echten Upload-/Status-Schritten, nicht bei reinen Metadaten-Updates
+
 ## [0.1.11] - 2026-08-26
 
 ### Verbessert
