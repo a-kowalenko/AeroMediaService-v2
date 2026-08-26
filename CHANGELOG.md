@@ -8,6 +8,8 @@ Patch ohne Unreleased-Text: Notes der Vorgängerversion werden übernommen.
 
 ## [Unreleased]
 
+## [0.1.12] - 2026-08-26
+
 ### Verbessert
 
 - Cloud-Dienst in Einstellungen, Einrichtungsassistent und Status heißt jetzt **Skydive Media** (statt „Custom API“) — inkl. zugehöriger Dropbox-Konten und Meldungen
