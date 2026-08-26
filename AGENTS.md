@@ -96,6 +96,7 @@ Vollständiges Mapping: `@docs/MIGRATION.md`
 - ✅ Phase 15: ATS-Nachreichen (`kind=append`, gleicher Link, keine Notify)
 - ✅ Phase 16: Multi-Dropbox-Konten (Native + Custom-API-Dropbox; Binding, Guards, UI) — 16a–16d
 - ✅ Phase 17: Infobroschüre PDF (Erst-Upload; Settings Drag-Drop; kein Append/Notify)
+- ✅ Phase 18: Release-Kanäle (Beta / Stable / Auto-Latest) — wie ATS-v2
 
 **Nächster Schritt:** Optional Phase 13 / P5+ — Spec: `@docs/HANDOFF.md`
 
@@ -121,11 +122,6 @@ Scope vorher klären. Upload-Pipeline nicht ändern.
 
 Multi-Dropbox (Phase 16): abgeschlossen (16a–16d).
 
-Infobroschüre (Phase 17):
+Infobroschüre (Phase 17): abgeschlossen.
 
-```
-Implementiere Phase 17 aus @docs/IMPLEMENTATION_PLAN.md
-Regeln: @AGENTS.md
-Nur Phase 17. Notify und Append nicht erweitern.
-Danach cargo test && npm run tauri dev.
-```
+Release-Kanäle (Phase 18): abgeschlossen.

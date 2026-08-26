@@ -8,6 +8,11 @@ Patch ohne Unreleased-Text: Notes der Vorgängerversion werden übernommen.
 
 ## [Unreleased]
 
+### Neu
+
+- Einstellung **Betatester** unter Wartung → Software-Update: Vorabversionen anzeigen und per Auto-Update erhalten
+- Release-Flow mit Beta- und Stable-Kanal (Vorabversionen als Prerelease, Stable wird nach dem Build automatisch „Latest“)
+
 ## [0.1.13] - 2026-08-26
 
 ### Neu

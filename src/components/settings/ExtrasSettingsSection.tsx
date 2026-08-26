@@ -14,14 +14,16 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import {
+  getSetting,
   getUpdaterStatus,
   listAvailableVersions,
   migrateLegacySettings,
   resetSetup,
+  saveSetting,
   type AvailableRelease,
   type MigrateReport,
 } from "@/lib/tauri";
-import { compareVersionParts } from "@/lib/versionCompare";
+import { compareVersionParts, isVersionPrerelease } from "@/lib/versionCompare";
 import { cn } from "@/lib/utils";
 import { useUiStore } from "@/store/uiStore";
 
@@ -30,7 +32,7 @@ type Props = {
   appVersion?: string;
   platformHint?: string | null;
   installBlockedReason?: string | null;
-  onRequestUpdateCheck?: () => void;
+  onRequestUpdateCheck?: (includeBeta?: boolean) => void;
   onRequestVersionSwitch?: (release: AvailableRelease) => void;
   onOpenSetupWizard?: () => void;
   onCloseSettings: () => void;
@@ -81,7 +83,7 @@ function releaseMeta(
   if (appVersion && compareVersionParts(release.tag_name, appVersion) === 0) {
     chips.push({ label: "Installiert", tone: "neutral" });
   }
-  if (release.prerelease) chips.push({ label: "Prerelease", tone: "warning" });
+  if (release.prerelease) chips.push({ label: "Beta", tone: "warning" });
   if (!release.updater_json_url) {
     chips.push({ label: "Manuell", tone: "muted" });
   }
@@ -110,7 +112,7 @@ export function ExtrasSettingsSection({
   const [releasesLoading, setReleasesLoading] = useState(false);
   const [releasesError, setReleasesError] = useState("");
   const [selectedVersion, setSelectedVersion] = useState("");
-  const [showPrereleases, setShowPrereleases] = useState(false);
+  const [betaUpdatesEnabled, setBetaUpdatesEnabled] = useState(false);
   const [setupBusy, setSetupBusy] = useState(false);
   const [migrateBusy, setMigrateBusy] = useState(false);
   const [lastMigration, setLastMigration] = useState<MigrateReport | null>(null);
@@ -134,11 +136,13 @@ export function ExtrasSettingsSection({
     setReleasesLoading(true);
     setReleasesError("");
     try {
-      const [statusInfo, list] = await Promise.all([
+      const [statusInfo, list, betaRaw] = await Promise.all([
         getUpdaterStatus(),
         listAvailableVersions(),
+        getSetting("beta_updates_enabled", "false"),
       ]);
       applyUpdaterStatus(statusInfo);
+      setBetaUpdatesEnabled(betaRaw.trim().toLowerCase() === "true");
       setReleases(list);
       const firstStable = list.find((r) => !r.prerelease);
       const preferred =
@@ -176,9 +180,21 @@ export function ExtrasSettingsSection({
   }, [active, loadReleases]);
 
   const filteredReleases = useMemo(() => {
-    if (showPrereleases) return releases;
+    if (betaUpdatesEnabled) return releases;
     return releases.filter((r) => !r.prerelease);
-  }, [releases, showPrereleases]);
+  }, [releases, betaUpdatesEnabled]);
+
+  const installedIsBeta = Boolean(appVersion && isVersionPrerelease(appVersion));
+
+  async function patchBetaUpdates(enabled: boolean) {
+    setBetaUpdatesEnabled(enabled);
+    try {
+      await saveSetting("beta_updates_enabled", enabled ? "true" : "false");
+    } catch (err) {
+      setBetaUpdatesEnabled(!enabled);
+      showError(String(err), "Einstellungen");
+    }
+  }
 
   useEffect(() => {
     if (!active || releases.length === 0) return;
@@ -285,13 +301,18 @@ export function ExtrasSettingsSection({
 
       <SettingsSection
         title="Software-Update"
-        description="Aktuelle Version prüfen oder auf eine andere stabile Version wechseln."
+        description="Aktuelle Version prüfen oder auf eine andere Version wechseln."
       >
         <div className="space-y-4">
           <div className="rounded-md border border-border/60 bg-card/40 px-3 py-2.5">
             <p className="text-xs text-muted">Installierte Version</p>
             <p className="mt-0.5 text-sm font-medium text-foreground">
               {appVersion || "—"}
+              {installedIsBeta ? (
+                <span className="ml-1.5 text-xs font-medium text-amber-600 dark:text-amber-500">
+                  (Beta)
+                </span>
+              ) : null}
             </p>
             {platformHint ? (
               <p className="mt-2 text-xs text-muted">{platformHint}</p>
@@ -316,28 +337,30 @@ export function ExtrasSettingsSection({
             </div>
           ) : null}
 
-          <div className="flex flex-wrap gap-2">
+          <div className="flex flex-wrap items-center gap-3">
             <Button
               type="button"
               variant="secondary"
               disabled={Boolean(installBlockedReason)}
-              onClick={() => onRequestUpdateCheck?.()}
+              onClick={() => onRequestUpdateCheck?.(betaUpdatesEnabled)}
             >
               Auf Updates prüfen
             </Button>
+            <label className="flex items-center gap-2 text-sm">
+              <Checkbox
+                checked={betaUpdatesEnabled}
+                onCheckedChange={(v) => void patchBetaUpdates(v === true)}
+              />
+              Betatester
+            </label>
           </div>
+          <p className="text-xs text-muted">
+            Mit Betatester erhalten Sie Vorabversionen automatisch und sehen sie in der
+            Versionsliste.
+          </p>
 
           <div className="space-y-3 border-t border-border/50 pt-3">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <p className="text-xs font-medium text-foreground">Version wählen</p>
-              <label className="flex items-center gap-2 text-xs text-muted">
-                <Checkbox
-                  checked={showPrereleases}
-                  onCheckedChange={(v) => setShowPrereleases(v === true)}
-                />
-                Prereleases anzeigen
-              </label>
-            </div>
+            <p className="text-xs font-medium text-foreground">Version wählen</p>
 
             <div className="space-y-1.5">
               <Label>Ziel-Version</Label>
@@ -404,7 +427,7 @@ export function ExtrasSettingsSection({
             {!releasesLoading && !releasesError && filteredReleases.length === 0 ? (
               <p className="text-xs text-muted">
                 Keine Versionen gefunden
-                {showPrereleases ? "." : " (Prereleases sind ausgeblendet)."}
+                {betaUpdatesEnabled ? "." : " (Vorabversionen sind ausgeblendet)."}
               </p>
             ) : null}
 

@@ -88,7 +88,7 @@ type Props = {
     appVersion?: string;
     platformHint?: string | null;
     installBlockedReason?: string | null;
-    onRequestUpdateCheck?: () => void;
+    onRequestUpdateCheck?: (includeBeta?: boolean) => void;
     onRequestVersionSwitch?: (release: AvailableRelease) => void;
     onOpenSetupWizard?: () => void;
 };

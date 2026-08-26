@@ -81,6 +81,10 @@ pub struct UpdateCheckResult {
     pub latest_version: Option<String>,
     pub body: Option<String>,
     pub message: String,
+    pub prerelease: bool,
+    /// When set (beta path / specific release), silent install via this manifest URL.
+    pub updater_json_url: Option<String>,
+    pub installer_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -156,24 +160,25 @@ pub fn get_updater_install_hint() -> Option<String> {
 }
 
 /// Check for updates. When stub config is active, returns `configured: false`
-/// without contacting the network. When configured, uses the updater plugin.
+/// without contacting the network. Stable checks use the updater plugin; beta
+/// checks use the GitHub releases API (prereleases are excluded from `/latest/`).
 #[tauri::command]
-pub async fn check_for_updates<R: Runtime>(app: AppHandle<R>) -> Result<UpdateCheckResult, String> {
+pub async fn check_for_updates<R: Runtime>(
+    app: AppHandle<R>,
+    include_beta: bool,
+) -> Result<UpdateCheckResult, String> {
     let current_version = app.package_info().version.to_string();
 
     if !is_updater_configured() {
-        return Ok(UpdateCheckResult {
-            configured: false,
-            available: false,
-            current_version,
-            latest_version: None,
-            body: None,
-            message: "Auto-Update ist derzeit nicht verfügbar.".into(),
-        });
+        return Ok(unavailable_update_result(current_version));
     }
 
     #[cfg(desktop)]
     {
+        if include_beta {
+            return check_for_updates_via_releases_api(&current_version, true).await;
+        }
+
         use tauri_plugin_updater::UpdaterExt;
         let updater = app
             .updater_builder()
@@ -190,6 +195,9 @@ pub async fn check_for_updates<R: Runtime>(app: AppHandle<R>) -> Result<UpdateCh
                     latest_version: Some(update.version.clone()),
                     body,
                     message: format!("Update verfügbar: {}", update.version),
+                    prerelease: false,
+                    updater_json_url: None,
+                    installer_url: None,
                 })
             }
             Ok(None) => Ok(UpdateCheckResult {
@@ -199,6 +207,9 @@ pub async fn check_for_updates<R: Runtime>(app: AppHandle<R>) -> Result<UpdateCh
                 latest_version: None,
                 body: None,
                 message: format!("Sie haben bereits die neueste Version ({current_version})."),
+                prerelease: false,
+                updater_json_url: None,
+                installer_url: None,
             }),
             Err(e) => Err(format!("Update-Prüfung fehlgeschlagen: {e}")),
         }
@@ -206,6 +217,7 @@ pub async fn check_for_updates<R: Runtime>(app: AppHandle<R>) -> Result<UpdateCh
 
     #[cfg(not(desktop))]
     {
+        let _ = app;
         Ok(UpdateCheckResult {
             configured: false,
             available: false,
@@ -213,8 +225,90 @@ pub async fn check_for_updates<R: Runtime>(app: AppHandle<R>) -> Result<UpdateCh
             latest_version: None,
             body: None,
             message: "Updater nur auf Desktop verfügbar.".into(),
+            prerelease: false,
+            updater_json_url: None,
+            installer_url: None,
         })
     }
+}
+
+fn unavailable_update_result(current_version: String) -> UpdateCheckResult {
+    UpdateCheckResult {
+        configured: false,
+        available: false,
+        current_version,
+        latest_version: None,
+        body: None,
+        message: "Auto-Update ist derzeit nicht verfügbar.".into(),
+        prerelease: false,
+        updater_json_url: None,
+        installer_url: None,
+    }
+}
+
+async fn check_for_updates_via_releases_api(
+    current_version: &str,
+    include_beta: bool,
+) -> Result<UpdateCheckResult, String> {
+    let releases = list_available_versions().await?;
+    if let Some(candidate) = resolve_best_update(&releases, current_version, include_beta) {
+        let body = nonempty_notes(Some(&candidate.body))
+            .or(fetch_release_notes(&candidate.tag_name).await);
+        let beta_suffix = if candidate.prerelease || version_has_prerelease(&candidate.tag_name) {
+            " (Beta)"
+        } else {
+            ""
+        };
+        return Ok(UpdateCheckResult {
+            configured: true,
+            available: true,
+            current_version: current_version.to_string(),
+            latest_version: Some(candidate.tag_name.clone()),
+            body,
+            message: format!("Update verfügbar: {}{}", candidate.tag_name, beta_suffix),
+            prerelease: candidate.prerelease || version_has_prerelease(&candidate.tag_name),
+            updater_json_url: candidate.updater_json_url.clone(),
+            installer_url: candidate.installer_url.clone(),
+        });
+    }
+
+    Ok(UpdateCheckResult {
+        configured: true,
+        available: false,
+        current_version: current_version.to_string(),
+        latest_version: None,
+        body: None,
+        message: format!("Sie haben bereits die neueste Version ({current_version})."),
+        prerelease: false,
+        updater_json_url: None,
+        installer_url: None,
+    })
+}
+
+fn is_installable_release(release: &AvailableRelease) -> bool {
+    release.updater_json_url.is_some() || release.installer_url.is_some()
+}
+
+/// Newest installable release newer than `current`. `releases` must be sorted desc.
+fn resolve_best_update<'a>(
+    releases: &'a [AvailableRelease],
+    current: &str,
+    include_beta: bool,
+) -> Option<&'a AvailableRelease> {
+    releases.iter().find(|release| {
+        is_installable_release(release)
+            && (include_beta || !release_is_prerelease(release))
+            && compare_semver(&release.tag_name, current) == std::cmp::Ordering::Greater
+    })
+}
+
+/// GitHub prerelease flag **or** SemVer prerelease in the tag (`-beta`, `-rc`, …).
+fn release_is_prerelease(release: &AvailableRelease) -> bool {
+    release.prerelease || version_has_prerelease(&release.tag_name)
+}
+
+fn version_has_prerelease(version: &str) -> bool {
+    normalize_tag(version).contains('-')
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -426,14 +520,14 @@ pub async fn list_available_versions() -> Result<Vec<AvailableRelease>, String> 
             continue;
         }
         releases.push(AvailableRelease {
-            tag_name: tag,
+            tag_name: tag.clone(),
             published_at: release.published_at.unwrap_or_default(),
             body: release
                 .body
                 .unwrap_or_else(|| "Keine Details verfügbar.".into()),
             installer_url,
             updater_json_url,
-            prerelease: release.prerelease,
+            prerelease: release.prerelease || version_has_prerelease(&tag),
         });
     }
 
@@ -533,36 +627,104 @@ fn normalize_tag(tag: &str) -> String {
     tag.trim().trim_start_matches('v').to_string()
 }
 
-/// Loose semver compare: `candidate >= minimum` (numeric segments only).
+/// SemVer: `candidate >= minimum`.
 fn version_at_least(candidate: &str, minimum: &str) -> bool {
-    compare_version_parts(
-        &parse_version_parts(candidate),
-        &parse_version_parts(minimum),
-    ) != std::cmp::Ordering::Less
+    compare_semver(candidate, minimum) != std::cmp::Ordering::Less
 }
 
 fn compare_versions_desc(a: &str, b: &str) -> std::cmp::Ordering {
-    compare_version_parts(&parse_version_parts(a), &parse_version_parts(b)).reverse()
+    compare_semver(a, b).reverse()
 }
 
-fn parse_version_parts(v: &str) -> Vec<u64> {
-    v.split(|c: char| !c.is_ascii_digit())
-        .filter(|s| !s.is_empty())
-        .filter_map(|s| s.parse::<u64>().ok())
-        .collect()
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SemVerParts {
+    major: u64,
+    minor: u64,
+    patch: u64,
+    /// `None` = release (no prerelease). Identifiers are numeric or alphanumeric.
+    prerelease: Option<Vec<PreId>>,
 }
 
-fn compare_version_parts(a: &[u64], b: &[u64]) -> std::cmp::Ordering {
-    let len = a.len().max(b.len());
-    for i in 0..len {
-        let left = a.get(i).copied().unwrap_or(0);
-        let right = b.get(i).copied().unwrap_or(0);
-        match left.cmp(&right) {
-            std::cmp::Ordering::Equal => {}
-            other => return other,
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum PreId {
+    Num(u64),
+    Text(String),
+}
+
+fn parse_semver(input: &str) -> SemVerParts {
+    let v = normalize_tag(input);
+    // Strip build metadata (+…)
+    let v = v.split_once('+').map(|(c, _)| c).unwrap_or(v.as_str());
+    let (core, pre) = match v.split_once('-') {
+        Some((c, p)) => (c, Some(p)),
+        None => (v, None),
+    };
+    let mut nums = core.split('.').filter_map(|s| s.parse::<u64>().ok());
+    let major = nums.next().unwrap_or(0);
+    let minor = nums.next().unwrap_or(0);
+    let patch = nums.next().unwrap_or(0);
+    let prerelease = pre.map(|p| {
+        p.split('.')
+            .map(|id| {
+                if id.chars().all(|c| c.is_ascii_digit()) && !id.is_empty() {
+                    PreId::Num(id.parse().unwrap_or(0))
+                } else {
+                    PreId::Text(id.to_string())
+                }
+            })
+            .collect()
+    });
+    SemVerParts {
+        major,
+        minor,
+        patch,
+        prerelease,
+    }
+}
+
+fn compare_pre_id(a: &PreId, b: &PreId) -> std::cmp::Ordering {
+    match (a, b) {
+        (PreId::Num(x), PreId::Num(y)) => x.cmp(y),
+        (PreId::Num(_), PreId::Text(_)) => std::cmp::Ordering::Less,
+        (PreId::Text(_), PreId::Num(_)) => std::cmp::Ordering::Greater,
+        (PreId::Text(x), PreId::Text(y)) => x.cmp(y),
+    }
+}
+
+fn compare_prerelease(a: &Option<Vec<PreId>>, b: &Option<Vec<PreId>>) -> std::cmp::Ordering {
+    // Release (None) > any prerelease
+    match (a, b) {
+        (None, None) => std::cmp::Ordering::Equal,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (Some(left), Some(right)) => {
+            let len = left.len().max(right.len());
+            for i in 0..len {
+                match (left.get(i), right.get(i)) {
+                    (None, Some(_)) => return std::cmp::Ordering::Less,
+                    (Some(_), None) => return std::cmp::Ordering::Greater,
+                    (Some(x), Some(y)) => {
+                        let c = compare_pre_id(x, y);
+                        if c != std::cmp::Ordering::Equal {
+                            return c;
+                        }
+                    }
+                    (None, None) => break,
+                }
+            }
+            std::cmp::Ordering::Equal
         }
     }
-    std::cmp::Ordering::Equal
+}
+
+fn compare_semver(a: &str, b: &str) -> std::cmp::Ordering {
+    let left = parse_semver(a);
+    let right = parse_semver(b);
+    left.major
+        .cmp(&right.major)
+        .then(left.minor.cmp(&right.minor))
+        .then(left.patch.cmp(&right.patch))
+        .then(compare_prerelease(&left.prerelease, &right.prerelease))
 }
 
 fn pick_updater_json_url(assets: &[GitHubAsset]) -> Option<String> {
@@ -698,6 +860,32 @@ mod tests {
     }
 
     #[test]
+    fn semver_prerelease_ordering() {
+        assert_eq!(
+            compare_semver("0.1.14-beta.1", "0.1.14"),
+            std::cmp::Ordering::Less
+        );
+        assert_eq!(
+            compare_semver("0.1.14", "0.1.14-beta.1"),
+            std::cmp::Ordering::Greater
+        );
+        assert_eq!(
+            compare_semver("0.1.14-beta.1", "0.1.14-beta.2"),
+            std::cmp::Ordering::Less
+        );
+        assert_eq!(
+            compare_semver("0.1.13", "0.1.14-beta.1"),
+            std::cmp::Ordering::Less
+        );
+        assert_eq!(
+            compare_semver("v0.1.14-beta.1", "0.1.14-beta.1"),
+            std::cmp::Ordering::Equal
+        );
+        assert!(version_has_prerelease("0.1.14-beta.1"));
+        assert!(!version_has_prerelease("0.1.14"));
+    }
+
+    #[test]
     fn normalize_strips_v_prefix() {
         assert_eq!(normalize_tag("v0.1.3"), "0.1.3");
         assert_eq!(normalize_tag("0.1.3"), "0.1.3");
@@ -812,6 +1000,83 @@ mod tests {
         assert!(nonempty_notes(Some("   ")).is_none());
         assert!(nonempty_notes(Some("")).is_none());
         assert!(nonempty_notes(None).is_none());
+    }
+
+    fn sample_release(tag: &str, prerelease: bool, has_updater: bool) -> AvailableRelease {
+        AvailableRelease {
+            tag_name: tag.into(),
+            published_at: String::new(),
+            body: String::new(),
+            installer_url: None,
+            updater_json_url: has_updater.then(|| {
+                format!(
+                    "https://github.com/a-kowalenko/aero-media-service-releases/releases/download/v{tag}/latest.json"
+                )
+            }),
+            prerelease,
+        }
+    }
+
+    #[test]
+    fn resolve_best_update_respects_beta_flag() {
+        let releases = vec![
+            sample_release("0.3.2", true, true),
+            sample_release("0.3.1", false, true),
+            sample_release("0.3.0", false, true),
+        ];
+        assert_eq!(
+            resolve_best_update(&releases, "0.3.0", false).map(|r| r.tag_name.as_str()),
+            Some("0.3.1")
+        );
+        assert_eq!(
+            resolve_best_update(&releases, "0.3.0", true).map(|r| r.tag_name.as_str()),
+            Some("0.3.2")
+        );
+        assert!(resolve_best_update(&releases, "0.3.2", false).is_none());
+        assert!(resolve_best_update(&releases, "0.3.2", true).is_none());
+    }
+
+    #[test]
+    fn resolve_best_update_offers_beta_from_stable() {
+        let releases = vec![
+            sample_release("0.1.14-beta.1", true, true),
+            sample_release("0.1.13", false, true),
+        ];
+        assert!(resolve_best_update(&releases, "0.1.13", false).is_none());
+        assert_eq!(
+            resolve_best_update(&releases, "0.1.13", true).map(|r| r.tag_name.as_str()),
+            Some("0.1.14-beta.1")
+        );
+    }
+
+    #[test]
+    fn resolve_best_update_prefers_stable_over_older_beta() {
+        let releases = vec![
+            sample_release("0.1.14", false, true),
+            sample_release("0.1.14-beta.2", true, true),
+            sample_release("0.1.13", false, true),
+        ];
+        assert_eq!(
+            resolve_best_update(&releases, "0.1.14-beta.2", true).map(|r| r.tag_name.as_str()),
+            Some("0.1.14")
+        );
+        assert_eq!(
+            resolve_best_update(&releases, "0.1.13", false).map(|r| r.tag_name.as_str()),
+            Some("0.1.14")
+        );
+    }
+
+    #[test]
+    fn resolve_best_update_skips_non_installable() {
+        let releases = vec![AvailableRelease {
+            tag_name: "9.9.9".into(),
+            published_at: String::new(),
+            body: String::new(),
+            installer_url: None,
+            updater_json_url: None,
+            prerelease: false,
+        }];
+        assert!(resolve_best_update(&releases, "0.1.0", true).is_none());
     }
 
     #[test]

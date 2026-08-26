@@ -1,11 +1,19 @@
 ﻿/**
- * Interactive SemVer release: bump → changelog → commit → tag → push.
+ * Interactive SemVer release: bump × channel → changelog → commit → tag → push.
  *
  * Usage: npm run release
- * Asks: patch | minor | major, then confirmation.
  *
- * Requires meaningful notes under ## [Unreleased] in CHANGELOG.md.
- * CI publishes that section as the public GitHub release body (updater notes).
+ * Stable version:
+ *   1) Choose bump: patch | minor | major
+ *   2) Choose channel: stable | beta
+ *
+ * Already on prerelease (e.g. 0.1.14-beta.1):
+ *   beta   → 0.1.14-beta.2
+ *   stable → 0.1.14 (promote)
+ *
+ * Changelog:
+ *   beta   → snapshot ## [x.y.z-beta.N] (Unreleased kept)
+ *   stable → promote Unreleased → ## [x.y.z]
  */
 import { createInterface } from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
@@ -15,11 +23,19 @@ import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
 import {
   CHANGELOG_PATH,
+  insertBetaSnapshot,
   insertVersionNotes,
   readChangelog,
   resolveNotesForRelease,
   writeChangelog,
 } from "./changelog.mjs";
+import {
+  bumpCore,
+  isPrereleaseVersion,
+  nextBetaVersion,
+  parseSemVer,
+  toStableVersion,
+} from "./semver.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const root = join(__dirname, "..");
@@ -41,23 +57,8 @@ function git(args, opts = {}) {
     ...opts,
     stdio,
   });
-  // With stdio: "inherit", Node returns null (no captured stdout).
   if (out == null) return "";
   return String(out).trim();
-}
-
-function parseSemver(v) {
-  const m = /^(\d+)\.(\d+)\.(\d+)$/.exec(v);
-  if (!m) throw new Error(`Ungültige Version: ${v}`);
-  return { major: Number(m[1]), minor: Number(m[2]), patch: Number(m[3]) };
-}
-
-function bump(version, kind) {
-  const s = parseSemver(version);
-  if (kind === "major") return `${s.major + 1}.0.0`;
-  if (kind === "minor") return `${s.major}.${s.minor + 1}.0`;
-  if (kind === "patch") return `${s.major}.${s.minor}.${s.patch + 1}`;
-  throw new Error(`Unbekannter Bump-Typ: ${kind}`);
 }
 
 function readJson(path) {
@@ -70,7 +71,6 @@ function writeJson(path, data) {
 
 function setCargoTomlVersion(next) {
   let text = readFileSync(FILES.cargoToml, "utf8");
-  // Only the package table at the top — first bare `version =` after [package]
   const replaced = text.replace(
     /(\[package\][\s\S]*?^version\s*=\s*")([^"]+)(")/m,
     `$1${next}$3`,
@@ -140,13 +140,101 @@ function assertReadyToRelease() {
   }
 }
 
+function assertTagAvailable(tag) {
+  const local = git(["tag", "-l", tag]);
+  if (local) {
+    throw new Error(`Tag ${tag} existiert bereits lokal.`);
+  }
+  try {
+    git(["ls-remote", "--exit-code", "--tags", "origin", `refs/tags/${tag}`]);
+    throw new Error(`Tag ${tag} existiert bereits auf origin.`);
+  } catch (e) {
+    const msg = String(e?.message ?? e);
+    if (msg.includes("existiert bereits")) throw e;
+  }
+}
+
 async function ask(rl, question) {
   return (await rl.question(question)).trim();
 }
 
+/**
+ * @returns {Promise<{ next: string, channel: "stable"|"beta", kind: "major"|"minor"|"patch"|"promote"|"beta-next" }|null>}
+ */
+async function resolveNextVersion(rl, current) {
+  if (isPrereleaseVersion(current)) {
+    console.log("Aktuell auf Vorabversion — nächster Schritt:");
+    console.log("  1) beta    — nächste Beta   (…-beta.N+1)");
+    console.log("  2) stable  — finale Version (Suffix entfernen)");
+    console.log("  q) abbrechen\n");
+
+    const choice = (await ask(rl, "Auswahl [1/2/q]: ")).toLowerCase();
+    if (choice === "q" || choice === "quit" || choice === "abort") {
+      return null;
+    }
+    if (choice === "1" || choice === "beta") {
+      return {
+        next: nextBetaVersion(current),
+        channel: "beta",
+        kind: "beta-next",
+      };
+    }
+    if (choice === "2" || choice === "stable") {
+      return {
+        next: toStableVersion(current),
+        channel: "stable",
+        kind: "promote",
+      };
+    }
+    throw new Error(`Ungültige Auswahl: ${choice}`);
+  }
+
+  console.log("Ziel-Bump wählen:");
+  console.log("  1) patch  — Bugfixes        (x.y.Z)");
+  console.log("  2) minor  — neue Features   (x.Y.0)");
+  console.log("  3) major  — Breaking Change (X.0.0)");
+  console.log("  q) abbrechen\n");
+
+  const bumpChoice = (await ask(rl, "Auswahl [1/2/3/q]: ")).toLowerCase();
+  const kindMap = {
+    1: "patch",
+    patch: "patch",
+    2: "minor",
+    minor: "minor",
+    3: "major",
+    major: "major",
+  };
+  if (bumpChoice === "q" || bumpChoice === "quit" || bumpChoice === "abort") {
+    return null;
+  }
+  const kind = kindMap[bumpChoice];
+  if (!kind) {
+    throw new Error(`Ungültige Auswahl: ${bumpChoice}`);
+  }
+
+  console.log("\nKanal wählen:");
+  console.log("  1) stable — öffentlicher Release (wird nach CI Latest)");
+  console.log("  2) beta   — Vorabversion (Prerelease, nicht Latest)");
+  console.log("  q) abbrechen\n");
+
+  const channelChoice = (await ask(rl, "Auswahl [1/2/q]: ")).toLowerCase();
+  if (
+    channelChoice === "q" ||
+    channelChoice === "quit" ||
+    channelChoice === "abort"
+  ) {
+    return null;
+  }
+  if (channelChoice === "1" || channelChoice === "stable") {
+    return { next: bumpCore(current, kind), channel: "stable", kind };
+  }
+  if (channelChoice === "2" || channelChoice === "beta") {
+    return { next: nextBetaVersion(current, kind), channel: "beta", kind };
+  }
+  throw new Error(`Ungültige Auswahl: ${channelChoice}`);
+}
+
 async function main() {
-  // JetBrains Run-Konsole ist oft kein echtes TTY — ohne terminal:false
-  // erscheinen Cursor-Escape-Sequenzen (z. B. ←[1G←[0J) im Output.
   const rl = createInterface({
     input,
     output,
@@ -156,60 +244,75 @@ async function main() {
     assertReadyToRelease();
 
     const current = readJson(FILES.packageJson).version;
+    parseSemVer(current);
     console.log(`\nAktuelle Version: ${current}\n`);
-    console.log("Release-Typ wählen:");
-    console.log("  1) patch  — Bugfixes        (x.y.Z)");
-    console.log("  2) minor  — neue Features   (x.Y.0)");
-    console.log("  3) major  — Breaking Change (X.0.0)");
-    console.log("  q) abbrechen\n");
 
-    const choice = (await ask(rl, "Auswahl [1/2/3/q]: ")).toLowerCase();
-    const kindMap = {
-      1: "patch",
-      patch: "patch",
-      2: "minor",
-      minor: "minor",
-      3: "major",
-      major: "major",
-    };
-    if (choice === "q" || choice === "quit" || choice === "abort") {
+    const resolved = await resolveNextVersion(rl, current);
+    if (!resolved) {
       console.log("Abgebrochen.");
       return;
     }
-    const kind = kindMap[choice];
-    if (!kind) {
-      throw new Error(`Ungültige Auswahl: ${choice}`);
-    }
 
-    const next = bump(current, kind);
+    const { next, channel, kind } = resolved;
     const tag = `v${next}`;
-    console.log(`\n→ ${kind}: ${current} → ${next} (Tag ${tag})\n`);
+    const isBeta = channel === "beta";
 
+    console.log(`\n→ ${current} → ${next} (Tag ${tag})`);
+    if (isBeta) {
+      console.log("  Kanal: beta (GitHub Prerelease, Latest bleibt unberührt)");
+    } else {
+      console.log("  Kanal: stable (CI setzt nach erfolgreichem Build automatisch Latest)");
+    }
+    console.log("");
+
+    assertTagAvailable(tag);
+
+    const notesKind =
+      kind === "promote" || kind === "beta-next" ? "patch" : kind;
     const changelog = readChangelog();
     const { body: notesBody, source, fromVersion } = resolveNotesForRelease(
       changelog,
-      kind,
+      notesKind,
       current,
+      channel,
     );
     if (source === "previous") {
       console.log(
         `Release-Notes: [Unreleased] leer — übernommen von ${fromVersion}:\n`,
       );
+    } else if (source === "stub") {
+      console.log("Release-Notes: Stub (Unreleased leer):\n");
     } else {
-      console.log("Release-Notes aus [Unreleased]:\n");
+      console.log(
+        isBeta
+          ? "Release-Notes-Snapshot aus [Unreleased] (Unreleased bleibt):\n"
+          : "Release-Notes aus [Unreleased]:\n",
+      );
     }
     console.log(notesBody);
     console.log("");
 
     const confirm = (
-      await ask(rl, `Release ${tag} committen, taggen und nach origin pushen? [y/N]: `)
+      await ask(
+        rl,
+        `Release ${tag} committen, taggen und nach origin pushen? [y/N]: `,
+      )
     ).toLowerCase();
-    if (confirm !== "y" && confirm !== "yes" && confirm !== "j" && confirm !== "ja") {
+    if (
+      confirm !== "y" &&
+      confirm !== "yes" &&
+      confirm !== "j" &&
+      confirm !== "ja"
+    ) {
       console.log("Abgebrochen.");
       return;
     }
 
-    writeChangelog(insertVersionNotes(changelog, next, notesBody));
+    if (isBeta) {
+      writeChangelog(insertBetaSnapshot(changelog, next, notesBody));
+    } else {
+      writeChangelog(insertVersionNotes(changelog, next, notesBody));
+    }
     applyVersions(next);
 
     git(
@@ -233,6 +336,11 @@ async function main() {
     git(["push", "origin", tag], { stdio: "inherit" });
 
     console.log(`\nFertig. Release-Workflow sollte für ${tag} starten.`);
+    if (isBeta) {
+      console.log("Beta: erscheint als Prerelease; Latest bleibt die aktuelle Stable.");
+    } else {
+      console.log("Stable: nach grünem CI-Build wird Latest automatisch gesetzt.");
+    }
     console.log(
       "Releases: https://github.com/a-kowalenko/aero-media-service-releases/releases\n",
     );

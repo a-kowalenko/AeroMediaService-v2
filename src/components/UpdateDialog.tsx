@@ -32,6 +32,8 @@ export type UpdateDialogProps = {
   platformHint?: string | null;
   installerUrl?: string | null;
   allowIgnore?: boolean;
+  /** Target release is a GitHub prerelease (beta). */
+  isBeta?: boolean;
   onInstall: () => void;
   onCancelInstall?: () => void;
   onLater: (ignoreVersion: boolean) => void;
@@ -76,6 +78,7 @@ export function UpdateDialog({
   platformHint = null,
   installerUrl = null,
   allowIgnore = false,
+  isBeta = false,
   onInstall,
   onCancelInstall,
   onLater,
@@ -130,9 +133,11 @@ export function UpdateDialog({
 
   const title = !available
     ? "Update-Prüfung"
-    : isDowngrade
-      ? "Ältere Version installieren"
-      : "Update verfügbar";
+    : isBeta
+      ? "Beta-Update verfügbar"
+      : isDowngrade
+        ? "Ältere Version installieren"
+        : "Update verfügbar";
 
   const primaryLabel = installing
     ? "Installiere…"
@@ -202,6 +207,12 @@ export function UpdateDialog({
               <p className="text-xs text-muted">
                 Die App wird ersetzt und neu gestartet. Einstellungen bleiben in
                 der Regel erhalten.
+              </p>
+            ) : null}
+            {isBeta ? (
+              <p className="text-xs text-amber-700 dark:text-amber-400">
+                Vorabversion zum Testen — kann noch Fehler enthalten. Die finale
+                Version folgt später als normales Update.
               </p>
             ) : null}
             <div className="min-w-0 space-y-1.5">

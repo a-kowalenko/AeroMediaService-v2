@@ -835,6 +835,9 @@ export type UpdateCheckResult = {
     latest_version: string | null;
     body: string | null;
     message: string;
+    prerelease: boolean;
+    updater_json_url: string | null;
+    installer_url: string | null;
 };
 
 export type UpdateInstallProgress = {
@@ -862,8 +865,8 @@ export function getUpdaterInstallHint(): Promise<string | null> {
     return invoke<string | null>("get_updater_install_hint");
 }
 
-export function checkForUpdates(): Promise<UpdateCheckResult> {
-    return invoke<UpdateCheckResult>("check_for_updates");
+export function checkForUpdates(includeBeta = false): Promise<UpdateCheckResult> {
+    return invoke<UpdateCheckResult>("check_for_updates", { includeBeta });
 }
 
 export function installUpdate(): Promise<string> {

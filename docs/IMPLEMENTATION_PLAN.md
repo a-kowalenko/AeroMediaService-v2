@@ -71,6 +71,7 @@
 | ATS-Nachreichen (Append-Handoff) | ✅ Phase 15 |
 | Multi-Dropbox-Konten (Native + Custom-API) | ✅ Phase 16 — 16a ✅ · 16b ✅ · 16c ✅ · 16d ✅ |
 | Infobroschüre PDF (Erst-Upload) | ✅ Phase 17 |
+| Release-Kanäle (Beta / Stable / Auto-Latest) | ✅ Phase 18 |
 
 **Nächste Phase:** optional Phase 13 / P5+ ([`HANDOFF.md`](./HANDOFF.md))
 
@@ -921,11 +922,67 @@ Danach cargo test && npm run tauri dev.
 
 ---
 
+### Phase 18 — Release-Kanäle (Beta / Stable / Auto-Latest)
+
+**Ziel:** Identischer Release-Flow wie ATS-v2: SemVer-Betas (`0.1.14-beta.1`), GitHub-Prereleases, Auto-Latest nur für Stable, Einstellung **Betatester** für Auto-Update inkl. Vorabversionen. AMS behält `merge-updater-manifest` (kein Race durch parallele `latest.json`-Uploads).
+
+**Vorbild:** `AeroTandemStudio-v2` — `docs/RELEASE.md`, `scripts/{semver,changelog,release}.mjs`, `.github/workflows/release.yml` (`promote-latest`), `src-tauri/src/updater/mod.rs` (`include_beta`).
+
+**Slices**
+
+#### 18a — Tooling
+
+- [x] `scripts/semver.mjs` (parse/compare/bump/nextBeta/toStable)
+- [x] `scripts/changelog.mjs`: Beta-Snapshot (Unreleased bleibt), Stub, kein Walkback für Prereleases
+- [x] `scripts/release.mjs`: Bump × Kanal; von Beta → `beta.N+1` oder Stable-Promote
+- [x] `docs/RELEASE.md` an ATS-Flow angleichen
+
+#### 18b — CI
+
+- [x] `prepare`: `is_prerelease` aus Tag (`-` im Versionsstring)
+- [x] Release create/edit mit `--prerelease` / `--prerelease=false`, immer `--latest=false`
+- [x] Matrix `prerelease` aus Output; **`merge-updater-manifest` behalten** (auch Beta-Tags)
+- [x] Job `promote-latest` nur Stable, nach Merge, SemVer-Guard gegen neueres Latest
+
+#### 18c — Backend Updater
+
+- [x] `check_for_updates(include_beta)`; Stable → Plugin/`/latest/`; Beta → Releases-API
+- [x] Echtes SemVer inkl. Prerelease-Ordnung in Rust
+- [x] Setting `beta_updates_enabled` (Default `false`)
+- [x] Unit-Tests: Ordering, `resolve_best_update`
+
+#### 18d — Frontend
+
+- [x] `versionCompare.ts` → SemVer (wie ATS)
+- [x] Extras: persistentes **Betatester** statt flüchtigem `showPrereleases`
+- [x] Update-Check / Dialog: `includeBeta`, `isBeta`, Beta über `installSpecificVersion` wenn `updater_json_url`
+
+**Nicht-Ziele:** Upload-Pipeline, Handoff, i18n-Port, Wechsel auf ATS `uploadUpdaterJson: true`.
+
+**DoD**
+
+- [x] `npm run release` erzeugt Beta- oder Stable-Tags inkl. Changelog-Regeln
+- [x] CI: Beta = Prerelease ohne Latest; Stable = Merge + Auto-Latest
+- [x] App ohne Betatester nur Stable; mit Betatester Beta sichtbar; finale Stable > Beta
+- [x] `cargo test` + `npm run test:scripts` + `npm run check`
+
+**Agent-Prompt:**
+
+```
+Implementiere Phase 18 aus @docs/IMPLEMENTATION_PLAN.md
+Regeln: @AGENTS.md
+Vorbild: ATS-v2 Release-Flow (Beta). merge-updater-manifest behalten.
+Nur Phase 18. Danach cargo test && npm run test:scripts.
+```
+
+---
+
 ## 10. Teststrategie
 
 - Rust Unit-Tests für Marker, Status, Payload-Builder, Checkpoint-Logik
 - Ab Phase 13: Manifest-Validierung, Gate (Legacy vs. Handoff), Ignore `.ams-handoff`
 - Ab Phase 17: Broschüre-Injektion (Erst-Upload only, Append skip, Idempotenz, 5 MB-Limit)
+- Ab Phase 18: SemVer/Prerelease-Ordering, Changelog Beta-Snapshot, `resolve_best_update`
 - Legacy `_test_*.py` als Spezifikation, nicht ausführen
 - Manuelle Abnahme: Monitor → Upload → Notify → Archiv
 - Ab Phase 10: CI auf Win/Mac/Linux
@@ -963,3 +1020,4 @@ Updater-Endpoint und Signing: siehe [`docs/RELEASE.md`](./RELEASE.md) (analog Ae
 | 15 | ATS-Nachreichen (Append) | ✅ |
 | 16 | Multi-Dropbox-Konten (Native + Custom-API) | ✅ 16a ✅ · 16b ✅ · 16c ✅ · 16d ✅ |
 | 17 | Infobroschüre PDF (Erst-Upload) | ✅ |
+| 18 | Release-Kanäle (Beta / Stable / Auto-Latest) | ✅ |

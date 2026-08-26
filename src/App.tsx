@@ -44,7 +44,7 @@ import {
   type AvailableRelease,
   type UpdateInstallProgress,
 } from "@/lib/tauri";
-import { compareVersionParts } from "@/lib/versionCompare";
+import { compareVersionParts, isVersionPrerelease } from "@/lib/versionCompare";
 import { isCloudConnected, useAppStore } from "@/store/appStore";
 import { useCustomerStore } from "@/store/customerStore";
 import { useLogStore } from "@/store/logStore";
@@ -75,6 +75,7 @@ function App() {
     silentAvailable: boolean;
     installerUrl: string | null;
     allowIgnore: boolean;
+    isBeta: boolean;
   } | null>(null);
   const [updateInstalling, setUpdateInstalling] = useState(false);
   const [updateInstallProgress, setUpdateInstallProgress] =
@@ -143,9 +144,13 @@ function App() {
     }
   }
 
-  async function runUpdateCheck(forceDialog = false) {
+  async function runUpdateCheck(forceDialog = false, includeBeta?: boolean) {
     try {
-      const result = await checkForUpdates();
+      const betaEnabled =
+        includeBeta ??
+        ((await getSetting("beta_updates_enabled", "false")).trim().toLowerCase() ===
+          "true");
+      const result = await checkForUpdates(betaEnabled);
       const ignored = (await getSetting("updater_ignore_version", "")).trim();
       const latest = result.latest_version?.trim() ?? "";
       if (
@@ -157,16 +162,20 @@ function App() {
       ) {
         return;
       }
+      const isBeta =
+        result.prerelease ||
+        Boolean(latest && isVersionPrerelease(latest));
       setVersionInstall({
         fromVersion: result.current_version,
         toVersion: result.latest_version,
         notes: result.body,
         available: result.available,
         message: result.message,
-        updaterJsonUrl: null,
-        silentAvailable: true,
-        installerUrl: null,
+        updaterJsonUrl: result.updater_json_url,
+        silentAvailable: Boolean(result.updater_json_url ?? !result.prerelease),
+        installerUrl: result.installer_url,
         allowIgnore: result.available,
+        isBeta,
       });
       if (forceDialog || result.available) {
         setUpdateDialogOpen(true);
@@ -200,6 +209,7 @@ function App() {
       silentAvailable: Boolean(release.updater_json_url),
       installerUrl: release.installer_url,
       allowIgnore: false,
+      isBeta: release.prerelease || isVersionPrerelease(release.tag_name),
     });
     setUpdateDialogOpen(true);
   }
@@ -584,7 +594,7 @@ function App() {
         appVersion={version === "…" ? "" : version}
         platformHint={updaterPlatformHint}
         installBlockedReason={installBlockedReason}
-        onRequestUpdateCheck={() => void runUpdateCheck(true)}
+        onRequestUpdateCheck={(includeBeta) => void runUpdateCheck(true, includeBeta)}
         onRequestVersionSwitch={openVersionSwitchDialog}
         onOpenSetupWizard={() => {
           setSettingsOpen(false);
@@ -620,6 +630,7 @@ function App() {
         platformHint={updaterPlatformHint}
         installerUrl={versionInstall?.installerUrl ?? null}
         allowIgnore={versionInstall?.allowIgnore ?? false}
+        isBeta={versionInstall?.isBeta ?? false}
         onInstall={() => void runInstallVersion()}
         onCancelInstall={() => void cancelInstallVersion()}
         onLater={(ignore) => {

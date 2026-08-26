@@ -1,12 +1,15 @@
 # Release — build updater artifacts and publish to the public releases repo.
 #
-# Trigger: push a version tag (v0.1.0, v1.2.3, …).
+# Trigger: push a version tag (v0.1.0, v0.1.0-beta.1, …).
 # Target:  https://github.com/a-kowalenko/aero-media-service-releases
 #
 # Required secrets (private repo):
 #   RELEASES_GITHUB_TOKEN              — PAT with Contents R/W on the releases repo
 #   TAURI_SIGNING_PRIVATE_KEY          — updater private key
 #   TAURI_SIGNING_PRIVATE_KEY_PASSWORD — key password (optional if key has none)
+#
+# Stable tags: after merge-updater-manifest, promote-latest sets GitHub Latest.
+# Prerelease tags (vX.Y.Z-beta.N / -rc.N): marked prerelease, never Latest.
 #
 # The public releases repo must have at least one commit on its default branch
 # (e.g. README). Tags for releases are created there pointing at that branch tip.
@@ -22,7 +25,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Existing or new tag to release (e.g. v0.1.1)"
+        description: "Existing or new tag to release (e.g. v0.1.1 or v0.1.1-beta.1)"
         required: true
         type: string
 
@@ -40,6 +43,8 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       tag: ${{ steps.meta.outputs.tag }}
+      version: ${{ steps.meta.outputs.version }}
+      is_prerelease: ${{ steps.meta.outputs.is_prerelease }}
       release_id: ${{ steps.ensure.outputs.release_id }}
       release_notes: ${{ steps.ensure.outputs.release_notes }}
     steps:
@@ -53,11 +58,18 @@ jobs:
             TAG="${GITHUB_REF_NAME}"
           fi
           if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-].*)?$ ]]; then
-            echo "Invalid tag '$TAG' (expected vX.Y.Z)" >&2
+            echo "Invalid tag '$TAG' (expected vX.Y.Z or vX.Y.Z-beta.N)" >&2
             exit 1
           fi
+          VERSION="${TAG#v}"
+          IS_PRERELEASE=false
+          if [[ "$VERSION" == *-* ]]; then
+            IS_PRERELEASE=true
+          fi
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          echo "Using tag: $TAG"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "is_prerelease=$IS_PRERELEASE" >> "$GITHUB_OUTPUT"
+          echo "Using tag: $TAG (prerelease=$IS_PRERELEASE)"
 
       - name: Checkout source (for CHANGELOG.md)
         uses: actions/checkout@v4
@@ -71,6 +83,8 @@ jobs:
           GH_TOKEN: ${{ secrets.RELEASES_GITHUB_TOKEN }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ steps.meta.outputs.tag }}
+          VERSION: ${{ steps.meta.outputs.version }}
+          IS_PRERELEASE: ${{ steps.meta.outputs.is_prerelease }}
           SOURCE_REPO: ${{ github.repository }}
         shell: bash
         run: |
@@ -81,7 +95,6 @@ jobs:
           fi
 
           REPO="${RELEASES_OWNER}/${RELEASES_REPO}"
-          VERSION="${TAG#v}"
 
           # User-facing notes from CHANGELOG.md (not auto-generated commit spam).
           # If the tag predates CHANGELOG (e.g. re-run for an older tag), load
@@ -126,22 +139,37 @@ jobs:
 
           NOTES_FILE="$(mktemp)"
           printf '%s\n' "${NOTES}" > "${NOTES_FILE}"
+          TITLE="Aero Media Service ${VERSION}"
 
           # Create published release if missing; otherwise refresh body from CHANGELOG.
+          # Always create with --latest=false; stable is promoted after assets upload.
           if RELEASE_ID=$(gh api "repos/${REPO}/releases/tags/${TAG}" --jq .id 2>/dev/null); then
             echo "Release for ${TAG} already exists (id=${RELEASE_ID}) — updating notes"
-            gh release edit "${TAG}" \
-              --repo "${REPO}" \
-              --notes-file "${NOTES_FILE}"
+            if [ "${IS_PRERELEASE}" = "true" ]; then
+              gh release edit "${TAG}" \
+                --repo "${REPO}" \
+                --notes-file "${NOTES_FILE}" \
+                --title "${TITLE}" \
+                --prerelease
+            else
+              gh release edit "${TAG}" \
+                --repo "${REPO}" \
+                --notes-file "${NOTES_FILE}" \
+                --title "${TITLE}" \
+                --prerelease=false
+            fi
           else
-            echo "Creating release ${TAG}"
-            # Do not mark as Latest — promote manually in the releases UI
-            # after verifying assets (updater still uses /releases/latest/).
+            echo "Creating release ${TAG} (prerelease=${IS_PRERELEASE})"
+            PRE_ARGS=()
+            if [ "${IS_PRERELEASE}" = "true" ]; then
+              PRE_ARGS+=(--prerelease)
+            fi
             gh release create "${TAG}" \
               --repo "${REPO}" \
-              --title "Aero Media Service ${TAG}" \
+              --title "${TITLE}" \
               --notes-file "${NOTES_FILE}" \
-              --latest=false
+              --latest=false \
+              "${PRE_ARGS[@]}"
             RELEASE_ID=$(gh api "repos/${REPO}/releases/tags/${TAG}" --jq .id)
           fi
           rm -f "${NOTES_FILE}"
@@ -228,10 +256,10 @@ jobs:
           repo: ${{ env.RELEASES_REPO }}
           tagName: ${{ needs.prepare.outputs.tag }}
           releaseId: ${{ needs.prepare.outputs.release_id }}
-          releaseName: Aero Media Service ${{ needs.prepare.outputs.tag }}
+          releaseName: Aero Media Service ${{ needs.prepare.outputs.version }}
           releaseBody: ${{ needs.prepare.outputs.release_notes }}
           releaseDraft: false
-          prerelease: false
+          prerelease: ${{ needs.prepare.outputs.is_prerelease == 'true' }}
           # latest.json is merged in merge-updater-manifest (parallel jobs overwrite each other).
           uploadUpdaterJson: false
           args: ${{ matrix.args }}
@@ -245,6 +273,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
+          fetch-depth: 1
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -270,3 +301,51 @@ jobs:
             --notes-file "${NOTES_FILE}" \
             --upload
           rm -f "${NOTES_FILE}"
+
+  # After merged latest.json is on the release, mark stable releases as Latest
+  # so /releases/latest/download/latest.json points at a complete build.
+  promote-latest:
+    needs: [prepare, merge-updater-manifest]
+    if: needs.prepare.outputs.is_prerelease == 'false' && needs.merge-updater-manifest.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (semver helper)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
+          fetch-depth: 1
+
+      - name: Promote stable release to Latest
+        env:
+          GH_TOKEN: ${{ secrets.RELEASES_GITHUB_TOKEN }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          REPO="${RELEASES_OWNER}/${RELEASES_REPO}"
+
+          # Require updater manifest so clients do not hit an empty Latest.
+          if ! gh release view "${TAG}" --repo "${REPO}" --json assets \
+            --jq '.assets[].name' | grep -qx 'latest.json'; then
+            echo "ERROR: latest.json missing on ${TAG} — refusing to set Latest." >&2
+            exit 1
+          fi
+
+          # Do not demote a newer Latest when re-running an older stable tag.
+          CURRENT_LATEST="$(gh api "repos/${REPO}/releases/latest" --jq .tag_name 2>/dev/null || true)"
+          if [ -n "${CURRENT_LATEST}" ]; then
+            CURRENT_VER="${CURRENT_LATEST#v}"
+            CMP="$(node --input-type=module -e "
+              import { compareSemVer } from './scripts/semver.mjs';
+              const c = compareSemVer(process.argv[1], process.argv[2]);
+              process.stdout.write(c < 0 ? 'older' : c > 0 ? 'newer' : 'same');
+            " "${VERSION}" "${CURRENT_VER}")"
+            if [ "${CMP}" = "older" ]; then
+              echo "Skip Latest: ${TAG} is older than current Latest ${CURRENT_LATEST}"
+              exit 0
+            fi
+          fi
+
+          echo "Setting ${TAG} as Latest on ${REPO}"
+          gh release edit "${TAG}" --repo "${REPO}" --latest=true

@@ -77,6 +77,7 @@ pub fn setting_default(key: &str) -> Option<&'static str> {
         "imap_same_credentials" => Some("true"),
         "seven_sandbox_mode" => Some("false"),
         "updater_ignore_version" => Some(""),
+        "beta_updates_enabled" => Some("false"),
         "setup_completed" => Some("false"),
         "legacy_migration_done" => Some("false"),
         "ui_theme" => Some("dark"),
@@ -232,6 +233,7 @@ mod tests {
         assert_eq!(setting_default("imap_same_credentials"), Some("true"));
         assert_eq!(setting_default("seven_sandbox_mode"), Some("false"));
         assert_eq!(setting_default("updater_ignore_version"), Some(""));
+        assert_eq!(setting_default("beta_updates_enabled"), Some("false"));
         assert_eq!(setting_default("setup_completed"), Some("false"));
         assert_eq!(setting_default("legacy_migration_done"), Some("false"));
         assert_eq!(setting_default("ui_theme"), Some("dark"));
