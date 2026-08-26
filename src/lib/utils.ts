@@ -243,7 +243,7 @@ export function formatHistoryDropboxAccount(
   const { amsId, pool, email } = historyDropboxBinding(entry);
   if (!amsId && !email && !pool && !labelHint?.trim()) return "—";
   const poolLabel =
-    pool === "custom_api" ? "Custom-API" : pool === "native" ? "Native" : pool || "—";
+    pool === "custom_api" ? "Skydive Media" : pool === "native" ? "Native" : pool || "—";
   const parts: string[] = [];
   const label = labelHint?.trim();
   if (label) parts.push(label);

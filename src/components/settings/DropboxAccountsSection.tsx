@@ -518,7 +518,7 @@ export function DropboxAccountsSection({ open, pool }: Props) {
     pool === "native"
       ? "active_dropbox_account_id"
       : "active_custom_dropbox_account_id";
-  const poolLabel = pool === "native" ? "Native" : "Custom-API";
+  const poolLabel = pool === "native" ? "Native" : "Skydive Media";
 
   const [rows, setRows] = useState<DropboxAccountRow[]>([]);
   const [activeId, setActiveId] = useState("");

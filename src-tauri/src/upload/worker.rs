@@ -132,7 +132,7 @@ fn resolve_job_cloud_client(
             }
             Some(b) => {
                 return Err(format!(
-                    "Job ist an Pool „{}“ gebunden, Custom-API-Pfad erwartet „custom_api“.",
+                    "Job ist an Pool „{}“ gebunden, Skydive-Media-Pfad erwartet „custom_api“.",
                     b.pool.as_str()
                 ));
             }

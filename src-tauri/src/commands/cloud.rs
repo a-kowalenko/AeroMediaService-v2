@@ -359,7 +359,7 @@ pub async fn disconnect_custom_api(cloud: State<'_, CloudState>) -> Result<Conne
         .disconnect()
         .await
         .map_err(|e| e.to_string())?;
-    Ok(ConnectResult::ok("Nicht verbunden", "Custom API getrennt."))
+    Ok(ConnectResult::ok("Nicht verbunden", "Skydive Media getrennt."))
 }
 
 #[tauri::command]
@@ -385,11 +385,11 @@ async fn connect_custom_api_inner(cloud: &CloudState) -> Result<ConnectResult, S
     match cloud.custom_api.connect().await {
         Ok(true) => {
             connect_dropbox_for_pure_contact_markers(cloud).await;
-            Ok(ConnectResult::ok("Verbunden", "Custom API verbunden."))
+            Ok(ConnectResult::ok("Verbunden", "Skydive Media verbunden."))
         }
         Ok(false) => Ok(ConnectResult::fail(
             cloud.custom_api.connection_status(),
-            "Custom-API-Verbindung fehlgeschlagen.",
+            "Skydive-Media-Verbindung fehlgeschlagen.",
         )),
         Err(e) => Ok(ConnectResult::fail("Verbindungsfehler", e.to_string())),
     }
@@ -481,7 +481,7 @@ pub async fn disconnect_active_cloud(
             .disconnect()
             .await
             .map_err(|e| e.to_string())?;
-        Ok(ConnectResult::ok("Nicht verbunden", "Custom API getrennt."))
+        Ok(ConnectResult::ok("Nicht verbunden", "Skydive Media getrennt."))
     } else {
         if let Some(id) = cloud.active_account_id(DropboxPool::Native) {
             guards::assert_can_delete_or_disconnect(&upload.registry, &id)?;

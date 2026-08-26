@@ -336,7 +336,7 @@ fn ensure_column(
 fn default_label(pool: DropboxPool) -> String {
     match pool {
         DropboxPool::Native => "Dropbox".into(),
-        DropboxPool::CustomApi => "Custom-API Dropbox".into(),
+        DropboxPool::CustomApi => "Skydive Media Dropbox".into(),
     }
 }
 
@@ -420,8 +420,8 @@ pub fn ensure_migrated(
     let message = match (native_created, custom_created) {
         (false, false) => "Keine Legacy-Dropbox-Credentials — keine Profile angelegt.".into(),
         (true, false) => "Native Dropbox-Profil aus Legacy-Keys angelegt.".into(),
-        (false, true) => "Custom-API-Dropbox-Profil aus Legacy-Keys angelegt.".into(),
-        (true, true) => "Native- und Custom-API-Dropbox-Profile aus Legacy-Keys angelegt.".into(),
+        (false, true) => "Skydive-Media-Dropbox-Profil aus Legacy-Keys angelegt.".into(),
+        (true, true) => "Native- und Skydive-Media-Dropbox-Profile aus Legacy-Keys angelegt.".into(),
     };
 
     Ok(DropboxAccountMigrateReport {

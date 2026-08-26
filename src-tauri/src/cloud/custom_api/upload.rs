@@ -704,7 +704,7 @@ impl CustomApiClient {
         // overwrite Custom-API "Verbunden" when Dropbox credentials are checked mid-upload.
         if let Err(e) = self.dropbox_client().connect_session(false).await {
             logging::log_error(&format!(
-                "Direct-Dropbox: Verbindung fehlgeschlagen ({e}). Bitte Custom-API-Dropbox-Konto (App Key/Secret + OAuth) in den Einstellungen verbinden."
+                "Direct-Dropbox: Verbindung fehlgeschlagen ({e}). Bitte Skydive-Media-Dropbox-Konto (App Key/Secret + OAuth) in den Einstellungen verbinden."
             ));
             events::emit_status(format!(
                 "Fehler: Dropbox-Upload-Konto nicht verbunden ({e})"

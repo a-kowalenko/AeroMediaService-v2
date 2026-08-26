@@ -784,7 +784,7 @@ pub async fn append_media_from_history(
 
     if use_custom && !is_direct_dropbox_upload_mode(&runtime_setting("custom_api_upload_mode")) {
         return Err(
-            "Nachreichen über die Custom API ist nur im Modus „Dropbox + Manifest“ möglich."
+            "Nachreichen über Skydive Media ist nur im Modus „Dropbox + Manifest“ möglich."
                 .into(),
         );
     }

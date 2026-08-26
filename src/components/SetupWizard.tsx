@@ -610,7 +610,7 @@ export function SetupWizard({ open, onComplete }: Props) {
                   }
                   onClick={() => patch("selected_cloud_service", "custom_api")}
                 >
-                  Custom API
+                  Skydive Media
                 </Button>
               </div>
             </SettingsSection>
@@ -626,7 +626,7 @@ export function SetupWizard({ open, onComplete }: Props) {
                   [
                     "Cloud",
                     draft.selected_cloud_service === "custom_api"
-                      ? "Custom API"
+                      ? "Skydive Media"
                       : "Dropbox",
                   ],
                 ].map(([k, v]) => (

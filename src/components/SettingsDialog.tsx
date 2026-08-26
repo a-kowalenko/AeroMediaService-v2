@@ -1192,18 +1192,18 @@ export function SettingsDialog({
             setCustomApiStatus(result.status);
             if (result.success) {
                 showSuccess(
-                    "Die Verbindung zur Custom API wurde erfolgreich getestet!",
-                    "Custom API",
+                    "Die Verbindung zu Skydive Media wurde erfolgreich getestet!",
+                    "Skydive Media",
                 );
             } else {
                 showError(
-                    result.message || "Custom-API-Verbindung fehlgeschlagen.",
-                    "Custom API",
+                    result.message || "Skydive-Media-Verbindung fehlgeschlagen.",
+                    "Skydive Media",
                 );
             }
         } catch (err) {
             setCustomApiStatus("Verbindungsfehler");
-            showError(String(err), "Custom API");
+            showError(String(err), "Skydive Media");
         } finally {
             setCustomBusy(false);
         }
@@ -1768,7 +1768,7 @@ export function SettingsDialog({
                                             }
                                             onClick={() => setCloudService("custom_api")}
                                         >
-                                            Custom API
+                                            Skydive Media
                                         </Button>
                                     </div>
                                 </SettingsSection>
@@ -1779,7 +1779,7 @@ export function SettingsDialog({
                                     </SettingsSection>
                                 ) : (
                                     <>
-                                        <SettingsSection title="Custom API">
+                                        <SettingsSection title="Skydive Media">
                                             <div className="space-y-3">
                                                 <Field label="API-URL">
                                                     <Input
@@ -1888,7 +1888,7 @@ export function SettingsDialog({
                                                 {normalizeCustomApiUploadMode(customApi.custom_api_upload_mode) ===
                                                     CUSTOM_API_UPLOAD_MODE_DIRECT_DROPBOX && (
                                                         <p className="text-xs text-muted">
-                                                            Benötigt das Custom-API-Dropbox-Konto (App Key/Secret +
+                                                            Benötigt das Skydive-Media-Dropbox-Konto (App Key/Secret +
                                                             OAuth)
                                                             unten. Ohne Verbindung schlägt der Upload fehl.
                                                         </p>
@@ -1910,12 +1910,12 @@ export function SettingsDialog({
                                                 >
                                                     {customApiStatus === "Verbunden"
                                                         ? "Verbindung trennen"
-                                                        : "Custom API verbinden"}
+                                                        : "Skydive Media verbinden"}
                                                 </Button>
                                             </div>
                                         </SettingsSection>
 
-                                        <SettingsSection title="Custom-API Dropbox-Konten">
+                                        <SettingsSection title="Skydive Media Dropbox-Konten">
                                             <DropboxAccountsSection
                                                 open={isOpen}
                                                 pool="custom_api"

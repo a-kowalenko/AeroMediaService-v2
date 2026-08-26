@@ -94,21 +94,21 @@ impl CustomApiClient {
     pub(super) fn origin(&self) -> Result<String, CloudError> {
         let base = self
             .api_base()
-            .ok_or_else(|| CloudError::NotConnected("Custom API nicht verbunden.".into()))?;
+            .ok_or_else(|| CloudError::NotConnected("Skydive Media nicht verbunden.".into()))?;
         Ok(api_origin(&base))
     }
 
     pub(super) fn upload_root(&self) -> Result<String, CloudError> {
         let base = self
             .api_base()
-            .ok_or_else(|| CloudError::NotConnected("Custom API nicht verbunden.".into()))?;
+            .ok_or_else(|| CloudError::NotConnected("Skydive Media nicht verbunden.".into()))?;
         Ok(upload_api_root(&base))
     }
 
     fn auth_header(&self) -> Result<HeaderMap, CloudError> {
         let key = self
             .api_key()
-            .ok_or_else(|| CloudError::NotConnected("Custom API nicht verbunden.".into()))?;
+            .ok_or_else(|| CloudError::NotConnected("Skydive Media nicht verbunden.".into()))?;
         let mut headers = HeaderMap::new();
         headers.insert(
             AUTHORIZATION,

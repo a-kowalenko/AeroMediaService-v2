@@ -147,7 +147,7 @@ export function CloudConnectionChips({ refreshToken = 0, className }: Props) {
       {cloudService === "custom_api" ? (
         <StatusChip
           Icon={apiConnected ? Server : ServerOff}
-          label="Custom API"
+          label="Skydive Media"
           title={apiStatus || "Nicht verbunden"}
           tone={toneForStatus(apiStatus)}
         />
