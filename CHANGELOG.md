@@ -24,6 +24,24 @@ Patch ohne Unreleased-Text: Notes der Vorgängerversion werden übernommen.
 - Windows-Release-Builds nutzen nur noch **NSIS** (kein MSI), damit Beta-Tags wie `0.1.14-beta.1` in CI durchlaufen
 
 
+
+## [0.1.14-beta.2] - 2026-08-26
+
+### Neu
+
+- Einstellung **Betatester** unter Wartung → Software-Update: Vorabversionen anzeigen und per Auto-Update erhalten
+- In den Einstellungen gezielt auf eine **andere Version wechseln** (Upgrade oder Downgrade mit Bestätigung)
+
+### Verbessert
+
+- Upload **Abbrechen**: Status „Abbruch…“, Button „Wird abgebrochen…“ — Pause und erneutes Abbrechen sind während des Abbruchs gesperrt
+- Update-Dialog: Hinweis bei **Vorabversionen (Beta)**; Patchnotes aufklappbar
+- Versionsliste in den Einstellungen mit Kennzeichnung (Neueste, Beta, Installiert)
+
+### Behoben
+
+- Windows-Release-Builds nutzen nur noch **NSIS** (kein MSI), damit Beta-Tags wie `0.1.14-beta.1` in CI durchlaufen
+
 ## [0.1.14-beta.1] - 2026-08-26
 
 ### Neu
