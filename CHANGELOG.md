@@ -8,6 +8,8 @@ Patch ohne Unreleased-Text: Notes der Vorgängerversion werden übernommen.
 
 ## [Unreleased]
 
+## [0.1.13] - 2026-08-26
+
 ### Neu
 
 - **Infobroschüre** in den Einstellungen hinterlegen (PDF per Drag & Drop, max. 5 MB)
