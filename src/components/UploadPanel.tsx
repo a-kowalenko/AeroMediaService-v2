@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { CloudUpload, Pause, Play, Radio, Timer, X } from "lucide-react";
+import { CloudUpload, Loader2, Pause, Play, Radio, Timer, X } from "lucide-react";
 import { Panel } from "./Panel";
 import { ProgressBar } from "./ProgressBar";
 import { UploadSlotList } from "./UploadSlotList";
@@ -190,6 +190,7 @@ export function UploadPanel({ className, compact = false }: Props) {
   const speedSampleRef = useRef<{ t: number; bytes: number } | null>(null);
   const confirm = useUiStore((s) => s.confirm);
   const pausePhase = pausePhaseFrom(control);
+  const cancelling = control.cancelled;
   const isPausedLike = pausePhase !== "running";
 
   useEffect(() => {
@@ -321,6 +322,12 @@ export function UploadPanel({ className, compact = false }: Props) {
       destructive: true,
     });
     if (!ok) return;
+    setControl((prev) => ({
+      ...prev,
+      cancelled: true,
+      paused: false,
+      holding: false,
+    }));
     await run(cancelUpload);
   }
 
@@ -337,11 +344,13 @@ export function UploadPanel({ className, compact = false }: Props) {
         ? "1 wartet"
         : `${waitingQueue.length} warten`;
   const chipLabel = active
-    ? pausePhase === "paused"
-      ? "Pausiert"
-      : pausePhase === "pausing"
-        ? "Pause…"
-        : "Aktiv"
+    ? cancelling
+      ? "Abbruch…"
+      : pausePhase === "paused"
+        ? "Pausiert"
+        : pausePhase === "pausing"
+          ? "Pause…"
+          : "Aktiv"
     : onlyHandoff
       ? "Neu"
       : hasPending
@@ -629,7 +638,7 @@ export function UploadPanel({ className, compact = false }: Props) {
               type="button"
               variant="secondary"
               size="sm"
-              disabled={busy || pausePhase === "pausing"}
+              disabled={busy || pausePhase === "pausing" || cancelling}
               onClick={() => void onTogglePause()}
             >
               {pausePhase === "running" ? (
@@ -654,11 +663,20 @@ export function UploadPanel({ className, compact = false }: Props) {
               variant="secondary"
               size="sm"
               className="border-destructive/30 bg-destructive/10 text-destructive hover:bg-destructive/15 hover:text-destructive"
-              disabled={busy}
+              disabled={busy || cancelling}
               onClick={() => void onCancel()}
             >
-              <X className="h-3.5 w-3.5" />
-              Abbrechen
+              {cancelling ? (
+                <>
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  Wird abgebrochen…
+                </>
+              ) : (
+                <>
+                  <X className="h-3.5 w-3.5" />
+                  Abbrechen
+                </>
+              )}
             </Button>
           </div>
         </>
