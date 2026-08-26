@@ -8,6 +8,16 @@ Patch ohne Unreleased-Text: Notes der Vorgängerversion werden übernommen.
 
 ## [Unreleased]
 
+### Neu
+
+- **Infobroschüre** in den Einstellungen hinterlegen (PDF per Drag & Drop, max. 5 MB)
+- Beim **Erst-Upload** wird die Broschüre automatisch mit in denselben Cloud-Ordner gelegt
+- Dateiname und optionaler Unterordner einstellbar (Standard: `Infobroschuere.pdf` im Ordner-Root)
+
+### Hinweis
+
+- Nur beim Erst-Upload — beim **Nachreichen** kommt keine zweite Broschüre; E-Mail/SMS/WhatsApp bleiben unverändert
+
 ## [0.1.12] - 2026-08-26
 
 ### Verbessert
