@@ -10,6 +10,7 @@ Patch ohne Unreleased-Text: Notes der Vorgängerversion werden übernommen.
 
 ### Verbessert
 
+- Cloud-Dienst in Einstellungen, Einrichtungsassistent und Status heißt jetzt **Skydive Media** (statt „Custom API“) — inkl. zugehöriger Dropbox-Konten und Meldungen
 - Historie sortiert nach **Erstelldatum** — Einträge rutschen nicht mehr nach oben, wenn nur Kontaktdaten, Buchungsinfos oder Archivpfad nachgezogen werden
 - Detailansicht zeigt **Erstellt** und **Zuletzt aktualisiert** getrennt
 - „Zuletzt aktualisiert“ ändert sich nur noch bei echten Upload-/Status-Schritten, nicht bei reinen Metadaten-Updates
