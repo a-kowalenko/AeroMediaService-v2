@@ -19,6 +19,20 @@ Patch ohne Unreleased-Text: Notes der Vorgängerversion werden übernommen.
 - Update-Dialog: Hinweis bei **Vorabversionen (Beta)**; Patchnotes aufklappbar
 - Versionsliste in den Einstellungen mit Kennzeichnung (Neueste, Beta, Installiert)
 
+
+## [0.1.14-beta.1] - 2026-08-26
+
+### Neu
+
+- Einstellung **Betatester** unter Wartung → Software-Update: Vorabversionen anzeigen und per Auto-Update erhalten
+- In den Einstellungen gezielt auf eine **andere Version wechseln** (Upgrade oder Downgrade mit Bestätigung)
+
+### Verbessert
+
+- Upload **Abbrechen**: Status „Abbruch…“, Button „Wird abgebrochen…“ — Pause und erneutes Abbrechen sind während des Abbruchs gesperrt
+- Update-Dialog: Hinweis bei **Vorabversionen (Beta)**; Patchnotes aufklappbar
+- Versionsliste in den Einstellungen mit Kennzeichnung (Neueste, Beta, Installiert)
+
 ## [0.1.13] - 2026-08-26
 
 ### Neu
