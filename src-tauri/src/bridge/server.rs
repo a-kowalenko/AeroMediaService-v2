@@ -15,8 +15,9 @@ use serde_json::{json, Value};
 use tokio::sync::oneshot;
 
 use super::types::{
-    HandoffCancelRequest, HandoffCancelResponse, HandoffReadyRequest, HandoffReadyResponse,
-    HealthResponse, JobStatusResponse, LookupErrorBody, LookupRequest, LookupResponse,
+    AtsPathsHint, HandoffCancelRequest, HandoffCancelResponse, HandoffReadyRequest,
+    HandoffReadyResponse, HealthResponse, JobStatusResponse, LookupErrorBody, LookupRequest,
+    LookupResponse,
 };
 use crate::cloud::custom_api::fetch_customer_as_kunde;
 use crate::commands::ConfigState;
@@ -114,6 +115,15 @@ impl BridgeRuntime {
 
         let display_name = resolve_display_name(&config);
         let instance_id = ensure_instance_id(&config)?;
+        let paths_hint = AtsPathsHint::from_settings(
+            &config
+                .get("ats_primary_smb_url", Some(""))
+                .unwrap_or_default(),
+            &config
+                .get("ats_backup_smb_url", Some(""))
+                .unwrap_or_default(),
+        )
+        .is_some();
 
         let state = AppState {
             token: Arc::new(token),
@@ -152,6 +162,7 @@ impl BridgeRuntime {
             &monitor_path_initial,
             &display_name,
             &instance_id,
+            paths_hint,
         );
 
         Ok(Self {
@@ -198,11 +209,22 @@ async fn health(State(state): State<AppState>, headers: HeaderMap) -> Json<Healt
         .unwrap_or_default();
     let display_name = resolve_display_name(&state.config);
     let instance_id = ensure_instance_id(&state.config).unwrap_or_default();
-    let response = Json(HealthResponse::p3(
+    let ats_paths = AtsPathsHint::from_settings(
+        &state
+            .config
+            .get("ats_primary_smb_url", Some(""))
+            .unwrap_or_default(),
+        &state
+            .config
+            .get("ats_backup_smb_url", Some(""))
+            .unwrap_or_default(),
+    );
+    let response = Json(HealthResponse::with_paths(
         &state.version,
         monitor_path,
         display_name,
         instance_id,
+        ats_paths,
     ));
     record_bridge_event(
         &state.presence,
@@ -630,6 +652,58 @@ mod tests {
         assert!(body.capabilities.contains(&"status-outbox".into()));
         assert!(body.capabilities.contains(&"ready".into()));
         assert!(body.capabilities.contains(&"handoff-cancel".into()));
+        assert!(!body.capabilities.contains(&"paths-v1".into()));
+        assert!(body.ats_paths.is_none());
+
+        runtime.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn health_includes_ats_paths_and_paths_v1_when_primary_set() {
+        let config = test_config_with_monitor(r"D:\Shares\aktuell");
+        config
+            .with_store_mut(|store| {
+                store
+                    .save("ats_primary_smb_url", r"\\169.254.169.254\aktuell")
+                    .map_err(|e| e.to_string())?;
+                store
+                    .save(
+                        "ats_backup_smb_url",
+                        "smb://169.254.169.254/aktuell-backup",
+                    )
+                    .map_err(|e| e.to_string())?;
+                Ok(())
+            })
+            .unwrap();
+        let runtime = BridgeRuntime::start(
+            "127.0.0.1:0".into(),
+            "test-token-xyz".into(),
+            String::new(),
+            "0.1.0-test".into(),
+            config,
+            test_presence(),
+            noop_wake(),
+            noop_cancel(),
+        )
+        .await
+        .expect("bind");
+        let base = format!("http://{}", runtime.bind_addr);
+        let client = reqwest::Client::new();
+        let ok = client
+            .get(format!("{base}/v1/health"))
+            .header(header::AUTHORIZATION, "Bearer test-token-xyz")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(ok.status(), StatusCode::OK);
+        let body: HealthResponse = ok.json().await.unwrap();
+        assert!(body.capabilities.contains(&"paths-v1".into()));
+        let paths = body.ats_paths.expect("ats_paths present");
+        assert_eq!(paths.primary_smb_url, "smb://169.254.169.254/aktuell");
+        assert_eq!(
+            paths.backup_smb_url,
+            "smb://169.254.169.254/aktuell-backup"
+        );
 
         runtime.shutdown().await;
     }

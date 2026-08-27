@@ -11,7 +11,7 @@ mod types;
 pub use identity::{ensure_instance_id, resolve_display_name};
 
 pub use server::{BridgeRuntime, BridgeStatus, MonitorCancelFn, MonitorWakeFn};
-pub use types::{DEFAULT_BRIDGE_BIND, P3_CAPABILITIES};
+pub use types::{AtsPathsHint, DEFAULT_BRIDGE_BIND, P3_CAPABILITIES, PathHintsStatus};
 
 use std::sync::{Arc, Mutex};
 
@@ -100,6 +100,14 @@ impl BridgeState {
 
         let monitor_path = config.get("monitor_path", Some("")).unwrap_or_default();
         let version = env!("CARGO_PKG_VERSION").to_string();
+        let paths_hint = AtsPathsHint::from_settings(
+            &config
+                .get("ats_primary_smb_url", Some(""))
+                .unwrap_or_default(),
+            &config
+                .get("ats_backup_smb_url", Some(""))
+                .unwrap_or_default(),
+        );
 
         self.stop().await;
         let runtime = BridgeRuntime::start(
@@ -118,9 +126,13 @@ impl BridgeState {
             let mut guard = self.inner.lock().unwrap_or_else(|e| e.into_inner());
             *guard = Some(runtime);
         }
+        let mut caps: Vec<&str> = P3_CAPABILITIES.to_vec();
+        if paths_hint.is_some() {
+            caps.push(types::CAPABILITY_PATHS_V1);
+        }
         logging::log_info(&format!(
             "AMS-Bridge gestartet auf {} (capabilities: {:?})",
-            status.bind_addr, P3_CAPABILITIES
+            status.bind_addr, caps
         ));
         Ok(status)
     }

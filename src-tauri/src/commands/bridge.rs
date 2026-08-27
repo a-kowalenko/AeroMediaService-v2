@@ -2,7 +2,7 @@
 
 use tauri::State;
 
-use crate::bridge::{BridgeState, BridgeStatus};
+use crate::bridge::{BridgeState, BridgeStatus, PathHintsStatus};
 use crate::commands::ConfigState;
 use crate::storage::ats_presence::{
     AtsActivityPage, AtsHostDetails, AtsHostSummary, AtsJobOriginRecord, AtsPresenceState,
@@ -13,6 +13,26 @@ use serde::Serialize;
 #[tauri::command]
 pub fn get_bridge_status(bridge: State<'_, BridgeState>) -> BridgeStatus {
     bridge.status()
+}
+
+/// Path-hint drift diagnostics for Settings / header (P6d).
+#[tauri::command]
+pub fn get_path_hints_status(config: State<'_, ConfigState>) -> PathHintsStatus {
+    let bridge_enabled = config
+        .inner()
+        .get("bridge_enabled", Some("false"))
+        .unwrap_or_else(|_| "false".into())
+        .trim()
+        .eq_ignore_ascii_case("true");
+    let monitor_path = config
+        .inner()
+        .get("monitor_path", Some(""))
+        .unwrap_or_default();
+    let primary = config
+        .inner()
+        .get("ats_primary_smb_url", Some(""))
+        .unwrap_or_default();
+    PathHintsStatus::evaluate(bridge_enabled, &monitor_path, &primary)
 }
 
 /// Start, restart, or stop the bridge according to current settings + token.

@@ -52,6 +52,8 @@ pub fn setting_default(key: &str) -> Option<&'static str> {
         "bridge_bind" => Some("0.0.0.0:8787"),
         "bridge_display_name" => Some(""),
         "bridge_instance_id" => Some(""),
+        "ats_primary_smb_url" => Some(""),
+        "ats_backup_smb_url" => Some(""),
         "selected_cloud_service" => Some("dropbox"),
         "active_dropbox_account_id" => Some(""),
         "active_custom_dropbox_account_id" => Some(""),
@@ -191,6 +193,8 @@ mod tests {
         assert_eq!(setting_default("manifest_required"), Some("false"));
         assert_eq!(setting_default("bridge_enabled"), Some("false"));
         assert_eq!(setting_default("bridge_bind"), Some("0.0.0.0:8787"));
+        assert_eq!(setting_default("ats_primary_smb_url"), Some(""));
+        assert_eq!(setting_default("ats_backup_smb_url"), Some(""));
         assert_eq!(setting_default("selected_cloud_service"), Some("dropbox"));
         assert_eq!(setting_default("active_dropbox_account_id"), Some(""));
         assert_eq!(setting_default("active_custom_dropbox_account_id"), Some(""));

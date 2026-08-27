@@ -177,6 +177,23 @@ export function applyBridgeConfig(): Promise<BridgeStatus> {
     return invoke<BridgeStatus>("apply_bridge_config");
 }
 
+export type PathHintsDrift = "disabled" | "ok" | "missing_primary" | "drift";
+
+export type PathHintsStatus = {
+    bridge_enabled: boolean;
+    paths_v1: boolean;
+    monitor_is_network_share: boolean;
+    suggested_primary_smb_url: string;
+    primary_smb_url: string;
+    monitor_smb_url: string;
+    drift: PathHintsDrift;
+    warning: string | null;
+};
+
+export function getPathHintsStatus(): Promise<PathHintsStatus> {
+    return invoke<PathHintsStatus>("get_path_hints_status");
+}
+
 export type AtsPresenceCategory = "connected" | "disconnected" | "inactive_long";
 
 export type AtsHostSummary = {

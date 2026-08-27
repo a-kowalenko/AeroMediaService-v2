@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { Play, Square, Users } from "lucide-react";
+import { Play, Square, Users, AlertTriangle } from "lucide-react";
 import { AppChrome } from "@/components/chrome";
 import { AppFeedbackHost } from "@/components/AppFeedbackHost";
 import { AtsClientsDialog } from "@/components/AtsClientsDialog";
@@ -33,6 +33,7 @@ import {
   getAtsHostsSummary,
   getCloudConnectionStatus,
   getMonitoringStatus,
+  getPathHintsStatus,
   getSecret,
   getSetting,
   getUpdaterInstallHint,
@@ -84,6 +85,7 @@ function App() {
     null,
   );
   const [atsClientCount, setAtsClientCount] = useState(0);
+  const [pathHintsWarning, setPathHintsWarning] = useState<string | null>(null);
 
   const monitoring = useAppStore((s) => s.monitoring);
   const connectionStatus = useAppStore((s) => s.connectionStatus);
@@ -120,6 +122,15 @@ function App() {
       setAtsClientCount(countConnectedAtsHosts(hosts));
     } catch {
       setAtsClientCount(0);
+    }
+  }, []);
+
+  const refreshPathHintsWarning = useCallback(async () => {
+    try {
+      const status = await getPathHintsStatus();
+      setPathHintsWarning(status.warning);
+    } catch {
+      setPathHintsWarning(null);
     }
   }, []);
 
@@ -269,6 +280,7 @@ function App() {
       .catch(() => setUpdaterPlatformHint(null));
     void refreshCustomerCounts();
     void refreshAtsClientCount();
+    void refreshPathHintsWarning();
     void (async () => {
       try {
         const theme = (await getSetting("ui_theme", "dark")).trim().toLowerCase();
@@ -530,6 +542,27 @@ function App() {
         </div>
       </AppChrome>
 
+      {pathHintsWarning ? (
+        <div
+          className="flex flex-wrap items-center justify-between gap-2 border-b border-amber-500/30 bg-amber-500/10 px-4 py-2 text-xs text-amber-950 dark:text-amber-100"
+          role="alert"
+        >
+          <div className="flex min-w-0 items-start gap-2">
+            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+            <p className="min-w-0">{pathHintsWarning}</p>
+          </div>
+          <Button
+            type="button"
+            variant="secondary"
+            size="sm"
+            className="shrink-0"
+            onClick={() => setSettingsOpen(true)}
+          >
+            Bridge-Einstellungen
+          </Button>
+        </div>
+      ) : null}
+
       <div className="flex min-h-0 flex-1 flex-col">
         <div className="flex min-h-0 flex-1">
           <aside className="ams-sidebar-bg flex w-full max-w-md flex-col border-r border-border backdrop-blur-md sm:w-[380px]">
@@ -590,6 +623,7 @@ function App() {
           if (updateDialogOpen || updateInstalling) return;
           setSettingsOpen(false);
           bumpCloudChips();
+          void refreshPathHintsWarning();
         }}
         appVersion={version === "…" ? "" : version}
         platformHint={updaterPlatformHint}

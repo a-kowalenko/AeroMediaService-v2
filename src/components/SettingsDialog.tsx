@@ -1,7 +1,7 @@
 import {FormEvent, type ReactNode, useCallback, useEffect, useMemo, useState} from "react";
 import {listen} from "@tauri-apps/api/event";
 import {open as openDirectoryDialog} from "@tauri-apps/plugin-dialog";
-import {FolderOpen, Moon, Sun} from "lucide-react";
+import {FolderOpen, Moon, Sun, AlertTriangle} from "lucide-react";
 import {Spinner} from "@/components/Spinner";
 import {StatusChip} from "@/components/StatusChip";
 import {SettingsSection} from "@/components/settings/SettingsSection";
@@ -71,6 +71,7 @@ import {
 import {CONNECTION_STATUS_CHANGED} from "@/lib/events";
 import {showAppToast} from "@/lib/toast";
 import {eventTypeLabel} from "@/lib/atsActivityDisplay";
+import {evaluatePathHints, formatPathsV1Status} from "@/lib/pathHints";
 import {useThemeStore, type ThemeMode} from "@/store/themeStore";
 import {useUiStore} from "@/store/uiStore";
 
@@ -136,6 +137,8 @@ type SettingsFormSnapshot = {
         bridge_bind: string;
         bridge_display_name: string;
         bridge_token: string;
+        ats_primary_smb_url: string;
+        ats_backup_smb_url: string;
     };
     brochure: BrochureForm;
     cloudService: "dropbox" | "custom_api";
@@ -394,6 +397,8 @@ export function SettingsDialog({
         bridge_bind: "0.0.0.0:8787",
         bridge_display_name: "",
         bridge_token: "",
+        ats_primary_smb_url: "",
+        ats_backup_smb_url: "",
     });
     const [brochure, setBrochure] = useState<BrochureForm>({
         brochure_enabled: false,
@@ -530,6 +535,20 @@ export function SettingsDialog({
         () => groupAtsHostsByPresence(atsHosts).inactiveLong.length,
         [atsHosts],
     );
+    const pathHintsStatus = useMemo(
+        () =>
+            evaluatePathHints(
+                general.bridge_enabled,
+                general.monitor_path,
+                general.ats_primary_smb_url,
+            ),
+        [general.bridge_enabled, general.monitor_path, general.ats_primary_smb_url],
+    );
+    const canAdoptMonitorPrimary =
+        general.bridge_enabled &&
+        pathHintsStatus.monitor_is_network_share &&
+        pathHintsStatus.suggested_primary_smb_url.length > 0 &&
+        (pathHintsStatus.drift === "missing_primary" || pathHintsStatus.drift === "drift");
 
     const loadAtsHosts = useCallback(async () => {
         setAtsHostsLoading(true);
@@ -629,6 +648,8 @@ export function SettingsDialog({
                 bridge_enabled,
                 bridge_bind,
                 bridge_display_name,
+                ats_primary_smb_url,
+                ats_backup_smb_url,
                 selected_cloud_service,
                 custom_api_upload_endpoint,
                 custom_api_share_endpoint,
@@ -663,6 +684,8 @@ export function SettingsDialog({
                 getSetting("bridge_enabled", "false"),
                 getSetting("bridge_bind", "0.0.0.0:8787"),
                 getSetting("bridge_display_name", ""),
+                getSetting("ats_primary_smb_url", ""),
+                getSetting("ats_backup_smb_url", ""),
                 getSetting("selected_cloud_service", "dropbox"),
                 getSetting("custom_api_upload_endpoint", "/upload"),
                 getSetting("custom_api_share_endpoint", "/share"),
@@ -700,6 +723,8 @@ export function SettingsDialog({
                 bridge_bind: bridge_bind || "0.0.0.0:8787",
                 bridge_display_name: bridge_display_name ?? "",
                 bridge_token: "",
+                ats_primary_smb_url: ats_primary_smb_url ?? "",
+                ats_backup_smb_url: ats_backup_smb_url ?? "",
             });
             setBrochure({
                 brochure_enabled: boolFromSetting(brochure_enabled),
@@ -879,6 +904,8 @@ export function SettingsDialog({
                             bridge_bind: bridge_bind || "0.0.0.0:8787",
                             bridge_display_name: bridge_display_name ?? "",
                             bridge_token: bridge_token ?? "",
+                            ats_primary_smb_url: ats_primary_smb_url ?? "",
+                            ats_backup_smb_url: ats_backup_smb_url ?? "",
                         },
                         brochure: {
                             brochure_enabled: boolFromSetting(brochure_enabled),
@@ -1057,6 +1084,14 @@ export function SettingsDialog({
             await saveSetting(
                 "bridge_display_name",
                 general.bridge_display_name.trim(),
+            );
+            await saveSetting(
+                "ats_primary_smb_url",
+                general.ats_primary_smb_url.trim(),
+            );
+            await saveSetting(
+                "ats_backup_smb_url",
+                general.ats_backup_smb_url.trim(),
             );
             await saveSetting(
                 "brochure_enabled",
@@ -1510,7 +1545,68 @@ export function SettingsDialog({
                                                         autoComplete="off"
                                                     />
                                                 </Field>
-                                                <div className="flex flex-wrap items-center gap-2">
+                                                {general.bridge_enabled && pathHintsStatus.warning ? (
+                                                    <div
+                                                        className="flex flex-col gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-950 dark:text-amber-100"
+                                                        role="alert"
+                                                    >
+                                                        <div className="flex items-start gap-2">
+                                                            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+                                                            <p>{pathHintsStatus.warning}</p>
+                                                        </div>
+                                                        {canAdoptMonitorPrimary ? (
+                                                            <Button
+                                                                type="button"
+                                                                variant="secondary"
+                                                                size="sm"
+                                                                className="self-start"
+                                                                onClick={() =>
+                                                                    setGeneral((p) => ({
+                                                                        ...p,
+                                                                        ats_primary_smb_url:
+                                                                            pathHintsStatus.suggested_primary_smb_url,
+                                                                    }))
+                                                                }
+                                                            >
+                                                                Primär aus Monitor übernehmen
+                                                            </Button>
+                                                        ) : null}
+                                                    </div>
+                                                ) : null}
+                                                <Field label="ATS Primär-Share (smb:// …)">
+                                                    <Input
+                                                        value={general.ats_primary_smb_url}
+                                                        onChange={(e) =>
+                                                            setGeneral((p) => ({
+                                                                ...p,
+                                                                ats_primary_smb_url: e.target.value,
+                                                            }))
+                                                        }
+                                                        placeholder="smb://169.254.169.254/aktuell"
+                                                    />
+                                                </Field>
+                                                <Field label="ATS Backup-Share (optional)">
+                                                    <Input
+                                                        value={general.ats_backup_smb_url}
+                                                        onChange={(e) =>
+                                                            setGeneral((p) => ({
+                                                                ...p,
+                                                                ats_backup_smb_url: e.target.value,
+                                                            }))
+                                                        }
+                                                        placeholder="smb://169.254.169.254/aktuell-backup"
+                                                    />
+                                                </Field>
+                                                <p className="text-[11px] text-muted">
+                                                    Client-Hints für ATS über Bridge-Health (
+                                                    <span className="font-mono">ats_paths</span>
+                                                    ). Nicht der AMS-Monitorpfad — bevorzugt{" "}
+                                                    <span className="font-mono">smb://</span>, UNC
+                                                    wird beim Publish normalisiert. Capability{" "}
+                                                    <span className="font-mono">paths-v1</span> nur
+                                                    bei gesetztem Primär-Share.
+                                                </p>
+                                                <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
                                                     <Button
                                                         type="button"
                                                         variant="secondary"
@@ -1531,6 +1627,14 @@ export function SettingsDialog({
                                                                     await saveSetting(
                                                                         "bridge_display_name",
                                                                         general.bridge_display_name.trim(),
+                                                                    );
+                                                                    await saveSetting(
+                                                                        "ats_primary_smb_url",
+                                                                        general.ats_primary_smb_url.trim(),
+                                                                    );
+                                                                    await saveSetting(
+                                                                        "ats_backup_smb_url",
+                                                                        general.ats_backup_smb_url.trim(),
                                                                     );
                                                                     await persistSecret(
                                                                         "bridge_token",
@@ -1563,6 +1667,10 @@ export function SettingsDialog({
                                                                                         general.bridge_display_name.trim(),
                                                                                     bridge_token:
                                                                                         general.bridge_token,
+                                                                                    ats_primary_smb_url:
+                                                                                        general.ats_primary_smb_url.trim(),
+                                                                                    ats_backup_smb_url:
+                                                                                        general.ats_backup_smb_url.trim(),
                                                                                 },
                                                                             }
                                                                             : prev,
@@ -1586,6 +1694,15 @@ export function SettingsDialog({
                                                         value={bridgeStatusLabel}
                                                         loading={bridgeStatusLoading}
                                                     />
+                                                    {general.bridge_enabled ? (
+                                                        <InlineStatus
+                                                            label="paths-v1"
+                                                            value={formatPathsV1Status(
+                                                                pathHintsStatus.paths_v1,
+                                                                general.bridge_enabled,
+                                                            )}
+                                                        />
+                                                    ) : null}
                                                 </div>
                                             </div>
                                         ) : (

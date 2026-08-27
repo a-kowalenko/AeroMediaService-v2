@@ -7,7 +7,7 @@
 **Migration-Mapping:** `@docs/MIGRATION.md`  
 **ATS↔AMS Handoff:** `@docs/HANDOFF.md` (Phase 13)
 
-In jedem neuen Kontextfenster `@docs/IMPLEMENTATION_PLAN.md` referenzieren und **nur eine Phase** (bzw. eine Handoff-Teilphase P1/P1b/P2/P3 oder Dropbox-Slice 16a–16d) implementieren.
+In jedem neuen Kontextfenster `@docs/IMPLEMENTATION_PLAN.md` referenzieren und **nur eine Phase** (bzw. eine Handoff-Teilphase P1/P1b/P2/P3/P6a–P6d oder Dropbox-Slice 16a–16d) implementieren.
 
 ---
 
@@ -92,13 +92,15 @@ Vollständiges Mapping: `@docs/MIGRATION.md`
 - ✅ Phase 13 / P3: Bridge job status + handoff/ready (Monitor wake; Datei-Handoff bleibt Fallback)
 - ✅ Phase 13 / P4: Bridge mDNS Discovery (`_ams-bridge._tcp.local.`; Token manuell)
 - ✅ Phase 13 / L4 UX (ATS): Historie AMS-Status-Chips + Stepper, Last-Known-Persistenz, Poll-Härtung
+- ✅ Phase 13 / P5+: Bridge-Presence / Host-Aktivität
+- 🔄 Phase 13 / P6: Bridge Path Hints — Spec ✅ ([`HANDOFF.md`](docs/HANDOFF.md) §9.3); **P6a** ✅ **P6d** ✅ (AMS Drift-Warnung); P6b–P6c offen (ATS = Phase 35)
 - ✅ Phase 14: Medien nachreichen in bestehenden Dropbox-/Cloud-Ordner (gleiche Order, gleicher Link)
 - ✅ Phase 15: ATS-Nachreichen (`kind=append`, gleicher Link, keine Notify)
 - ✅ Phase 16: Multi-Dropbox-Konten (Native + Custom-API-Dropbox; Binding, Guards, UI) — 16a–16d
 - ✅ Phase 17: Infobroschüre PDF (Erst-Upload; Settings Drag-Drop; kein Append/Notify)
 - ✅ Phase 18: Release-Kanäle (Beta / Stable / Auto-Latest) — wie ATS-v2
 
-**Nächster Schritt:** Optional Phase 13 / P5+ — Spec: `@docs/HANDOFF.md`
+**Nächster Schritt:** Phase 13 / **P6b** — ATS Health-DTO + Diff-Helpers (`amsPathHints`) — Spec: `@docs/HANDOFF.md` §9.3 (ATS-Repo)
 
 ---
 
@@ -111,13 +113,13 @@ Legacy: [Pfade aus Phase X im Plan]
 Nur Phase X. Danach cargo test && npm run tauri dev.
 ```
 
-Handoff (Phase 13):
+Handoff (Phase 13 / P6):
 
 ```
-Implementiere Phase 13 Teilphase P5+ aus @docs/IMPLEMENTATION_PLAN.md
-Spec: @docs/HANDOFF.md
-Regeln: @AGENTS.md
-Scope vorher klären. Upload-Pipeline nicht ändern.
+Implementiere Phase 13 Teilphase P6b aus @docs/IMPLEMENTATION_PLAN.md
+Spec: @docs/HANDOFF.md §9.3
+Regeln: @AGENTS.md (ATS-Repo)
+Nur P6b. Kein Auto-Apply.
 ```
 
 Multi-Dropbox (Phase 16): abgeschlossen (16a–16d).

@@ -26,6 +26,7 @@ impl MdnsAdvertiser {
         monitor_path: &str,
         display_name: &str,
         instance_id: &str,
+        paths_hint: bool,
     ) -> Option<Self> {
         let daemon = match ServiceDaemon::new() {
             Ok(d) => d,
@@ -40,7 +41,7 @@ impl MdnsAdvertiser {
         let port = local_addr.port();
         let instance = super::identity::instance_dns_label(display_name);
         let host = host_name_dns();
-        let props = txt_properties(version, monitor_path, display_name, instance_id);
+        let props = txt_properties(version, monitor_path, display_name, instance_id, paths_hint);
 
         let service = match build_service_info(local_addr.ip(), port, &instance, &host, props) {
             Ok(s) => s,
@@ -108,6 +109,7 @@ fn txt_properties(
     monitor_path: &str,
     display_name: &str,
     instance_id: &str,
+    paths_hint: bool,
 ) -> HashMap<String, String> {
     let mut map = HashMap::new();
     map.insert("app".into(), TXT_APP.into());
@@ -127,6 +129,10 @@ fn txt_properties(
         // TXT value length budget — keep short for UNC paths.
         let truncated: String = path.chars().take(180).collect();
         map.insert("path".into(), truncated);
+    }
+    // Compact flag only — full SMB URLs live in GET /v1/health (HANDOFF.md §9.3).
+    if paths_hint {
+        map.insert("paths".into(), "1".into());
     }
     map
 }
@@ -220,6 +226,14 @@ mod tests {
     fn base_url_format() {
         assert_eq!(base_url_for("169.254.1.2", 8787), "http://169.254.1.2:8787");
         assert_eq!(base_url_for("[fe80::1]", 8787), "http://[fe80::1]:8787");
+    }
+
+    #[test]
+    fn txt_paths_flag_when_hint_set() {
+        let with = txt_properties("1.0", r"\\h\aktuell", "Drop", "id", true);
+        assert_eq!(with.get("paths").map(String::as_str), Some("1"));
+        let without = txt_properties("1.0", r"\\h\aktuell", "Drop", "id", false);
+        assert!(!without.contains_key("paths"));
     }
 
     #[test]

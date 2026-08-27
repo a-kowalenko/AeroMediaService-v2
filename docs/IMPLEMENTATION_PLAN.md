@@ -66,14 +66,14 @@
 | Updater / CI / Plattformen | ✅ Phase 10 |
 | Polish (Wizard, Titlebar, History-Virtualisierung, Legacy-Migration) | ✅ Phase 11 |
 | Kundenaufnahme & Marker-Zuweisung | ✅ Phase 12 |
-| ATS↔AMS Handoff (Docs P0) | 🔄 Phase 13 — Spec: [`HANDOFF.md`](./HANDOFF.md) · P0 ✅ · P1 ✅ · P1b ✅ · P2 ✅ · P3 ✅ · P4 ✅ · L4 UX ✅ · P5+ offen |
+| ATS↔AMS Handoff (Docs P0) | 🔄 Phase 13 — Spec: [`HANDOFF.md`](./HANDOFF.md) · P0–P4 ✅ · L4 UX ✅ · P5+ Presence ✅ · **P6 Path Hints** (Docs ✅ · **P6a** ✅ · P6b–d offen) |
 | Medien nachreichen (bestehende Order) | ✅ Phase 14 |
 | ATS-Nachreichen (Append-Handoff) | ✅ Phase 15 |
 | Multi-Dropbox-Konten (Native + Custom-API) | ✅ Phase 16 — 16a ✅ · 16b ✅ · 16c ✅ · 16d ✅ |
 | Infobroschüre PDF (Erst-Upload) | ✅ Phase 17 |
 | Release-Kanäle (Beta / Stable / Auto-Latest) | ✅ Phase 18 |
 
-**Nächste Phase:** optional Phase 13 / P5+ ([`HANDOFF.md`](./HANDOFF.md))
+**Nächste Phase:** Phase 13 / **P6b** — Bridge Path Hints (ATS Health-DTO + Diff); Spec: [`HANDOFF.md`](./HANDOFF.md) §9.3 · ATS = Phase 35
 
 ---
 
@@ -619,6 +619,12 @@ Nur Phase 12. Danach cargo test && npm run tauri dev.
 - [x] **P4** — Bridge mDNS Discovery only (`_ams-bridge._tcp.local.`; Token manuell; keine SHA/strict)
 - [x] **L4 UX** — ATS Historie: AMS-Status-Chips + Phasen-Stepper, Last-Known in SQLite, Poll bei Terminal stoppen
 - [x] **P5+** — Bridge-Presence/Host-Aktivität (ATS `X-Ats-*` Header, AMS Presence-Store + UI); weitere optionale Themen bleiben z. B. SHA-256 / strict extras
+- [ ] **P6** — Bridge Path Hints (`ats_paths` + Capability `paths-v1`); Spec [`HANDOFF.md`](./HANDOFF.md) §9.3; ATS = Phase 35
+  - [x] **P6 / Docs** — Spec + Plan-Einträge (AMS + ATS)
+  - [x] **P6a** — AMS: Settings `ats_primary_smb_url` / `ats_backup_smb_url`; Health `ats_paths`; Capability `paths-v1`; optional mDNS `paths=1`
+  - [ ] **P6b** — ATS: Health-DTO + Diff-Helpers (`amsPathHints`); Store; kein Auto-Apply
+  - [ ] **P6c** — ATS: Suggest-UI + Profil `ams-backup` + Credentials-Flow nach Übernahme
+  - [x] **P6d** — optional: Drift-Warnung Header/Settings (AMS)
 
 #### AMS-Gate (P1) — Kurz
 
@@ -630,7 +636,7 @@ Vor `claim_fertig_marker`: Manifest gültig → Claim (Stability verkürzen/übe
 C:\Users\Kowalenko\PycharmProjects\AeroTandemStudio-v2
 ```
 
-P1/P1b/P2/P3 erfordern Änderungen in **beiden** Repos; pro Session nur **eine** Teilphase (P1, P1b, …).
+P1/P1b/P2/P3/P6 erfordern Änderungen in **beiden** Repos; pro Session nur **eine** Teilphase (P6a, P6b, …).
 
 #### Erfolgskriterien (gesamt Phase 13)
 
@@ -639,17 +645,17 @@ P1/P1b/P2/P3 erfordern Änderungen in **beiden** Repos; pro Session nur **eine**
 - [x] Outbox-Status für ATS ohne gleichen PC lesbar
 - [x] Bridge optional; Datei-Pfad allein ausreichend
 - [x] `cargo test` grün (AMS; ATS analog in ATS-Repo)
+- [ ] P6: AMS publiziert client-taugliche `ats_paths`; ATS Suggest ohne stilles Overwrite / ohne Failover
 
-#### Agent-Prompt (nächste Session = P5+)
+#### Agent-Prompt (nächste Session = P6b)
 
 ```
-Implementiere Phase 13 Teilphase P5+ aus @docs/IMPLEMENTATION_PLAN.md
-Spec: @docs/HANDOFF.md
-Regeln: @AGENTS.md
-Scope vorher klären (SHA-256 / strict extras / …).
+Implementiere Phase 13 Teilphase P6b aus @docs/IMPLEMENTATION_PLAN.md
+Spec: @docs/HANDOFF.md §9.3
+Regeln: @AGENTS.md (ATS-Repo)
+Nur P6b (ATS Health-DTO + Diff-Helpers, Store; kein Auto-Apply). Kein AMS.
 Danach cargo test.
 ```
-
 ---
 
 ## 9. Config-Schema
@@ -667,6 +673,8 @@ Danach cargo test.
 | `manifest_required` | Handoff: Manifest vor Claim erzwingen (Phase 13) | `"false"` |
 | `bridge_enabled` | LAN-Bridge-Server (Phase 13 / P2) | `"false"` |
 | `bridge_bind` | Bind-Adresse (LAN, z. B. `0.0.0.0:8787`) | `"0.0.0.0:8787"` |
+| `ats_primary_smb_url` | Client-Hint Primär-Share für ATS (P6; bevorzugt `smb://`) | `""` |
+| `ats_backup_smb_url` | Client-Hint Backup-Share für ATS (P6; nur Profil, kein Failover) | `""` |
 | `selected_cloud_service` | `dropbox` \| `custom_api` | `dropbox` |
 | `active_dropbox_account_id` | Aktives Native-Dropbox-Profil (Phase 16) | `""` (nach Migration gesetzt) |
 | `active_custom_dropbox_account_id` | Aktives Custom-API-Dropbox-Profil (Phase 16) | `""` (nach Migration gesetzt) |
@@ -1015,7 +1023,7 @@ Updater-Endpoint und Signing: siehe [`docs/RELEASE.md`](./RELEASE.md) (analog Ae
 | 10 | Updater / CI / Plattformen | ✅ |
 | 11 | Polish | ✅ |
 | 12 | Kundenaufnahme & Marker-Zuweisung | ✅ |
-| 13 | ATS↔AMS Handoff | 🔄 P0 ✅ · P1 ✅ · P1b ✅ · P2 ✅ · P3 ✅ · P4 ✅ · L4 UX ✅ · P5+ offen |
+| 13 | ATS↔AMS Handoff | 🔄 P0–P4 ✅ · L4 UX ✅ · P5+ Presence ✅ · P6 Docs ✅ · P6a ✅ · P6b–d offen |
 | 14 | Medien nachreichen | ✅ |
 | 15 | ATS-Nachreichen (Append) | ✅ |
 | 16 | Multi-Dropbox-Konten (Native + Custom-API) | ✅ 16a ✅ · 16b ✅ · 16c ✅ · 16d ✅ |

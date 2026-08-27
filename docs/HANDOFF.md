@@ -233,7 +233,7 @@ Beispiel:
 
 | Methode | Pfad | Zweck |
 |---------|------|--------|
-| `GET` | `/v1/health` | online, Version, `display_name`, `instance_id`, `monitor_path`, `capabilities[]` |
+| `GET` | `/v1/health` | online, Version, `display_name`, `instance_id`, `monitor_path`, optional `ats_paths`, `capabilities[]` |
 | `POST` | `/v1/customer/lookup` | Preflight; AMS → bestehende Customer-API |
 | `GET` | `/v1/jobs/{correlation_id}` | Status (Spiegel Outbox / History) |
 | `POST` | `/v1/handoff/ready` | Monitor wake / Priorität — **kein** Upload-Bypass |
@@ -255,8 +255,74 @@ Beispiel:
 - `X-Ats-Instance-Id` ist der technische Host-Schlüssel; `X-Ats-Hostname` bleibt die menschenlesbare Anzeige im AMS-UI.
 - `GET /v1/jobs/{correlation_id}` und `POST /v1/handoff/ready` erlauben zusätzlich die Zuordnung `correlation_id -> ATS-Host`.
 
+### 9.3 Bridge Path Hints (P6)
+
+**Problem:** ATS pflegt `server_url` (SMB) manuell; AMS kennt den Share als `monitor_path` (oft AMS-lokal). Nach Bridge-Connect soll AMS **client-taugliche** Schreibpfade vorschlagen.
+
+**Nicht-Ziele:** kein HTTP-Datei-Transfer; kein Auto-Upload; kein stiller Failover Primär→Backup; nicht vermischen mit AMS-`archive_path` oder ATS-`sd_server_backup_url` (SD-Spiegel).
+
+#### AMS-Settings (neu)
+
+| Key | Bedeutung |
+|-----|-----------|
+| `ats_primary_smb_url` | Client-Pfad für den Monitor-Share, bevorzugt `smb://host/aktuell` |
+| `ats_backup_smb_url` | Optional zweites ATS-Schreibziel (Backup-Profil), bevorzugt `smb://…` |
+
+`monitor_path` bleibt die AMS-Überwachung; die neuen Keys sind **exportierte Hints** für ATS (nicht automatisch aus lokalem Laufwerkspfad ableiten, außer `monitor_path` ist bereits UNC/`smb://`).
+
+#### Health — additives Objekt `ats_paths`
+
+```json
+{
+  "monitor_path": "D:\\Shares\\aktuell",
+  "ats_paths": {
+    "primary_smb_url": "smb://169.254.169.254/aktuell",
+    "backup_smb_url": "smb://169.254.169.254/aktuell-backup"
+  },
+  "capabilities": ["manifest-v1", "status-outbox", "lookup", "ready", "append-v1", "paths-v1"]
+}
+```
+
+- Ein Feld pro Ziel; Format bevorzugt `smb://` (kein paralleles UNC im Wire-Format).
+- Leere Strings weglassen oder `""`; Capability `paths-v1` nur wenn `primary_smb_url` nicht leer.
+- `monitor_path` bleibt zur Anzeige/Diagnose (nicht blind als ATS-`server_url` setzen, wenn lokal wirkend).
+
+#### mDNS
+
+TXT bleibt knapp: optional Flag `paths=1`; **keine** langen Backup-URLs in TXT. Vollständige Pfade nur über Health nach Connect.
+
+#### ATS-Verhalten (Partner: Phase 35)
+
+| Situation | Verhalten |
+|-----------|-----------|
+| Bridge ok, `paths-v1`, Primär gesetzt; ATS-URL leer **oder** Default `smb://169.254.169.254/aktuell` | Soft-Suggest / Banner: Primär übernehmen? |
+| ATS-URL gesetzt und ≠ AMS-Primär (normalisiert) | Warnung + „Übernehmen“ — kein Auto-Overwrite |
+| Backup gesetzt | Zweites `server_profiles`-Entry (z. B. id `ams-backup`); **kein** Failover, nur Profil |
+| Quiet Health-Poll | Diff merken / Banner; kein Dialog-Spam |
+| Ohne Bridge / ohne `paths-v1` | manuelle SMB-Pflege wie bisher |
+
+Bindung an AMS `instance_id`. Nach Übernahme: SMB-Test Pflicht.
+
+#### Credentials nach Pfad-Übernahme
+
+Profile haben eigene `login`/`password`. Ablauf:
+
+1. Pfade übernehmen (Primär → aktives Profil / `server_url`; Backup → Profil `ams-backup`).
+2. Probe mit aktuellen Credentials gegen Primär; bei Backup dieselbe Probe gegen Backup-URL.
+3. Ergebnis:
+
+| Primär | Backup | Aktion |
+|--------|--------|--------|
+| ok | ok / kein Backup | fertig; bei Backup dieselben Creds ins Backup-Profil |
+| ok | fail | nur Backup-Credentials abfragen |
+| fail | ok | nur Primär-Credentials abfragen |
+| fail | fail | Primär abfragen → testen → Backup mit denselben Creds erneut; bei Fail separat Backup abfragen |
+| fail | (kein Backup) | nur Primär-Credentials |
+
+Guest/leer ok → nichts abfragen. Quiet-Poll ändert keine Credentials.
+
 Capabilities statt harter Versionskopplung, z. B.  
-`["manifest-v1","status-outbox","lookup","ready","append-v1"]`.
+`["manifest-v1","status-outbox","lookup","ready","append-v1","paths-v1"]`.
 
 Breaking Changes → `/v2`; additive Felder in `/v1` erlaubt.
 
@@ -278,23 +344,27 @@ Breaking Changes → `/v2`; additive Felder in `/v1` erlaubt.
 
 ### ATS
 
-- `speicherort` = UNC des `aktuell`-Shares
+- `server_url` / `server_profiles` = SMB-Ziel für Handoff-Schreibvorgänge (bevorzugt `smb://host/aktuell`)
 - Manifest schreiben (Feature an, sobald P1)
 - optional Bridge-URL + Token
 - `ams_bridge_display_name` / `ams_bridge_server_instance_id` (vom AMS, persistiert)
+- ab P6 / ATS Phase 35: optional Übernahme von `ats_paths` (Suggest, kein Zwang)
 
 ### AMS
 
-- `monitor_path` = derselbe Share
+- `monitor_path` = derselbe Share (AMS-Sicht; oft lokal gemountet)
+- `ats_primary_smb_url` / `ats_backup_smb_url` = client-taugliche Hints für ATS (P6)
 - Ignore `.ams-handoff`
 - `manifest_required` = `false` (Default)
 - optional Bridge enable + Token
 - `bridge_display_name` (Default leer → PC-Name)
 - `bridge_instance_id` (automatisch)
 
-### Betrieb Health/Preflight kann Abweichung nur warnen — das ist ein Betriebsfehler, kein Protokollfehler.
+### Betrieb
 
-Windows-Config: UNC (`\\host\aktuell`), nicht nur `smb://`.
+Health/Preflight kann Abweichung ATS-`server_url` ↔ AMS-Primär nur **warnen** — Betriebsfehler, kein Protokollfehler.
+
+Windows: UNC (`\\host\aktuell`) und `smb://` sind beide gültige Operator-Eingaben; Wire-Hint bevorzugt `smb://`.
 
 ---
 
@@ -311,7 +381,10 @@ Windows-Config: UNC (`\\host\aktuell`), nicht nur `smb://`.
 | **L4 UX** ✅ | ATS Historie: Status-Chips/Stepper, Last-Known in SQLite, Poll stoppt bei Terminal | ATS |
 | **P5+** | optional: AMS-Anzeigename + Instance-ID (mDNS TXT + `/v1/health`); ATS persistiert + UI | AMS + ATS |
 | **P5+ (alt)** | SHA-256, strict extras, Bridge-Presence/Host-Aktivität | nach Bedarf |
+| **P6** | Bridge Path Hints: AMS publiziert `ats_paths` + `paths-v1`; ATS übernimmt als Suggest/Profil (kein Failover) | AMS + ATS (ATS = Phase 35) |
 | **Phase 15** ✅ | Append/Nachreichen: `kind=append` + Parent-Gate + Worker-Route | AMS + ATS |
+
+**P6-Slices (eine pro Session):** P6a ✅ AMS Settings+Health → P6b ATS DTO+Diff → P6c ATS UX+Credentials → P6d optional Drift-Warnung.
 
 **Eine Teilphase pro Agent-Session.** Upload-Worker nicht anfassen außer Status-Spiegel für Outbox, wo nötig.
 
@@ -322,6 +395,7 @@ Windows-Config: UNC (`\\host\aktuell`), nicht nur `smb://`.
 - Manifest build / parse / validate (beide Seiten)
 - Gate: `file_missing`, `size_mismatch`, Legacy ohne Manifest
 - Ignore: `.ams-handoff` wird nicht als Job gescannt
+- P6a: Health `ats_paths` + `paths-v1` nur bei Primär; UNC→`smb://`; mDNS `paths=1`
 - Regression: bestehende Marker- / Monitor- / Upload-Tests grün
 
 ---
@@ -336,12 +410,16 @@ Windows-Config: UNC (`\\host\aktuell`), nicht nur `smb://`.
 | Status-Ort | `aktuell/.ams-handoff/` |
 | Bridge | erst P2; blockiert P1 nicht |
 | `correlation_id` | UUID + `producer_ref.vorgang_id` |
+| P6 Backup-Semantik | nur zweites ATS-`server_profiles`-Entry — kein Failover |
+| P6 Default-URL | `smb://169.254.169.254/aktuell` gilt als „leer“ für Suggest |
+| P6 Credentials | gemeinsame Probe; bei Bedarf pro Ziel (Primär/Backup) abfragen |
+| P6 Wire-Format | ein Feld pro Ziel, bevorzugt `smb://` |
 
 ---
 
 ## 15. Partner-Repo
 
 ATS-Implementierung: `C:\Users\Kowalenko\PycharmProjects\AeroTandemStudio-v2`  
-(Export-Job / Marker-Schreiben; Vorgang-History für `correlation_id` / Status-UI.)
+(Export-Job / Marker-Schreiben; Vorgang-History für `correlation_id` / Status-UI; ab P6 / ATS Phase 35: Path-Hints-Übernahme.)
 
 Dieses Dokument ist die gemeinsame Spec; bei Drift gilt die neuere abgestimmte Version in AMS `docs/HANDOFF.md` als Referenz, bis ATS eine Kopie/Verlinkung führt.
