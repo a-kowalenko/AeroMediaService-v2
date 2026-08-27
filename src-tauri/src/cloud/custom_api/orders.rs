@@ -45,6 +45,15 @@ pub async fn fetch_customer_as_kunde(
     query: &ApiMarkerQuery,
     mode: LookupMode,
 ) -> Result<Kunde, String> {
+    let (kunde, _) = fetch_customer_as_kunde_with_extras(query, mode).await?;
+    Ok(kunde)
+}
+
+/// Like [`fetch_customer_as_kunde`], plus raw `media_option` / Buchungsdatum for intake.
+pub async fn fetch_customer_as_kunde_with_extras(
+    query: &ApiMarkerQuery,
+    mode: LookupMode,
+) -> Result<(Kunde, CustomerApiExtras), String> {
     let payload = fetch_customer_payload(query, mode).await?;
     let customer = customer_object_from_payload(&payload)?;
     let kunde = build_kunde_from_customer(&customer).map_err(|e| e.to_string())?;
@@ -58,7 +67,17 @@ pub async fn fetch_customer_as_kunde(
             describe_customer_media_shape(&customer)
         ));
     }
-    Ok(kunde)
+    let extras = CustomerApiExtras {
+        media_option: crate::model::customer_intake::extract_media_option(&customer, &payload),
+        booking_date: crate::model::customer_intake::extract_booking_date(&customer, &payload),
+    };
+    Ok((kunde, extras))
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CustomerApiExtras {
+    pub media_option: String,
+    pub booking_date: String,
 }
 
 fn customer_object_from_payload(payload: &Value) -> Result<Value, String> {
@@ -67,7 +86,22 @@ fn customer_object_from_payload(payload: &Value) -> Result<Value, String> {
         .cloned()
         .ok_or_else(|| "Customer-Lookup lieferte kein 'customer'-Objekt.".to_string())?;
     if let Some(obj) = customer.as_object_mut() {
-        for key in ["media", "foto", "video", "bezahlt", "typ", "type"] {
+        for key in [
+            "media",
+            "foto",
+            "video",
+            "bezahlt",
+            "typ",
+            "type",
+            "media_option",
+            "mediaOption",
+            "datum",
+            "date",
+            "booking_date",
+            "buchungsdatum",
+            "flugdatum",
+            "jump_date",
+        ] {
             if map_missing(obj, key) {
                 if let Some(value) = payload.get(key) {
                     obj.insert(key.to_string(), value.clone());

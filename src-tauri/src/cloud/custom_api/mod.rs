@@ -20,7 +20,7 @@ use crate::model::kunde::Kunde;
 use crate::storage::logging;
 use crate::upload::control::UploadControl;
 
-pub use orders::{fetch_customer_as_kunde, lookup_customer_url};
+pub use orders::{fetch_customer_as_kunde, fetch_customer_as_kunde_with_extras, lookup_customer_url};
 
 pub const CHUNK_BYTES: usize = 4 * 1024 * 1024;
 pub const ORDERS_CREATE_TIMEOUT_SECS: u64 = 120;

@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useState } from "react";
-import { AlertTriangle, Folder, ListChecks, Sparkles } from "lucide-react";
-import { FolderSelectionModal } from "./FolderSelectionModal";
-import { Button } from "@/components/ui/button";
-import { Checkbox } from "@/components/ui/checkbox";
+import {useEffect, useMemo, useRef, useState} from "react";
+import {AlertTriangle, Check, Folder, ListChecks, Loader2, Sparkles, X} from "lucide-react";
+import {FolderSelectionModal} from "./FolderSelectionModal";
+import {IdAssignReviewDialog} from "./IdAssignReviewDialog";
+import {Button} from "@/components/ui/button";
+import {Checkbox} from "@/components/ui/checkbox";
 import {
   Dialog,
   DialogContent,
@@ -18,13 +19,20 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { cn } from "@/lib/utils";
+import {customerHasApiIds} from "@/lib/customerLookup";
+import {overrideFromPreview} from "@/lib/idAssign";
+import {cn} from "@/lib/utils";
 import {
+  assignCustomerToFolder,
+  previewIdAssign,
   proposeCustomerAssignments,
   type Customer,
+  type IdAssignOverride,
+  type IdAssignPreview,
   type MediaFolderInfo,
 } from "@/lib/tauri";
-import { useCustomerStore } from "@/store/customerStore";
+import {showAppToast} from "@/lib/toast";
+import {useCustomerStore} from "@/store/customerStore";
 
 const NONE = "__none__";
 
@@ -34,6 +42,8 @@ type Row = {
   folderPath: string;
   suggestedPath: string;
 };
+
+type RowStatus = "pending" | "running" | "ok" | "error" | "skipped";
 
 type Props = {
   open: boolean;
@@ -47,20 +57,36 @@ function initials(customer: Customer): string {
   return pair || "?";
 }
 
-export function BatchAssignDialog({ open, onClose }: Props) {
-  const assignBatch = useCustomerStore((s) => s.assignBatch);
+export function BatchAssignDialog({open, onClose}: Props) {
+  const load = useCustomerStore((s) => s.load);
+  const loadHistory = useCustomerStore((s) => s.loadHistory);
   const [rows, setRows] = useState<Row[]>([]);
   const [folders, setFolders] = useState<MediaFolderInfo[]>([]);
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [pickingId, setPickingId] = useState<string | null>(null);
+  const [progress, setProgress] = useState<{current: number; total: number; label: string} | null>(
+    null,
+  );
+  const [rowStatus, setRowStatus] = useState<Record<string, RowStatus>>({});
+  const [rowErrors, setRowErrors] = useState<Record<string, string>>({});
+
+  const [reviewOpen, setReviewOpen] = useState(false);
+  const [reviewPreview, setReviewPreview] = useState<IdAssignPreview | null>(null);
+  const reviewResolveRef = useRef<
+    ((value: IdAssignOverride | null) => void) | null
+  >(null);
 
   const picking = rows.find((r) => r.customer.id === pickingId) ?? null;
+  const abortRef = useRef(false);
 
   async function loadProposal() {
     setLoading(true);
     setError("");
+    setRowStatus({});
+    setRowErrors({});
+    setProgress(null);
     try {
       const proposal = await proposeCustomerAssignments();
       setFolders(proposal.folders);
@@ -87,6 +113,16 @@ export function BatchAssignDialog({ open, onClose }: Props) {
       setFolders([]);
       setError("");
       setPickingId(null);
+      setProgress(null);
+      setRowStatus({});
+      setRowErrors({});
+      setReviewOpen(false);
+      setReviewPreview(null);
+      abortRef.current = false;
+      if (reviewResolveRef.current) {
+        reviewResolveRef.current(null);
+        reviewResolveRef.current = null;
+      }
       return;
     }
     void loadProposal();
@@ -114,7 +150,7 @@ export function BatchAssignDialog({ open, onClose }: Props) {
 
   function updateRow(id: string, patch: Partial<Row>) {
     setRows((current) =>
-      current.map((row) => (row.customer.id === id ? { ...row, ...patch } : row)),
+      current.map((row) => (row.customer.id === id ? {...row, ...patch} : row)),
     );
   }
 
@@ -135,34 +171,127 @@ export function BatchAssignDialog({ open, onClose }: Props) {
   }
 
   function selectNone() {
-    setRows((current) => current.map((row) => ({ ...row, included: false })));
+    setRows((current) => current.map((row) => ({...row, included: false})));
+  }
+
+  function waitForReview(preview: IdAssignPreview): Promise<IdAssignOverride | null> {
+    return new Promise((resolve) => {
+      reviewResolveRef.current = resolve;
+      setReviewPreview(preview);
+      setReviewOpen(true);
+    });
+  }
+
+  function finishReview(override: IdAssignOverride | null) {
+    setReviewOpen(false);
+    setReviewPreview(null);
+    const resolve = reviewResolveRef.current;
+    reviewResolveRef.current = null;
+    resolve?.(override);
   }
 
   async function confirm() {
-    const items = rows
-      .filter((row) => row.included && row.folderPath)
-      .map((row) => ({ id: row.customer.id, path: row.folderPath }));
+    const items = rows.filter((row) => row.included && row.folderPath);
     if (items.length === 0) return;
+
+    abortRef.current = false;
     setBusy(true);
+    setError("");
+    const status: Record<string, RowStatus> = {};
+    const errors: Record<string, string> = {};
+    for (const row of items) status[row.customer.id] = "pending";
+    setRowStatus({...status});
+    setRowErrors({});
+
+    let okCount = 0;
+    let errCount = 0;
+    let skipCount = 0;
+
     try {
-      await assignBatch(items);
-      onClose();
-    } catch {
-      /* store toasts */
+      for (let i = 0; i < items.length; i++) {
+        if (abortRef.current) break;
+        const row = items[i];
+        const label = `${row.customer.vorname} ${row.customer.nachname}`.trim();
+        setProgress({current: i + 1, total: items.length, label});
+        status[row.customer.id] = "running";
+        setRowStatus({...status});
+
+        try {
+          let override: IdAssignOverride | null | undefined;
+          if (customerHasApiIds(row.customer)) {
+            const preview = await previewIdAssign(row.customer.id, row.folderPath);
+            if (preview.needs_review || (preview.vs_required && !preview.videospringer)) {
+              const reviewed = await waitForReview(preview);
+              if (!reviewed) {
+                status[row.customer.id] = "skipped";
+                setRowStatus({...status});
+                skipCount += 1;
+                continue;
+              }
+              override = reviewed;
+            } else {
+              override = overrideFromPreview(preview);
+            }
+          }
+
+          await assignCustomerToFolder(row.customer.id, row.folderPath, override ?? null);
+          status[row.customer.id] = "ok";
+          setRowStatus({...status});
+          okCount += 1;
+        } catch (err) {
+          const message = String(err);
+          status[row.customer.id] = "error";
+          errors[row.customer.id] = message;
+          setRowStatus({...status});
+          setRowErrors({...errors});
+          errCount += 1;
+        }
+      }
+
+      await Promise.all([load(), loadHistory()]);
+
+      if (errCount === 0 && skipCount === 0) {
+        showAppToast(
+          okCount === 1 ? "1 Kunde zugewiesen." : `${okCount} Kunden zugewiesen.`,
+          {tone: "success", title: "Sammelzuweisung"},
+        );
+        onClose();
+      } else {
+        const parts = [`${okCount} ok`];
+        if (skipCount) parts.push(`${skipCount} übersprungen`);
+        if (errCount) parts.push(`${errCount} Fehler`);
+        showAppToast(parts.join(", ") + ".", {
+          tone: errCount > 0 ? "error" : "success",
+          title: "Sammelzuweisung",
+        });
+        if (errCount > 0) {
+          setError(Object.values(errors).join("\n"));
+        }
+      }
     } finally {
       setBusy(false);
+      setProgress(null);
     }
   }
 
   return (
     <>
-      <Dialog open={open} onOpenChange={(v) => !v && !busy && onClose()}>
+      <Dialog
+        open={open}
+        onOpenChange={(v) => {
+          if (!v && !busy) onClose();
+          if (!v && busy) {
+            abortRef.current = true;
+            finishReview(null);
+          }
+        }}
+      >
         <DialogContent className="flex max-h-[min(90vh,720px)] max-w-4xl flex-col gap-0 overflow-hidden p-0">
           <DialogHeader className="border-b border-border px-5 py-4">
             <DialogTitle>Zuweisungen prüfen</DialogTitle>
             <DialogDescription>
-              Offene Kunden den passenden Ordnern zuordnen. Abwählen überspringt,
-              Ordner lassen sich noch wechseln.
+              Offene Kunden den passenden Ordnern zuordnen. ID-Kunden mit unsicherer Crew
+              werden einzeln bestätigt.
             </DialogDescription>
           </DialogHeader>
 
@@ -198,11 +327,13 @@ export function BatchAssignDialog({ open, onClose }: Props) {
               <p className="ml-auto text-xs text-muted">
                 {loading
                   ? "Laden…"
-                  : `${selectedCount} von ${rows.length} ausgewählt`}
+                  : progress
+                    ? `${progress.current}/${progress.total}: ${progress.label}`
+                    : `${selectedCount} von ${rows.length} ausgewählt`}
               </p>
             </div>
 
-            {error ? <p className="text-sm text-destructive">{error}</p> : null}
+            {error ? <p className="whitespace-pre-wrap text-sm text-destructive">{error}</p> : null}
             {duplicatePaths.size > 0 ? (
               <div className="flex items-center gap-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-1.5 text-sm text-destructive">
                 <AlertTriangle className="h-4 w-4 shrink-0" />
@@ -223,12 +354,15 @@ export function BatchAssignDialog({ open, onClose }: Props) {
                     const recommended =
                       Boolean(row.suggestedPath) &&
                       row.folderPath === row.suggestedPath;
+                    const status = rowStatus[row.customer.id];
                     return (
                       <li
                         key={row.customer.id}
                         className={cn(
                           "flex flex-col gap-2 px-3 py-2.5 sm:flex-row sm:items-center",
                           duplicate && "bg-destructive/10",
+                          status === "error" && "bg-destructive/5",
+                          status === "ok" && "bg-emerald-500/5",
                         )}
                       >
                         <label
@@ -241,7 +375,7 @@ export function BatchAssignDialog({ open, onClose }: Props) {
                             checked={row.included}
                             disabled={busy}
                             onCheckedChange={(v) =>
-                              updateRow(row.customer.id, { included: v === true })
+                              updateRow(row.customer.id, {included: v === true})
                             }
                             aria-label={`${row.customer.vorname} ${row.customer.nachname} zuweisen`}
                           />
@@ -252,9 +386,14 @@ export function BatchAssignDialog({ open, onClose }: Props) {
                             <span className="block truncate text-sm font-medium text-foreground">
                               {row.customer.vorname}{" "}
                               <span className="font-semibold">{row.customer.nachname}</span>
+                              {customerHasApiIds(row.customer) ? (
+                                <span className="ml-1.5 rounded border border-primary/30 bg-primary-soft px-1 py-px text-[10px] font-medium text-primary">
+                                  ID
+                                </span>
+                              ) : null}
                             </span>
                             <span className="block truncate text-xs text-muted">
-                              {row.customer.email}
+                              {rowErrors[row.customer.id] || row.customer.email}
                             </span>
                           </span>
                         </label>
@@ -299,7 +438,15 @@ export function BatchAssignDialog({ open, onClose }: Props) {
                             <Folder className="h-3.5 w-3.5" />
                           </Button>
                           <span className="hidden h-5 w-[5.5rem] shrink-0 items-center justify-center sm:inline-flex">
-                            {recommended ? (
+                            {status === "running" ? (
+                              <Loader2 className="h-3.5 w-3.5 animate-spin text-muted" />
+                            ) : status === "ok" ? (
+                              <Check className="h-3.5 w-3.5 text-emerald-600" />
+                            ) : status === "error" ? (
+                              <X className="h-3.5 w-3.5 text-destructive" />
+                            ) : status === "skipped" ? (
+                              <span className="text-[11px] text-muted">skip</span>
+                            ) : recommended ? (
                               <span className="inline-flex items-center gap-1 rounded-full border border-amber-400/40 bg-amber-400/15 px-1.5 py-px text-[10px] font-medium tracking-wide text-amber-800 uppercase dark:text-amber-200">
                                 <Sparkles className="h-3 w-3" />
                                 Treffer
@@ -322,13 +469,27 @@ export function BatchAssignDialog({ open, onClose }: Props) {
           </div>
 
           <DialogFooter className="border-t border-border px-5 py-3">
-            <Button type="button" variant="secondary" disabled={busy} onClick={onClose}>
-              Abbrechen
+            <Button
+              type="button"
+              variant="secondary"
+              disabled={busy && !progress}
+              onClick={() => {
+                if (busy) {
+                  abortRef.current = true;
+                  finishReview(null);
+                  return;
+                }
+                onClose();
+              }}
+            >
+              {busy ? "Abbrechen" : "Schließen"}
             </Button>
             <Button type="button" disabled={!canConfirm} onClick={() => void confirm()}>
               <ListChecks className="h-3.5 w-3.5" />
               {busy
-                ? "Zuweisen…"
+                ? progress
+                  ? `${progress.current}/${progress.total}…`
+                  : "Zuweisen…"
                 : selectedCount === 1
                   ? "1 Zuweisung bestätigen"
                   : `${selectedCount} Zuweisungen bestätigen`}
@@ -351,6 +512,14 @@ export function BatchAssignDialog({ open, onClose }: Props) {
           if (pickingId) setFolder(pickingId, path);
           setPickingId(null);
         }}
+      />
+
+      <IdAssignReviewDialog
+        open={reviewOpen}
+        initial={reviewPreview}
+        busy={false}
+        onCancel={() => finishReview(null)}
+        onConfirm={(override) => finishReview(override)}
       />
     </>
   );

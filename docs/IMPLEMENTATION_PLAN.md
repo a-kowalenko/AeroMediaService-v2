@@ -72,9 +72,9 @@
 | Multi-Dropbox-Konten (Native + Custom-API) | ✅ Phase 16 — 16a ✅ · 16b ✅ · 16c ✅ · 16d ✅ |
 | Infobroschüre PDF (Erst-Upload) | ✅ Phase 17 |
 | Release-Kanäle (Beta / Stable / Auto-Latest) | ✅ Phase 18 |
-| Kundenaufnahme ID-Flow + Ordner-Normalisierung | ⬜ Phase 19 — Spec unten · 19a–19d offen |
+| Kundenaufnahme ID-Flow + Ordner-Normalisierung | ✅ Phase 19 — Spec unten · **19a** ✅ · **19b** ✅ · **19c** ✅ · **19d** ✅ |
 
-**Nächste Phase (AMS):** Phase 19 / **19a** — Crew-Roster + Ordnername-Predictor  
+**Nächste Phase (AMS):** Phase 19 abgeschlossen — nächste Priorität nach Backlog / ATS-P6b  
 **Parallel (ATS):** Phase 13 / **P6b** — Bridge Path Hints; Spec: [`HANDOFF.md`](./HANDOFF.md) §9.3 · ATS = Phase 35
 
 ---
@@ -1023,66 +1023,67 @@ AMS: docs/HANDOFF.md §5–6 (Schreibreihenfolge, Manifest)
 9. **Busy:** während Umbau sperren; Reihenfolge strikt: Umbau → Rename → Manifest → `_fertig.txt`.
 10. **Batch:** gleicher ID-Umbau-Flow, sequentiell pro Ordner.
 
-**Slices (eine pro Session):**
+**Slices (eine pro Session):** 19a–19e ✅
 
 #### 19a — Crew-Roster + Ordnername-Predictor
 
-- [ ] Config: `crew_list` analog ATS (`name`, `tandemmaster`, `videospringer`, **`aliases: string[]`**)
-- [ ] Defaults aus ATS-`DEFAULT_CREW_LIST` + sinnvolle Start-Aliases (z. B. Cornelius→`Corni`)
-- [ ] Settings-UI: Crew pflegen (Rollen + Aliases hinzufügen/entfernen)
-- [ ] Modul `folder_rename` / Predictor: Tokenisieren (Whitespace/`_`/`-`, CamelCase, `TACorni`), Noise droppen (Load/L#, Gera/G, Media-Codes), Struktur-Marker (`TA`/`TD`→TA), Crew-Match inkl. Aliases
-- [ ] Confidence + `needs_review`-Regeln (TM fehlt/unsicher; Outside-Video ohne VS; Mehrfachkandidaten)
-- [ ] Dropzone-Suffix aus Ordner ableiten wenn klar (`G`/`Gera`→`_G`), sonst optional/leer
-- [ ] Unit-Tests: Gold-Set aus den abgestimmten Beispielordnern (Roman→Stefan+Robin, Niels→Cornelius, Christin→Futti, Emilia `TD`→Ralph, Sabine `F`+Ralph, …)
+- [x] Config: `crew_list` analog ATS (`name`, `tandemmaster`, `videospringer`, **`aliases: string[]`**)
+- [x] Defaults aus ATS-`DEFAULT_CREW_LIST` + sinnvolle Start-Aliases (z. B. Cornelius→`Corni`)
+- [x] Settings-UI: Crew pflegen (Rollen + Aliases hinzufügen/entfernen)
+- [x] Modul `folder_rename` / Predictor: Tokenisieren (Whitespace/`_`/`-`, CamelCase, `TACorni`), Noise droppen (Load/L#, Gera/G, Media-Codes), Struktur-Marker (`TA`/`TD`→TA), Crew-Match inkl. Aliases
+- [x] Confidence + `needs_review`-Regeln (TM fehlt/unsicher; Outside-Video ohne VS; Mehrfachkandidaten)
+- [x] Dropzone-Suffix aus Ordner ableiten wenn klar (`G`/`Gera`→`_G`), sonst optional/leer
+- [x] Unit-Tests: Gold-Set aus den abgestimmten Beispielordnern (Roman→Stefan+Robin, Niels→Cornelius, Christin→Futti, Emilia `TD`→Ralph, Sabine `F`+Ralph, …)
 
 **Nicht in 19a:** Intake-UI, Assign-Pipeline, Manifest-Schreiben.
 
 #### 19b — Kundenaufnahme: IDs, Lookup, Persistenz
 
-- [ ] `customers.db` erweitern: `kunden_id`, `booking_id`, Buchungsdatum (optional), `typ`/Media-Flags (acht Booleans + Paid), Roh-`media_option` optional
-- [ ] Formular ganz oben: optionale `kunden_id` + `booking_id`
-- [ ] Wenn beide sicher gefüllt: Customer-API-Lookup (bestehender Client); leere Kontaktfelder füllen; Medienflags setzen
-- [ ] Bei Unterschieden: Diff-UI (Feldliste API vs. Formular) → pro Konflikt / global: API übernehmen oder Formular behalten
-- [ ] Speichern nur mit konsistentem Zustand; Kundenliste zeigt ID-Badge wenn IDs gesetzt
-- [ ] Edit-Dialog: IDs/Flags sichtbar/editierbar wo sinnvoll
-- [ ] Ohne IDs: Verhalten Phase 12 unverändert
+- [x] `customers.db` erweitern: `kunden_id`, `booking_id`, Buchungsdatum (optional), `typ`/Media-Flags (acht Booleans + Paid), Roh-`media_option` optional
+- [x] Formular ganz oben: optionale `kunden_id` + `booking_id`
+- [x] Wenn beide sicher gefüllt: Customer-API-Lookup (bestehender Client); leere Kontaktfelder füllen; Medienflags setzen
+- [x] Bei Unterschieden: Diff-UI (Feldliste API vs. Formular) → pro Konflikt / global: API übernehmen oder Formular behalten
+- [x] Speichern nur mit konsistentem Zustand; Kundenliste zeigt ID-Badge wenn IDs gesetzt
+- [x] Edit-Dialog: IDs/Flags sichtbar/editierbar wo sinnvoll
+- [x] Ohne IDs: Verhalten Phase 12 unverändert
 
 **Nicht in 19b:** Ordner-Umbau bei Assign (weiter Pure Contact wenn ohne IDs; mit IDs Assign erst ab 19c/19d).
 
 #### 19c — Assign-Backend: Layout, Rename, Manifest, ID-Marker
 
-- [ ] Verzweigung in `assign_to_folder` / Batch: mit IDs → ID-Pipeline; ohne → Pure Contact
-- [ ] Busy-Sperre (FolderState Busy / Belegt-Check inkl. laufendem Umbau)
-- [ ] Rekursiv Medien finden; nach Flags in Ziel-Subdirs verschieben; Kollision `(1)`…; Nicht-Medien unangetastet; leere Ordner aufräumen
-- [ ] Zielname bauen (Datum Lookup/heute, Gast, TM/VS aus Predictor-Ergebnis oder Caller-Override, Dropzone)
-- [ ] Ordner umbenennen (Konfliktbehandlung wenn Zielname existiert)
-- [ ] `_ams_manifest.v1.json` atomar (Integrity size; producer AMS; `api_id` hint; alle Upload-relevanten Dateien inkl. Nicht-Medien-Pfade)
-- [ ] `_fertig.txt` atomar wie ATS ID-Marker
-- [ ] Reihenfolge verbindlich; bei Fehler kein Fertig-Marker; klarer Fehlerstatus / teilweiser Rollback soweit machbar
-- [ ] Unit-Tests: Layout-Move, Kollision, leere Ordner, Marker-JSON, Manifest-Gate ready
+- [x] Verzweigung in `assign_to_folder` / Batch: mit IDs → ID-Pipeline; ohne → Pure Contact
+- [x] Busy-Sperre (FolderState Busy / Belegt-Check inkl. laufendem Umbau)
+- [x] Rekursiv Medien finden; nach Flags in Ziel-Subdirs verschieben; Kollision `(1)`…; Nicht-Medien unangetastet; leere Ordner aufräumen
+- [x] Zielname bauen (Datum Lookup/heute, Gast, TM/VS aus Predictor-Ergebnis oder Caller-Override, Dropzone)
+- [x] Ordner umbenennen (Konfliktbehandlung wenn Zielname existiert)
+- [x] `_ams_manifest.v1.json` atomar (Integrity size; producer AMS; `api_id` hint; alle Upload-relevanten Dateien inkl. Nicht-Medien-Pfade)
+- [x] `_fertig.txt` atomar wie ATS ID-Marker
+- [x] Reihenfolge verbindlich; bei Fehler kein Fertig-Marker; klarer Fehlerstatus / teilweiser Rollback soweit machbar
+- [x] Unit-Tests: Layout-Move, Kollision, leere Ordner, Marker-JSON, Manifest-Gate ready
 
 **Nicht in 19c:** Review-Dialog-UI (Predictor-Override kommt als Parameter); Settings Crew nur nutzen, nicht bauen.
 
 #### 19d — Assign-UI: Review-Dialog, Batch, Integration
 
-- [ ] Vor ID-Assign: Predictor aufrufen; wenn `needs_review` oder Outside ohne VS → Dialog
-- [ ] Dialog: Live-Vorschau Zielordnername; Felder TM/VS (Crew-Combobox, Rollenfilter); vorausgefüllt; **fehlende Pflichtfelder** markierter Border + Focus
-- [ ] Bestätigen erst wenn Pflichtfelder gesetzt; dann 19c-Pipeline
-- [ ] Batch: sequentiell; pro unsicherer Zeile Dialog (oder Zeilen-Review in Batch-UI); sichere Zeilen still
-- [ ] Fortschritt/Fehler pro Assign sichtbar; Busy während Lauf
-- [ ] Manuelle Abnahme: ID-Kunde → unstrukturierter Ordner → fertiger ATS-artiger Job → Monitor Claim/Upload
+- [x] Vor ID-Assign: Predictor aufrufen; wenn `needs_review` oder Outside ohne VS → Dialog
+- [x] Dialog: Live-Vorschau Zielordnername; Felder TM/VS (Crew-Combobox, Rollenfilter); vorausgefüllt; **fehlende Pflichtfelder** markierter Border + Focus
+- [x] Bestätigen erst wenn Pflichtfelder gesetzt; dann 19c-Pipeline
+- [x] Batch: sequentiell; pro unsicherer Zeile Dialog (oder Zeilen-Review in Batch-UI); sichere Zeilen still
+- [x] Fortschritt/Fehler pro Assign sichtbar; Busy während Lauf
+- [x] Manuelle Abnahme: ID-Kunde → unstrukturierter Ordner → fertiger ATS-artiger Job → Monitor Claim/Upload
 
 **DoD (Phase 19 gesamt)**
 
-- [ ] Zwei Pfade klar getrennt (kein Hybrid-Marker)
-- [ ] Gold-Set Predictor-Tests grün; Review erzwingt VS bei Outside ohne Treffer
-- [ ] Datum nur Lookup/heute
-- [ ] Crew-Aliases in Settings pflegbar
-- [ ] Manifest + ID-`_fertig` → Gate Ready / Legacy nicht für ID-Pfad
-- [ ] `cargo test` + `npm run tauri dev`
+- [x] Zwei Pfade klar getrennt (kein Hybrid-Marker)
+- [x] Gold-Set Predictor-Tests grün; Review erzwingt VS bei Outside ohne Treffer
+- [x] Datum nur Lookup/heute
+- [x] Crew-Aliases in Settings pflegbar
+- [x] Manifest + ID-`_fertig` → Gate Ready / Legacy nicht für ID-Pfad
+- [x] `cargo test` + `npm run tauri dev`
+- [x] **19e:** Gast-Vorname kollidiert nicht mehr mit Crew-Alias (Post-`TA`-Zone + Kundennamen-Suppress)
 
 **Abhängigkeiten:** Phase 12 (Kunden-UI), 2/5 (Marker + Customer API), 13 (Manifest-Schema/Gate).  
-**Nicht-Ziele:** Pure-Contact abschaffen; Ordnerdatum als Datumsquelle; ATS-Crew-Sync über Bridge (optional später); Hash-Marker (`kunden_id_hash`) in der Aufnahme.
+**Nicht-Ziele:** Pure-Contact abschaffen; Ordnerdatum als Datumsquelle; ATS-Crew-Sync über Bridge (optional später); Hash-Marker (`kunden_id_hash`) in der Aufnahme; Alias-Auto-Purge (Kollisionen → 19e Gast-Exclude).
 
 **Agent-Prompts:**
 
@@ -1114,6 +1115,57 @@ Nur 19d (Review-Dialog, Batch, Integration).
 Danach cargo test && npm run tauri dev.
 ```
 
+#### 19e — Predictor: Gast-Exclude + Härtung
+
+**Anlass:** Gast-Vorname im Ordner (z. B. `Andreas`) matcht Crew-Alias (`Andy`→`Andreas`) → falscher TM/VS  
+(`20260827_Andreas_Kowalenko_TA_Futti_V_Henni_C` → fälschlich `…_TA_Andy_V_Futti_C` statt `…_TA_Futti_V_Henrik_C`).
+
+**Produktregeln:**
+
+1. **Struktur-Zone (Primär):** Wenn Token `TA`/`TD` vorkommt → Crew-Hits **nur aus Tokens nach** diesem Marker. Gast-Zone = alles davor (nach Datums-Noise). Dropzone/`V`-Marker weiter auswertbar (global bzw. in Crew-Zone).
+2. **Gast-Suppress (Sekundär):** `PredictOptions` erhält `guest_vorname` / `guest_nachname` (aus Assign-Kunde). Tokens, die klar der **Gast-Zone** zugeordnet sind und Vor-/Nachname matchen (case-insensitive, Umlaut-Fold analog `folder_match::fold_key`), werden nicht als Crew gewertet.
+3. **Kein globales Namens-Kill:** Suppress **nicht** auf die Crew-Zone nach `TA` anwenden (Gast und VS können denselben Vornamen teilen, z. B. Robin).
+4. **Aliases unverändert:** `Andreas`→Andy bleibt; korrekt, wenn Andy als Crew nach `TA` so geschrieben steht.
+5. **Reuse:** Bei `_TA_`/`_TD_` `guest_segment` aus `folder_match` (oder gemeinsame Hilfsfunktion) nutzen — Gast-Slice strippen, Rest an Crew-Match; wenig Duplikat-Logik.
+6. **Confidence:** Treffer strikt aus Post-`TA`-Zone → höhere Confidence / seltener unnötiger Review, sofern TM klar und (bei Outside) VS gesetzt.
+7. **Review-Transparenz (optional, klein):** Wenn Tokens wegen Gast übersprungen wurden → intern/`review_reasons` oder Preview-Feld `skipped_guest_tokens` (kein Pflicht-Dialog allein deshalb).
+8. **UI (leicht):** Im ID-Assign-Review kurz „Gast erkannt: …“ / Hinweis auf Crew-Quelle (z. B. „Crew aus Ordner nach TA“) — hilft Mispredicts zu erklären; kein neuer Wizard.
+9. **Alias-Hygiene (Doku/Settings-Hinweis, kein Auto-Purge):** Kurze/eindeutige Aliase bevorzugen; Gast-Kollisionen sind durch Regeln 1–2 abgefangen, nicht durch Alias-Löschen.
+
+**Scope:**
+
+- [x] `PredictOptions`: `guest_vorname`, `guest_nachname` (optional/`Option`)
+- [x] Predictor: Post-`TA`/`TD`-Crew-Zone + Gast-Zone-Suppress
+- [x] `resolve_crew_fields` / Preview / Pipeline: Kundenvor-/nachname durchreichen
+- [x] Shared/Reuse: Gast-Segment analog `folder_match::guest_segment`
+- [x] Confidence-Anpassung bei strukturierter Zone
+- [x] Unit-Tests (Gold + Regression, siehe unten)
+- [x] Review-Dialog: kurze Gast-/Crew-Quelle-Zeile (wenn Preview-Felder vorhanden)
+- [x] Plan/AGENTS: Slice 19e referenzieren
+
+**Nicht in 19e:** Alias-Liste umbauen; Pure-Contact-Pfad; neues Settings-Feature außer ggf. einzeiligem Hinweistext; Batch-UI-Umbau.
+
+**Tests (verbindlich):**
+
+| Fall | Erwartung |
+|------|-----------|
+| Bug-Repro `…_Andreas_Kowalenko_TA_Futti_V_Henni_C` + Gast Andreas/Kowalenko | TM Futti, VS Henrik, `_C` |
+| Unstrukturiert Gast Andreas, Ordner `Andreas_Futti` | TM Futti (nicht Andy) |
+| Echter Crew-Andreas/Andy nach TA: `…_TA_Andreas_V_Robin` / `…_TA_Andy_…` | TM Andy |
+| Gast Robin + `…_TA_Stefan_V_Robin` | VS bleibt Robin (kein Kill nach TA) |
+| Bestehendes Gold-Set (Roman/Stefan/Robin, Corni, Christin/Futti, …) | unverändert grün |
+
+**DoD:** Bug-Repro grün; Gold-Set grün; Alias Andreas bleibt; `cargo test`.
+
+**Agent-Prompt:**
+
+```
+Implementiere Phase 19 Teilphase 19e aus @docs/IMPLEMENTATION_PLAN.md
+Regeln: @AGENTS.md
+Nur 19e (Gast-Exclude + Predictor-Härtung). Kein Alias-Purge.
+Danach cargo test && npm run tauri dev.
+```
+
 ---
 
 ## 10. Teststrategie
@@ -1122,7 +1174,7 @@ Danach cargo test && npm run tauri dev.
 - Ab Phase 13: Manifest-Validierung, Gate (Legacy vs. Handoff), Ignore `.ams-handoff`
 - Ab Phase 17: Broschüre-Injektion (Erst-Upload only, Append skip, Idempotenz, 5 MB-Limit)
 - Ab Phase 18: SemVer/Prerelease-Ordering, Changelog Beta-Snapshot, `resolve_best_update`
-- Ab Phase 19: Crew/Alias-Match, Ordnername-Predictor (Gold-Set), ID-Marker-JSON, Medien-Layout-Move, Manifest nach AMS-Assign
+- Ab Phase 19: Crew/Alias-Match, Ordnername-Predictor (Gold-Set), ID-Marker-JSON, Medien-Layout-Move, Manifest nach AMS-Assign; ab **19e** Gast-Exclude (Post-`TA`-Zone + Kundennamen)
 - Legacy `_test_*.py` als Spezifikation, nicht ausführen
 - Manuelle Abnahme: Monitor → Upload → Notify → Archiv
 - Ab Phase 10: CI auf Win/Mac/Linux
@@ -1161,4 +1213,4 @@ Updater-Endpoint und Signing: siehe [`docs/RELEASE.md`](./RELEASE.md) (analog Ae
 | 16 | Multi-Dropbox-Konten (Native + Custom-API) | ✅ 16a ✅ · 16b ✅ · 16c ✅ · 16d ✅ |
 | 17 | Infobroschüre PDF (Erst-Upload) | ✅ |
 | 18 | Release-Kanäle (Beta / Stable / Auto-Latest) | ✅ |
-| 19 | Kundenaufnahme ID-Flow + Ordner-Normalisierung | ⬜ 19a–19d offen |
+| 19 | Kundenaufnahme ID-Flow + Job-Ordner-Normalisierung | ✅ 19a–19e |

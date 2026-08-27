@@ -599,6 +599,11 @@ fn value_as_option_code(value: &Value) -> Option<String> {
             }
         }
         Value::Number(n) => Some(n.to_string()),
+        Value::Object(obj) => map_get_ci(obj, "key")
+            .or_else(|| map_get_ci(obj, "code"))
+            .or_else(|| map_get_ci(obj, "art"))
+            .or_else(|| map_get_ci(obj, "media_option"))
+            .and_then(value_as_option_code),
         _ => None,
     }
 }
@@ -655,6 +660,8 @@ fn api_media_sources(customer: &Value) -> Vec<&Value> {
     if let Some(obj) = customer.as_object() {
         for key in [
             "media",
+            "media_option",
+            "mediaOption",
             "booking",
             "handycam",
             "handcam",
@@ -1458,6 +1465,29 @@ mod tests {
         assert!(k.outside_foto && k.outside_video);
         assert!(!k.ist_bezahlt_outside_foto);
         assert!(k.ist_bezahlt_outside_video);
+    }
+
+    #[test]
+    fn customer_api_media_option_object_with_key() {
+        let customer = json!({
+            "booking_id": "2",
+            "customer_id": "1",
+            "email": "a@b.de",
+            "foto_paid": true,
+            "media_option": {
+                "key": "ou_fv",
+                "created_at": "2026-08-16T06:17:24.370799+00:00",
+                "foto": false,
+                "video": true
+            },
+            "nachname": "Muster",
+            "typ": "outside",
+            "video_paid": true,
+            "vorname": "Anna",
+        });
+        let k = build_kunde_from_customer(&customer).unwrap();
+        assert!(k.outside_foto && k.outside_video);
+        assert!(k.ist_bezahlt_outside_foto && k.ist_bezahlt_outside_video);
     }
 
     #[test]

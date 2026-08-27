@@ -12,6 +12,8 @@ import {
   type BatchAssignItem,
   type BatchAssignOutcome,
   type Customer,
+  type CustomerDraft,
+  type IdAssignOverride,
 } from "../lib/tauri";
 import { showAppToast } from "../lib/toast";
 
@@ -34,16 +36,11 @@ type CustomerState = {
   load: () => Promise<void>;
   loadHistory: () => Promise<void>;
   refreshCounts: () => Promise<void>;
-  add: (
-    vorname: string,
-    nachname: string,
-    email: string,
-    telefon: string,
-  ) => Promise<Customer>;
+  add: (draft: CustomerDraft) => Promise<Customer>;
   update: (customer: Customer) => Promise<void>;
   remove: (id: string) => Promise<void>;
   setProcessed: (id: string, processed: boolean) => Promise<void>;
-  assign: (id: string, targetPath: string) => Promise<string>;
+  assign: (id: string, targetPath: string, idOverride?: IdAssignOverride | null) => Promise<string>;
   assignBatch: (items: BatchAssignItem[]) => Promise<BatchAssignOutcome>;
 };
 
@@ -108,10 +105,10 @@ export const useCustomerStore = create<CustomerState>((set, get) => ({
       /* badge is best-effort */
     }
   },
-  add: async (vorname, nachname, email, telefon) => {
+  add: async (draft) => {
     set({ error: "" });
     try {
-      const customer = await saveCustomer(vorname, nachname, email, telefon);
+      const customer = await saveCustomer(draft);
       window.clearTimeout(highlightTimer);
       set({
         highlightId: customer.id,
@@ -170,10 +167,10 @@ export const useCustomerStore = create<CustomerState>((set, get) => ({
       throw err;
     }
   },
-  assign: async (id, targetPath) => {
+  assign: async (id, targetPath, idOverride) => {
     set({ error: "" });
     try {
-      const result = await assignCustomerToFolder(id, targetPath);
+      const result = await assignCustomerToFolder(id, targetPath, idOverride);
       showAppToast(`Marker geschrieben:\n${result.file_path}`, {
         tone: "success",
         title: "Zugewiesen",

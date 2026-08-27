@@ -340,12 +340,13 @@ pub fn read_status_outbox(
     serde_json::from_str(raw.trim()).map_err(|e| ManifestError::InvalidJson(e.to_string()))
 }
 
-fn atomic_write(dest: &Path, bytes: &[u8]) -> io::Result<()> {
+/// Atomically write bytes (temp → rename). Used for outbox, manifest, and markers.
+pub fn atomic_write_file(dest: &Path, bytes: &[u8]) -> io::Result<()> {
     if let Some(parent) = dest.parent() {
         fs::create_dir_all(parent)?;
     }
     let tmp_name = format!(
-        ".ams_outbox_tmp_{}_{}",
+        ".ams_tmp_{}_{}",
         std::process::id(),
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -371,6 +372,93 @@ fn atomic_write(dest: &Path, bytes: &[u8]) -> io::Result<()> {
         let _ = fs::remove_file(&tmp);
     }
     result
+}
+
+fn atomic_write(dest: &Path, bytes: &[u8]) -> io::Result<()> {
+    atomic_write_file(dest, bytes)
+}
+
+/// Collect upload-relevant files relative to the job root (forward-slash paths, sorted).
+/// Skips markers, manifest, checkpoint, and OS junk (same ignore set as the gate).
+pub fn collect_integrity_files(job_root: &Path) -> Result<Vec<ManifestFileEntry>, ManifestError> {
+    let mut files = Vec::new();
+    walk_collect_integrity(job_root, job_root, &mut files)?;
+    files.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok(files)
+}
+
+fn walk_collect_integrity(
+    root: &Path,
+    dir: &Path,
+    out: &mut Vec<ManifestFileEntry>,
+) -> Result<(), ManifestError> {
+    let entries = fs::read_dir(dir)?;
+    for entry in entries {
+        let entry = entry?;
+        let path = entry.path();
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if is_ignored_handoff_name(&name) {
+            continue;
+        }
+        if path.is_dir() {
+            walk_collect_integrity(root, &path, out)?;
+        } else if path.is_file() {
+            let meta = fs::metadata(&path)?;
+            let rel = path.strip_prefix(root).map_err(|_| {
+                ManifestError::Invalid(format!(
+                    "Pfad nicht unter Job-Root: {}",
+                    path.display()
+                ))
+            })?;
+            let rel_str = rel
+                .components()
+                .map(|c| c.as_os_str().to_string_lossy())
+                .collect::<Vec<_>>()
+                .join("/");
+            out.push(ManifestFileEntry {
+                path: rel_str,
+                size: meta.len(),
+            });
+        }
+    }
+    Ok(())
+}
+
+/// Atomically write `_ams_manifest.v1.json` for an AMS ID-assign job.
+pub fn write_ams_assign_manifest(
+    job_folder: &Path,
+    folder_name: &str,
+    marker_type: &str,
+) -> Result<(String, PathBuf), ManifestError> {
+    let correlation_id = uuid::Uuid::new_v4().to_string();
+    let files = collect_integrity_files(job_folder)?;
+    let manifest = HandoffManifestV1 {
+        schema: SCHEMA_V1,
+        protocol: PROTOCOL_NAME.into(),
+        correlation_id: correlation_id.clone(),
+        producer: ProducerInfo {
+            app: "AeroMediaService".into(),
+            version: env!("CARGO_PKG_VERSION").into(),
+        },
+        producer_ref: ProducerRef::default(),
+        created_at: Local::now().to_rfc3339(),
+        folder_name: folder_name.to_string(),
+        integrity: IntegrityBlock {
+            algo: INTEGRITY_ALGO_SIZE.into(),
+            files,
+        },
+        marker_hint: MarkerHint {
+            format: "api_id".into(),
+            marker_type: marker_type.to_string(),
+        },
+        extensions: Value::Object(Default::default()),
+    };
+    let path = manifest_path(job_folder);
+    let text = serde_json::to_string_pretty(&manifest)
+        .map_err(|e| ManifestError::InvalidJson(e.to_string()))?;
+    atomic_write_file(&path, text.as_bytes())?;
+    Ok((correlation_id, path))
 }
 
 pub fn load_and_validate_manifest(folder: &Path) -> Result<HandoffManifestV1, ManifestError> {

@@ -910,11 +910,70 @@ export type Customer = {
     nachname: string;
     email: string;
     telefon: string;
+    kunden_id?: string;
+    booking_id?: string;
+    booking_date?: string;
+    typ?: string;
+    handcam_foto?: boolean;
+    handcam_video?: boolean;
+    outside_foto?: boolean;
+    outside_video?: boolean;
+    ist_bezahlt_handcam_foto?: boolean;
+    ist_bezahlt_handcam_video?: boolean;
+    ist_bezahlt_outside_foto?: boolean;
+    ist_bezahlt_outside_video?: boolean;
+    media_option?: string;
     processed: boolean;
     assigned_path: string;
     created_at: string;
     updated_at: string;
 };
+
+export type CustomerDraft = {
+    vorname: string;
+    nachname: string;
+    email: string;
+    telefon?: string;
+    kunden_id?: string;
+    booking_id?: string;
+    booking_date?: string;
+    typ?: string;
+    handcam_foto?: boolean;
+    handcam_video?: boolean;
+    outside_foto?: boolean;
+    outside_video?: boolean;
+    ist_bezahlt_handcam_foto?: boolean;
+    ist_bezahlt_handcam_video?: boolean;
+    ist_bezahlt_outside_foto?: boolean;
+    ist_bezahlt_outside_video?: boolean;
+    media_option?: string;
+};
+
+export type IntakeLookupHit = {
+    vorname: string;
+    nachname: string;
+    email: string;
+    telefon: string;
+    kunden_id: string;
+    booking_id: string;
+    booking_date: string;
+    typ: string;
+    handcam_foto: boolean;
+    handcam_video: boolean;
+    outside_foto: boolean;
+    outside_video: boolean;
+    ist_bezahlt_handcam_foto: boolean;
+    ist_bezahlt_handcam_video: boolean;
+    ist_bezahlt_outside_foto: boolean;
+    ist_bezahlt_outside_video: boolean;
+    media_option: string;
+};
+
+export type IntakeLookupResult =
+    | { kind: "hit"; customer: IntakeLookupHit }
+    | { kind: "choice"; handcam: IntakeLookupHit; outside: IntakeLookupHit }
+    | { kind: "not_found" }
+    | { kind: "error"; message: string };
 
 export type AssignmentHistoryEntry = {
     id: string;
@@ -947,6 +1006,42 @@ export type MediaDirectoryListing = {
 
 export type AssignResult = {
     file_path: string;
+    folder_path?: string;
+};
+
+export type IdAssignOverride = {
+    tandemmaster?: string | null;
+    videospringer?: string | null;
+    dropzone_suffix?: string | null;
+};
+
+export type IdAssignPreview = {
+    customer_id: string;
+    customer_label: string;
+    folder_path: string;
+    folder_name: string;
+    preview_folder_name: string;
+    needs_review: boolean;
+    review_reasons: string[];
+    tandemmaster: string | null;
+    videospringer: string | null;
+    dropzone_suffix: string | null;
+    tm_confidence: number;
+    vs_confidence: number;
+    outside_video: boolean;
+    vs_required: boolean;
+    can_confirm: boolean;
+    booking_date: string;
+    crew: Array<{
+        name: string;
+        tandemmaster: boolean;
+        videospringer: boolean;
+        aliases: string[];
+    }>;
+    /** Tokens skipped as guest (Phase 19e). */
+    skipped_guest_tokens?: string[];
+    /** Crew taken from post-TA/TD zone. */
+    structured_crew_zone?: boolean;
 };
 
 export type BatchCustomerProposal = {
@@ -965,6 +1060,7 @@ export type BatchAssignmentProposal = {
 export type BatchAssignItem = {
     id: string;
     path: string;
+    id_override?: IdAssignOverride | null;
 };
 
 export type BatchAssignOutcome = {
@@ -982,26 +1078,26 @@ export function listCustomers(
     });
 }
 
-export function saveCustomer(
-    vorname: string,
-    nachname: string,
-    email: string,
-    telefon?: string,
-): Promise<Customer> {
-    return invoke<Customer>("save_customer", {
-        vorname,
-        nachname,
-        email,
-        telefon: telefon ?? "",
-    });
+export function saveCustomer(draft: CustomerDraft): Promise<Customer> {
+    return invoke<Customer>("save_customer", { draft });
 }
 
 export function updateCustomer(customer: Customer): Promise<Customer> {
-    return invoke<Customer>("update_customer", {customer});
+    return invoke<Customer>("update_customer", { customer });
+}
+
+export function lookupCustomerIntake(
+    kundenId: string,
+    bookingId: string,
+): Promise<IntakeLookupResult> {
+    return invoke<IntakeLookupResult>("lookup_customer_intake", {
+        kundenId,
+        bookingId,
+    });
 }
 
 export function deleteCustomer(id: string): Promise<void> {
-    return invoke("delete_customer", {id});
+    return invoke("delete_customer", { id });
 }
 
 export function setCustomerProcessed(
@@ -1026,10 +1122,24 @@ export function listMediaFolders(
 export function assignCustomerToFolder(
     id: string,
     targetPath: string,
+    idOverride?: IdAssignOverride | null,
 ): Promise<AssignResult> {
     return invoke<AssignResult>("assign_customer_to_folder", {
         id,
         targetPath,
+        idOverride: idOverride ?? null,
+    });
+}
+
+export function previewIdAssign(
+    id: string,
+    targetPath: string,
+    idOverride?: IdAssignOverride | null,
+): Promise<IdAssignPreview> {
+    return invoke<IdAssignPreview>("preview_id_assign", {
+        id,
+        targetPath,
+        idOverride: idOverride ?? null,
     });
 }
 

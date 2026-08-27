@@ -7,7 +7,7 @@
 **Migration-Mapping:** `@docs/MIGRATION.md`  
 **ATS↔AMS Handoff:** `@docs/HANDOFF.md` (Phase 13)
 
-In jedem neuen Kontextfenster `@docs/IMPLEMENTATION_PLAN.md` referenzieren und **nur eine Phase** (bzw. eine Handoff-Teilphase P1/P1b/P2/P3/P6a–P6d, Dropbox-Slice 16a–16d oder Kunden-ID-Slice 19a–19d) implementieren.
+In jedem neuen Kontextfenster `@docs/IMPLEMENTATION_PLAN.md` referenzieren und **nur eine Phase** (bzw. eine Handoff-Teilphase P1/P1b/P2/P3/P6a–P6d, Dropbox-Slice 16a–16d oder Kunden-ID-Slice 19a–19e) implementieren.
 
 ---
 
@@ -99,9 +99,9 @@ Vollständiges Mapping: `@docs/MIGRATION.md`
 - ✅ Phase 16: Multi-Dropbox-Konten (Native + Custom-API-Dropbox; Binding, Guards, UI) — 16a–16d
 - ✅ Phase 17: Infobroschüre PDF (Erst-Upload; Settings Drag-Drop; kein Append/Notify)
 - ✅ Phase 18: Release-Kanäle (Beta / Stable / Auto-Latest) — wie ATS-v2
-- ⬜ Phase 19: Kundenaufnahme ID-Flow + Job-Ordner-Normalisierung — Spec in `@docs/IMPLEMENTATION_PLAN.md` · 19a–19d offen
+- ✅ Phase 19: Kundenaufnahme ID-Flow + Job-Ordner-Normalisierung — Spec in `@docs/IMPLEMENTATION_PLAN.md` · **19a–19e** ✅
 
-**Nächster Schritt (AMS):** Phase 19 / **19a** — Crew-Roster + Ordnername-Predictor  
+**Nächster Schritt (AMS):** offen — siehe `@docs/IMPLEMENTATION_PLAN.md` Fortschritts-Tracker  
 **Parallel (ATS):** Phase 13 / **P6b** — Bridge Path Hints (`amsPathHints`) — Spec: `@docs/HANDOFF.md` §9.3
 
 ---
@@ -124,14 +124,7 @@ Regeln: @AGENTS.md (ATS-Repo)
 Nur P6b. Kein Auto-Apply.
 ```
 
-Kundenaufnahme ID-Flow (Phase 19):
-
-```
-Implementiere Phase 19 Teilphase 19a aus @docs/IMPLEMENTATION_PLAN.md
-Regeln: @AGENTS.md
-Nur 19a. Kein Assign-Umbau.
-Danach cargo test && npm run tauri dev.
-```
+Kundenaufnahme ID-Flow (Phase 19): abgeschlossen (19a–19e).
 
 Multi-Dropbox (Phase 16): abgeschlossen (16a–16d).
 

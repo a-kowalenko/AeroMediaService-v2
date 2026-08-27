@@ -22,11 +22,31 @@ const MIN_DIGRAPH_LEN: usize = 6;
 pub fn guest_segment(folder_name: &str) -> &str {
     let rest = strip_date_prefix(folder_name);
     let lower = rest.to_ascii_lowercase();
-    if let Some(idx) = lower.find("_ta_") {
+    if let Some(idx) = earliest_structure_marker(&lower) {
         rest.get(..idx).unwrap_or(rest)
     } else {
         rest
     }
+}
+
+/// Crew/dropzone portion after the first `_TA_` / `_TD_` marker, if present.
+pub fn crew_segment(folder_name: &str) -> Option<&str> {
+    let rest = strip_date_prefix(folder_name);
+    let lower = rest.to_ascii_lowercase();
+    let idx = earliest_structure_marker(&lower)?;
+    let marker_len = if lower[idx..].starts_with("_td_") {
+        "_td_".len()
+    } else {
+        "_ta_".len()
+    };
+    rest.get(idx + marker_len..)
+}
+
+fn earliest_structure_marker(lower: &str) -> Option<usize> {
+    [lower.find("_ta_"), lower.find("_td_")]
+        .into_iter()
+        .flatten()
+        .min()
 }
 
 fn strip_date_prefix(name: &str) -> &str {
@@ -38,7 +58,8 @@ fn strip_date_prefix(name: &str) -> &str {
     }
 }
 
-fn fold_key(value: &str) -> String {
+/// Normalize for case-/umlaut-insensitive name compares (guest suppress, folder match).
+pub fn fold_key(value: &str) -> String {
     let mut out = String::with_capacity(value.len());
     for ch in value.chars() {
         let lower = ch.to_lowercase().next().unwrap_or(ch);
@@ -344,8 +365,15 @@ mod tests {
             "Max_Mustermann"
         );
         assert_eq!(guest_segment("20260815_Max_TA_Anna"), "Max");
+        assert_eq!(guest_segment("20260815_Emilia_TD_Ralph"), "Emilia");
         assert_eq!(guest_segment("Job-1"), "Job-1");
         assert_eq!(guest_segment("Max_Mustermann"), "Max_Mustermann");
+        assert_eq!(
+            crew_segment("20260815_Max_Mustermann_TA_Schmidt_V_Bob"),
+            Some("Schmidt_V_Bob")
+        );
+        assert_eq!(crew_segment("20260815_Emilia_TD_Ralph"), Some("Ralph"));
+        assert_eq!(crew_segment("Max_Mustermann"), None);
     }
 
     #[test]

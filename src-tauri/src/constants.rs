@@ -86,6 +86,8 @@ pub fn setting_default(key: &str) -> Option<&'static str> {
         "brochure_enabled" => Some("false"),
         "brochure_export_name" => Some("Infobroschuere.pdf"),
         "brochure_subdir" => Some(""),
+        // Empty → Rust/TS load ATS default roster (Phase 19a).
+        "crew_list" => Some(""),
         _ => None,
     }
 }
@@ -247,6 +249,7 @@ mod tests {
             Some("Infobroschuere.pdf")
         );
         assert_eq!(setting_default("brochure_subdir"), Some(""));
+        assert_eq!(setting_default("crew_list"), Some(""));
         assert_eq!(setting_default("unknown_key"), None);
     }
 

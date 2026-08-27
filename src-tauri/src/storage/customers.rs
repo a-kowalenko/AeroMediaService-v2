@@ -16,6 +16,12 @@ use thiserror::Error;
 use uuid::Uuid;
 
 use crate::constants::CUSTOMERS_DB_FILE;
+use crate::model::crew::CrewMember;
+use crate::model::customer_intake::normalize_id_pair;
+use crate::model::id_assign::{
+    preview_id_assign, run_id_assign_pipeline, IdAssignCustomer, IdAssignError, IdAssignOverride,
+    IdAssignPreview,
+};
 use crate::model::marker::{marker_paths, write_fertig_marker, MARKER_FERTIG, MARKER_PROCESSING};
 use crate::storage::app_config_dir;
 use crate::storage::config::ConfigError;
@@ -48,6 +54,12 @@ impl From<crate::model::marker::MarkerError> for CustomerError {
     }
 }
 
+impl From<IdAssignError> for CustomerError {
+    fn from(value: IdAssignError) -> Self {
+        CustomerError::Message(value.to_string())
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Customer {
     pub id: String,
@@ -55,10 +67,98 @@ pub struct Customer {
     pub nachname: String,
     pub email: String,
     pub telefon: String,
+    #[serde(default)]
+    pub kunden_id: String,
+    #[serde(default)]
+    pub booking_id: String,
+    #[serde(default)]
+    pub booking_date: String,
+    #[serde(default)]
+    pub typ: String,
+    #[serde(default)]
+    pub handcam_foto: bool,
+    #[serde(default)]
+    pub handcam_video: bool,
+    #[serde(default)]
+    pub outside_foto: bool,
+    #[serde(default)]
+    pub outside_video: bool,
+    #[serde(default)]
+    pub ist_bezahlt_handcam_foto: bool,
+    #[serde(default)]
+    pub ist_bezahlt_handcam_video: bool,
+    #[serde(default)]
+    pub ist_bezahlt_outside_foto: bool,
+    #[serde(default)]
+    pub ist_bezahlt_outside_video: bool,
+    #[serde(default)]
+    pub media_option: String,
     pub processed: bool,
     pub assigned_path: String,
     pub created_at: String,
     pub updated_at: String,
+}
+
+impl Customer {
+    pub fn has_api_ids(&self) -> bool {
+        !self.kunden_id.trim().is_empty() && !self.booking_id.trim().is_empty()
+    }
+}
+
+fn id_assign_ctx(customer: &Customer) -> IdAssignCustomer<'_> {
+    IdAssignCustomer {
+        vorname: &customer.vorname,
+        nachname: &customer.nachname,
+        kunden_id: &customer.kunden_id,
+        booking_id: &customer.booking_id,
+        booking_date: &customer.booking_date,
+        typ: &customer.typ,
+        handcam_foto: customer.handcam_foto,
+        handcam_video: customer.handcam_video,
+        outside_foto: customer.outside_foto,
+        outside_video: customer.outside_video,
+        // Gebucht = paid; ungebucht = nicht paid (Marker/Upload).
+        ist_bezahlt_handcam_foto: customer.handcam_foto,
+        ist_bezahlt_handcam_video: customer.handcam_video,
+        ist_bezahlt_outside_foto: customer.outside_foto,
+        ist_bezahlt_outside_video: customer.outside_video,
+    }
+}
+
+/// Intake / save payload (Phase 19b).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CustomerDraft {
+    pub vorname: String,
+    pub nachname: String,
+    pub email: String,
+    #[serde(default)]
+    pub telefon: String,
+    #[serde(default)]
+    pub kunden_id: String,
+    #[serde(default)]
+    pub booking_id: String,
+    #[serde(default)]
+    pub booking_date: String,
+    #[serde(default)]
+    pub typ: String,
+    #[serde(default)]
+    pub handcam_foto: bool,
+    #[serde(default)]
+    pub handcam_video: bool,
+    #[serde(default)]
+    pub outside_foto: bool,
+    #[serde(default)]
+    pub outside_video: bool,
+    #[serde(default)]
+    pub ist_bezahlt_handcam_foto: bool,
+    #[serde(default)]
+    pub ist_bezahlt_handcam_video: bool,
+    #[serde(default)]
+    pub ist_bezahlt_outside_foto: bool,
+    #[serde(default)]
+    pub ist_bezahlt_outside_video: bool,
+    #[serde(default)]
+    pub media_option: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -104,6 +204,9 @@ pub struct MediaDirectoryListing {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AssignResult {
     pub file_path: String,
+    /// Final job folder after ID-rename (same as input for Pure Contact).
+    #[serde(default)]
+    pub folder_path: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -125,6 +228,9 @@ pub struct BatchAssignmentProposal {
 pub struct BatchAssignItem {
     pub id: String,
     pub path: String,
+    /// Optional TM/VS/Dropzone override for ID-assign (Phase 19c/19d).
+    #[serde(default)]
+    pub id_override: Option<IdAssignOverride>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -163,17 +269,9 @@ impl CustomerState {
         store.list(search, filter).map_err(|e| e.to_string())
     }
 
-    pub fn save(
-        &self,
-        vorname: &str,
-        nachname: &str,
-        email: &str,
-        telefon: &str,
-    ) -> Result<Customer, String> {
+    pub fn save(&self, draft: &CustomerDraft) -> Result<Customer, String> {
         let store = self.store.lock().map_err(|e| e.to_string())?;
-        store
-            .save(vorname, nachname, email, telefon)
-            .map_err(|e| e.to_string())
+        store.save(draft).map_err(|e| e.to_string())
     }
 
     pub fn update(&self, customer: &Customer) -> Result<Customer, String> {
@@ -193,10 +291,29 @@ impl CustomerState {
             .map_err(|e| e.to_string())
     }
 
-    pub fn assign_to_folder(&self, id: &str, target_path: &Path) -> Result<AssignResult, String> {
+    pub fn assign_to_folder(
+        &self,
+        id: &str,
+        target_path: &Path,
+        crew: &[CrewMember],
+        id_override: Option<&IdAssignOverride>,
+    ) -> Result<AssignResult, String> {
         let store = self.store.lock().map_err(|e| e.to_string())?;
         store
-            .assign_to_folder(id, target_path)
+            .assign_to_folder(id, target_path, crew, id_override)
+            .map_err(|e| e.to_string())
+    }
+
+    pub fn preview_id_assign(
+        &self,
+        id: &str,
+        target_path: &Path,
+        crew: &[CrewMember],
+        id_override: Option<&IdAssignOverride>,
+    ) -> Result<IdAssignPreview, String> {
+        let store = self.store.lock().map_err(|e| e.to_string())?;
+        store
+            .preview_id_assign(id, target_path, crew, id_override)
             .map_err(|e| e.to_string())
     }
 
@@ -205,12 +322,21 @@ impl CustomerState {
         store.assignment_history().map_err(|e| e.to_string())
     }
 
-    pub fn assign_many(&self, items: &[BatchAssignItem]) -> Result<BatchAssignOutcome, String> {
+    pub fn assign_many(
+        &self,
+        items: &[BatchAssignItem],
+        crew: &[CrewMember],
+    ) -> Result<BatchAssignOutcome, String> {
         let mut assigned = Vec::new();
         let mut errors = Vec::new();
         for item in items {
             let path = PathBuf::from(item.path.trim());
-            match self.assign_to_folder(&item.id, &path) {
+            match self.assign_to_folder(
+                &item.id,
+                &path,
+                crew,
+                item.id_override.as_ref(),
+            ) {
                 Ok(result) => assigned.push(BatchAssignOk {
                     id: item.id.clone(),
                     file_path: result.file_path,
@@ -272,6 +398,7 @@ impl CustomerStore {
                     ON assignment_history(created_at DESC);
                 ",
             )?;
+            migrate_customer_columns(conn)?;
             Ok(())
         })?;
         Ok(store)
@@ -289,7 +416,12 @@ impl CustomerStore {
         self.with_conn(|conn| {
             let mut sql = String::from(
                 "SELECT id, vorname, nachname, email, telefon, processed, assigned_path,
-                        created_at, updated_at
+                        created_at, updated_at,
+                        kunden_id, booking_id, booking_date, typ,
+                        handcam_foto, handcam_video, outside_foto, outside_video,
+                        ist_bezahlt_handcam_foto, ist_bezahlt_handcam_video,
+                        ist_bezahlt_outside_foto, ist_bezahlt_outside_video,
+                        media_option
                  FROM customers WHERE 1=1",
             );
             let mut binds: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
@@ -307,6 +439,7 @@ impl CustomerStore {
                         lower(vorname) LIKE ?1 OR lower(nachname) LIKE ?1
                         OR lower(email) LIKE ?1 OR lower(telefon) LIKE ?1
                         OR lower(vorname || ' ' || nachname) LIKE ?1
+                        OR lower(kunden_id) LIKE ?1 OR lower(booking_id) LIKE ?1
                     )",
                 );
                 binds.push(Box::new(format!("%{term}%")));
@@ -325,17 +458,13 @@ impl CustomerStore {
         })
     }
 
-    pub fn save(
-        &self,
-        vorname: &str,
-        nachname: &str,
-        email: &str,
-        telefon: &str,
-    ) -> Result<Customer, CustomerError> {
-        let vorname = normalize_required(vorname, "Vorname")?;
-        let nachname = normalize_required(nachname, "Nachname")?;
-        let email = normalize_required(email, "E-Mail")?;
-        let telefon = telefon.trim().to_string();
+    pub fn save(&self, draft: &CustomerDraft) -> Result<Customer, CustomerError> {
+        let vorname = normalize_required(&draft.vorname, "Vorname")?;
+        let nachname = normalize_required(&draft.nachname, "Nachname")?;
+        let email = normalize_required(&draft.email, "E-Mail")?;
+        let telefon = draft.telefon.trim().to_string();
+        let (kunden_id, booking_id) = normalize_id_pair(&draft.kunden_id, &draft.booking_id)
+            .map_err(CustomerError::Message)?;
         let now = now_iso();
         let customer = Customer {
             id: Uuid::new_v4().to_string(),
@@ -343,6 +472,19 @@ impl CustomerStore {
             nachname,
             email,
             telefon,
+            kunden_id,
+            booking_id,
+            booking_date: draft.booking_date.trim().to_string(),
+            typ: draft.typ.trim().to_string(),
+            handcam_foto: draft.handcam_foto,
+            handcam_video: draft.handcam_video,
+            outside_foto: draft.outside_foto,
+            outside_video: draft.outside_video,
+            ist_bezahlt_handcam_foto: draft.ist_bezahlt_handcam_foto,
+            ist_bezahlt_handcam_video: draft.ist_bezahlt_handcam_video,
+            ist_bezahlt_outside_foto: draft.ist_bezahlt_outside_foto,
+            ist_bezahlt_outside_video: draft.ist_bezahlt_outside_video,
+            media_option: draft.media_option.trim().to_string(),
             processed: false,
             assigned_path: String::new(),
             created_at: now.clone(),
@@ -352,8 +494,13 @@ impl CustomerStore {
         self.with_conn(|conn| {
             conn.execute(
                 "INSERT INTO customers
-                 (id, vorname, nachname, email, telefon, processed, assigned_path, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                 (id, vorname, nachname, email, telefon, processed, assigned_path, created_at, updated_at,
+                  kunden_id, booking_id, booking_date, typ,
+                  handcam_foto, handcam_video, outside_foto, outside_video,
+                  ist_bezahlt_handcam_foto, ist_bezahlt_handcam_video,
+                  ist_bezahlt_outside_foto, ist_bezahlt_outside_video, media_option)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9,
+                         ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)",
                 params![
                     customer.id,
                     customer.vorname,
@@ -364,6 +511,19 @@ impl CustomerStore {
                     customer.assigned_path,
                     customer.created_at,
                     customer.updated_at,
+                    customer.kunden_id,
+                    customer.booking_id,
+                    customer.booking_date,
+                    customer.typ,
+                    bool_i32(customer.handcam_foto),
+                    bool_i32(customer.handcam_video),
+                    bool_i32(customer.outside_foto),
+                    bool_i32(customer.outside_video),
+                    bool_i32(customer.ist_bezahlt_handcam_foto),
+                    bool_i32(customer.ist_bezahlt_handcam_video),
+                    bool_i32(customer.ist_bezahlt_outside_foto),
+                    bool_i32(customer.ist_bezahlt_outside_video),
+                    customer.media_option,
                 ],
             )?;
             Ok(())
@@ -376,6 +536,8 @@ impl CustomerStore {
         let nachname = normalize_required(&input.nachname, "Nachname")?;
         let email = normalize_required(&input.email, "E-Mail")?;
         let telefon = input.telefon.trim().to_string();
+        let (kunden_id, booking_id) = normalize_id_pair(&input.kunden_id, &input.booking_id)
+            .map_err(CustomerError::Message)?;
         let updated_at = now_iso();
 
         self.with_conn(|conn| {
@@ -391,9 +553,34 @@ impl CustomerStore {
             }
             conn.execute(
                 "UPDATE customers
-                 SET vorname = ?2, nachname = ?3, email = ?4, telefon = ?5, updated_at = ?6
+                 SET vorname = ?2, nachname = ?3, email = ?4, telefon = ?5, updated_at = ?6,
+                     kunden_id = ?7, booking_id = ?8, booking_date = ?9, typ = ?10,
+                     handcam_foto = ?11, handcam_video = ?12, outside_foto = ?13, outside_video = ?14,
+                     ist_bezahlt_handcam_foto = ?15, ist_bezahlt_handcam_video = ?16,
+                     ist_bezahlt_outside_foto = ?17, ist_bezahlt_outside_video = ?18,
+                     media_option = ?19
                  WHERE id = ?1",
-                params![input.id, vorname, nachname, email, telefon, updated_at],
+                params![
+                    input.id,
+                    vorname,
+                    nachname,
+                    email,
+                    telefon,
+                    updated_at,
+                    kunden_id,
+                    booking_id,
+                    input.booking_date.trim(),
+                    input.typ.trim(),
+                    bool_i32(input.handcam_foto),
+                    bool_i32(input.handcam_video),
+                    bool_i32(input.outside_foto),
+                    bool_i32(input.outside_video),
+                    bool_i32(input.ist_bezahlt_handcam_foto),
+                    bool_i32(input.ist_bezahlt_handcam_video),
+                    bool_i32(input.ist_bezahlt_outside_foto),
+                    bool_i32(input.ist_bezahlt_outside_video),
+                    input.media_option.trim(),
+                ],
             )?;
             Ok(())
         })?;
@@ -432,7 +619,12 @@ impl CustomerStore {
         self.with_conn(|conn| {
             conn.query_row(
                 "SELECT id, vorname, nachname, email, telefon, processed, assigned_path,
-                        created_at, updated_at
+                        created_at, updated_at,
+                        kunden_id, booking_id, booking_date, typ,
+                        handcam_foto, handcam_video, outside_foto, outside_video,
+                        ist_bezahlt_handcam_foto, ist_bezahlt_handcam_video,
+                        ist_bezahlt_outside_foto, ist_bezahlt_outside_video,
+                        media_option
                  FROM customers WHERE id = ?1",
                 params![id],
                 map_customer,
@@ -442,10 +634,43 @@ impl CustomerStore {
         })
     }
 
+    pub fn preview_id_assign(
+        &self,
+        id: &str,
+        target_path: &Path,
+        crew: &[CrewMember],
+        id_override: Option<&IdAssignOverride>,
+    ) -> Result<IdAssignPreview, CustomerError> {
+        if !target_path.is_dir() {
+            return Err(CustomerError::Message(format!(
+                "Zielordner existiert nicht: {}",
+                target_path.display()
+            )));
+        }
+        let customer = self
+            .get_by_id(id)?
+            .ok_or_else(|| CustomerError::Message("Kunde nicht gefunden".into()))?;
+        if !customer.has_api_ids() {
+            return Err(CustomerError::Message(
+                "Review-Vorschau nur für Kunden mit Kunden- und Buchungs-ID.".into(),
+            ));
+        }
+        let ctx = id_assign_ctx(&customer);
+        Ok(preview_id_assign(
+            target_path,
+            &customer.id,
+            &ctx,
+            crew,
+            id_override,
+        )?)
+    }
+
     pub fn assign_to_folder(
         &self,
         id: &str,
         target_path: &Path,
+        crew: &[CrewMember],
+        id_override: Option<&IdAssignOverride>,
     ) -> Result<AssignResult, CustomerError> {
         if !target_path.is_dir() {
             return Err(CustomerError::Message(format!(
@@ -464,6 +689,16 @@ impl CustomerStore {
             .get_by_id(id)?
             .ok_or_else(|| CustomerError::Message("Kunde nicht gefunden".into()))?;
 
+        if customer.has_api_ids() {
+            if is_folder_busy(target_path) {
+                return Err(CustomerError::Message(
+                    "Ordner ist gerade belegt (Dateien werden noch geschrieben). Bitte kurz warten."
+                        .into(),
+                ));
+            }
+            return self.assign_id_pipeline(&customer, target_path, crew, id_override);
+        }
+
         let content = build_contact_marker_json(
             &customer.vorname,
             &customer.nachname,
@@ -472,15 +707,46 @@ impl CustomerStore {
         )?;
         let file_path = write_fertig_marker(target_path, &content)?;
         let file_path_str = file_path.to_string_lossy().to_string();
+        let folder_path_str = target_path.to_string_lossy().to_string();
+        self.mark_assigned(&customer, &file_path_str)?;
+
+        Ok(AssignResult {
+            file_path: file_path_str,
+            folder_path: folder_path_str,
+        })
+    }
+
+    fn assign_id_pipeline(
+        &self,
+        customer: &Customer,
+        target_path: &Path,
+        crew: &[CrewMember],
+        id_override: Option<&IdAssignOverride>,
+    ) -> Result<AssignResult, CustomerError> {
+        let ctx = id_assign_ctx(customer);
+        let result = run_id_assign_pipeline(target_path, &ctx, crew, id_override)?;
+        let file_path_str = result.fertig_path.to_string_lossy().to_string();
+        let folder_path_str = result.folder_path.to_string_lossy().to_string();
+        self.mark_assigned(customer, &file_path_str)?;
+        Ok(AssignResult {
+            file_path: file_path_str,
+            folder_path: folder_path_str,
+        })
+    }
+
+    fn mark_assigned(
+        &self,
+        customer: &Customer,
+        file_path_str: &str,
+    ) -> Result<(), CustomerError> {
         let now = now_iso();
         let history_id = Uuid::new_v4().to_string();
-
         self.with_conn(|conn| {
             conn.execute(
                 "UPDATE customers
                  SET processed = 1, assigned_path = ?2, updated_at = ?3
                  WHERE id = ?1",
-                params![id, file_path_str, now],
+                params![customer.id, file_path_str, now],
             )?;
             conn.execute(
                 "INSERT INTO assignment_history
@@ -508,10 +774,6 @@ impl CustomerStore {
                 params![ASSIGNMENT_HISTORY_LIMIT as i64],
             )?;
             Ok(())
-        })?;
-
-        Ok(AssignResult {
-            file_path: file_path_str,
         })
     }
 
@@ -674,55 +936,7 @@ pub fn propose_batch_assignments(
 
 fn inspect_media_folder(path: &Path, name: &str) -> Result<MediaFolderInfo, CustomerError> {
     let block_reason = folder_block_reason(path);
-    let mut is_ready = true;
-    let now_ms = system_time_ms();
-
-    match fs::read_dir(path) {
-        Ok(entries) => {
-            for entry in entries {
-                let entry = match entry {
-                    Ok(e) => e,
-                    Err(_) => {
-                        is_ready = false;
-                        break;
-                    }
-                };
-                let ft = match entry.file_type() {
-                    Ok(ft) => ft,
-                    Err(_) => {
-                        is_ready = false;
-                        break;
-                    }
-                };
-                if !ft.is_file() {
-                    continue;
-                }
-                let file_name = entry.file_name();
-                let file_name = file_name.to_string_lossy();
-                if file_name == MARKER_FERTIG || file_name == MARKER_PROCESSING {
-                    continue;
-                }
-                match fs::metadata(entry.path()) {
-                    Ok(meta) => {
-                        if let Ok(modified) = meta.modified() {
-                            if let Ok(elapsed) = modified.duration_since(UNIX_EPOCH) {
-                                if now_ms.saturating_sub(elapsed.as_millis()) < BUSY_WINDOW_MS {
-                                    is_ready = false;
-                                }
-                            }
-                        }
-                    }
-                    Err(_) => {
-                        is_ready = false;
-                        break;
-                    }
-                }
-            }
-        }
-        Err(_) => {
-            is_ready = false;
-        }
-    }
+    let is_ready = !is_folder_busy(path);
 
     let folder_state = if !is_ready {
         FolderState::Busy
@@ -745,6 +959,43 @@ fn inspect_media_folder(path: &Path, name: &str) -> Result<MediaFolderInfo, Cust
 
 fn is_hidden_dir_name(name: &str) -> bool {
     name.starts_with('.')
+}
+
+/// True when any non-marker file was modified within the busy window (copy in progress).
+pub fn is_folder_busy(folder_path: &Path) -> bool {
+    let now_ms = system_time_ms();
+    let Ok(entries) = fs::read_dir(folder_path) else {
+        return true;
+    };
+    for entry in entries {
+        let Ok(entry) = entry else {
+            return true;
+        };
+        let Ok(ft) = entry.file_type() else {
+            return true;
+        };
+        if !ft.is_file() {
+            continue;
+        }
+        let file_name = entry.file_name();
+        let file_name = file_name.to_string_lossy();
+        if file_name == MARKER_FERTIG || file_name == MARKER_PROCESSING {
+            continue;
+        }
+        match fs::metadata(entry.path()) {
+            Ok(meta) => {
+                if let Ok(modified) = meta.modified() {
+                    if let Ok(elapsed) = modified.duration_since(UNIX_EPOCH) {
+                        if now_ms.saturating_sub(elapsed.as_millis()) < BUSY_WINDOW_MS {
+                            return true;
+                        }
+                    }
+                }
+            }
+            Err(_) => return true,
+        }
+    }
+    false
 }
 
 pub fn folder_block_reason(folder_path: &Path) -> Option<String> {
@@ -789,7 +1040,71 @@ fn map_customer(row: &rusqlite::Row<'_>) -> rusqlite::Result<Customer> {
         assigned_path: row.get(6)?,
         created_at: row.get(7)?,
         updated_at: row.get(8)?,
+        kunden_id: row.get(9)?,
+        booking_id: row.get(10)?,
+        booking_date: row.get(11)?,
+        typ: row.get(12)?,
+        handcam_foto: i32_bool(row.get(13)?),
+        handcam_video: i32_bool(row.get(14)?),
+        outside_foto: i32_bool(row.get(15)?),
+        outside_video: i32_bool(row.get(16)?),
+        ist_bezahlt_handcam_foto: i32_bool(row.get(17)?),
+        ist_bezahlt_handcam_video: i32_bool(row.get(18)?),
+        ist_bezahlt_outside_foto: i32_bool(row.get(19)?),
+        ist_bezahlt_outside_video: i32_bool(row.get(20)?),
+        media_option: row.get(21)?,
     })
+}
+
+fn bool_i32(value: bool) -> i32 {
+    if value { 1 } else { 0 }
+}
+
+fn i32_bool(value: i32) -> bool {
+    value != 0
+}
+
+fn migrate_customer_columns(conn: &Connection) -> Result<(), CustomerError> {
+    let columns = [
+        ("kunden_id", "TEXT NOT NULL DEFAULT ''"),
+        ("booking_id", "TEXT NOT NULL DEFAULT ''"),
+        ("booking_date", "TEXT NOT NULL DEFAULT ''"),
+        ("typ", "TEXT NOT NULL DEFAULT ''"),
+        ("handcam_foto", "INTEGER NOT NULL DEFAULT 0"),
+        ("handcam_video", "INTEGER NOT NULL DEFAULT 0"),
+        ("outside_foto", "INTEGER NOT NULL DEFAULT 0"),
+        ("outside_video", "INTEGER NOT NULL DEFAULT 0"),
+        ("ist_bezahlt_handcam_foto", "INTEGER NOT NULL DEFAULT 0"),
+        ("ist_bezahlt_handcam_video", "INTEGER NOT NULL DEFAULT 0"),
+        ("ist_bezahlt_outside_foto", "INTEGER NOT NULL DEFAULT 0"),
+        ("ist_bezahlt_outside_video", "INTEGER NOT NULL DEFAULT 0"),
+        ("media_option", "TEXT NOT NULL DEFAULT ''"),
+    ];
+    for (name, definition) in columns {
+        ensure_column(conn, "customers", name, definition)?;
+    }
+    Ok(())
+}
+
+fn ensure_column(
+    conn: &Connection,
+    table: &str,
+    column: &str,
+    definition: &str,
+) -> Result<(), CustomerError> {
+    let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+    let mut rows = stmt.query([])?;
+    while let Some(row) = rows.next()? {
+        let name: String = row.get(1)?;
+        if name == column {
+            return Ok(());
+        }
+    }
+    conn.execute(
+        &format!("ALTER TABLE {table} ADD COLUMN {column} {definition}"),
+        [],
+    )?;
+    Ok(())
 }
 
 fn normalize_required(value: &str, label: &str) -> Result<String, CustomerError> {
@@ -824,13 +1139,30 @@ mod tests {
         (dir, store)
     }
 
+    fn draft(
+        vorname: &str,
+        nachname: &str,
+        email: &str,
+        telefon: &str,
+    ) -> CustomerDraft {
+        CustomerDraft {
+            vorname: vorname.into(),
+            nachname: nachname.into(),
+            email: email.into(),
+            telefon: telefon.into(),
+            ..CustomerDraft::default()
+        }
+    }
+
     #[test]
     fn save_list_and_filter() {
         let (_dir, store) = open_temp();
         store
-            .save("Anna", "Adler", "a@example.com", "+49111")
+            .save(&draft("Anna", "Adler", "a@example.com", "+49111"))
             .unwrap();
-        store.save("Bernd", "Bauer", "b@example.com", "").unwrap();
+        store
+            .save(&draft("Bernd", "Bauer", "b@example.com", ""))
+            .unwrap();
 
         let all = store.list("", "all").unwrap();
         assert_eq!(all.len(), 2);
@@ -844,17 +1176,52 @@ mod tests {
     }
 
     #[test]
+    fn save_with_api_ids_and_flags_persists() {
+        let (_dir, store) = open_temp();
+        let mut input = draft("Anna", "Adler", "a@example.com", "");
+        input.kunden_id = "3971".into();
+        input.booking_id = "2405".into();
+        input.booking_date = "2026-08-27".into();
+        input.typ = "Outside".into();
+        input.outside_video = true;
+        input.ist_bezahlt_outside_video = true;
+        input.media_option = "ou_v".into();
+        let saved = store.save(&input).unwrap();
+        assert!(saved.has_api_ids());
+        assert_eq!(saved.kunden_id, "3971");
+        assert_eq!(saved.booking_id, "2405");
+        assert!(saved.outside_video);
+        assert_eq!(saved.media_option, "ou_v");
+
+        let by_id = store.list("3971", "all").unwrap();
+        assert_eq!(by_id.len(), 1);
+
+        let err = store
+            .save(&CustomerDraft {
+                vorname: "X".into(),
+                nachname: "Y".into(),
+                email: "x@y.de".into(),
+                kunden_id: "1111".into(),
+                ..CustomerDraft::default()
+            })
+            .unwrap_err();
+        assert!(err.to_string().contains("beide"));
+    }
+
+    #[test]
     fn assign_writes_fertig_marker_and_marks_processed() {
         let (_dir, store) = open_temp();
         let customer = store
-            .save("Max", "Mustermann", "max@example.com", "0123")
+            .save(&draft("Max", "Mustermann", "max@example.com", "0123"))
             .unwrap();
 
         let media = tempdir().unwrap();
         let job = media.path().join("Job-1");
         fs::create_dir_all(&job).unwrap();
 
-        let result = store.assign_to_folder(&customer.id, &job).unwrap();
+        let result = store
+            .assign_to_folder(&customer.id, &job, &[], None)
+            .unwrap();
         assert!(Path::new(&result.file_path).is_file());
 
         let content = fs::read_to_string(&result.file_path).unwrap();
@@ -874,15 +1241,74 @@ mod tests {
     fn assign_blocked_when_processing_marker_exists() {
         let (_dir, store) = open_temp();
         let customer = store
-            .save("Max", "Mustermann", "max@example.com", "")
+            .save(&draft("Max", "Mustermann", "max@example.com", ""))
             .unwrap();
         let media = tempdir().unwrap();
         let job = media.path().join("Job-1");
         fs::create_dir_all(&job).unwrap();
         fs::write(job.join(MARKER_PROCESSING), "{}").unwrap();
 
-        let err = store.assign_to_folder(&customer.id, &job).unwrap_err();
+        let err = store
+            .assign_to_folder(&customer.id, &job, &[], None)
+            .unwrap_err();
         assert!(err.to_string().contains(MARKER_PROCESSING));
+    }
+
+    #[test]
+    fn assign_id_customer_runs_pipeline() {
+        use crate::model::crew::default_crew_list;
+        use crate::model::handoff::{evaluate_manifest_gate, GateDecision, MANIFEST_FILENAME};
+        use crate::model::id_assign::{IdAssignOverride, SUBDIR_OUTSIDE_VIDEO};
+
+        let (_dir, store) = open_temp();
+        let mut input = draft("Roman", "Guest", "r@example.com", "");
+        input.kunden_id = "3971".into();
+        input.booking_id = "2405".into();
+        input.booking_date = "2026-08-27".into();
+        input.typ = "Outside".into();
+        input.outside_video = true;
+        input.ist_bezahlt_outside_video = true;
+        let customer = store.save(&input).unwrap();
+
+        let media = tempdir().unwrap();
+        let job = media.path().join("Roman_Stefan_Robin");
+        fs::create_dir_all(&job).unwrap();
+        let media_file = job.join("jump.mp4");
+        fs::write(&media_file, b"media").unwrap();
+        // Busy-Fenster (3s): mtime zurückdatieren, sonst blockiert frischer Write.
+        let f = fs::File::options().write(true).open(&media_file).unwrap();
+        f.set_modified(SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000))
+            .unwrap();
+        drop(f);
+
+        let result = store
+            .assign_to_folder(
+                &customer.id,
+                &job,
+                &default_crew_list(),
+                Some(&IdAssignOverride {
+                    tandemmaster: Some("Stefan".into()),
+                    videospringer: Some("Robin".into()),
+                    dropzone_suffix: None,
+                }),
+            )
+            .unwrap();
+
+        assert!(Path::new(&result.file_path).is_file());
+        assert!(Path::new(&result.folder_path)
+            .join(MANIFEST_FILENAME)
+            .is_file());
+        assert!(Path::new(&result.folder_path)
+            .join(SUBDIR_OUTSIDE_VIDEO)
+            .join("jump.mp4")
+            .is_file());
+        let content = fs::read_to_string(&result.file_path).unwrap();
+        assert!(content.contains("\"kunden_id\""));
+        assert!(!content.contains("vorname"));
+        match evaluate_manifest_gate(Path::new(&result.folder_path), false) {
+            GateDecision::Ready { .. } => {}
+            other => panic!("expected Ready, got {other:?}"),
+        }
     }
 
     #[test]
@@ -976,6 +1402,19 @@ mod tests {
             nachname: nachname.into(),
             email: format!("{vorname}@ex.de"),
             telefon: String::new(),
+            kunden_id: String::new(),
+            booking_id: String::new(),
+            booking_date: String::new(),
+            typ: String::new(),
+            handcam_foto: false,
+            handcam_video: false,
+            outside_foto: false,
+            outside_video: false,
+            ist_bezahlt_handcam_foto: false,
+            ist_bezahlt_handcam_video: false,
+            ist_bezahlt_outside_foto: false,
+            ist_bezahlt_outside_video: false,
+            media_option: String::new(),
             processed: false,
             assigned_path: String::new(),
             created_at: String::new(),

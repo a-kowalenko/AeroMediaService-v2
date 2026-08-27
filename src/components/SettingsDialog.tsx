@@ -52,7 +52,9 @@ import {
     BrochureSettingsSection,
     type BrochureForm,
 } from "@/components/settings/BrochureSettingsSection";
+import {CrewSettingsSection} from "@/components/settings/CrewSettingsSection";
 import {ExtrasSettingsSection} from "@/components/settings/ExtrasSettingsSection";
+import {DEFAULT_CREW_LIST, parseCrewList, serializeCrewList, type CrewMember} from "@/lib/crew";
 import {
     atsPresenceChipLabel,
     atsPresenceChipTone,
@@ -78,6 +80,7 @@ import {useUiStore} from "@/store/uiStore";
 
 type TabId =
     | "general"
+    | "crew"
     | "bridge"
     | "cloud"
     | "email"
@@ -105,6 +108,7 @@ const TAB_ITEMS: { id: TabId; label: string }[] = [
     {id: "email", label: "E-Mail"},
     {id: "sms", label: "SMS"},
     {id: "shortener", label: "Link-Shortener"},
+    {id: "crew", label: "Crew"},
     {id: "extras", label: "Wartung"},
 ];
 
@@ -146,6 +150,7 @@ type SettingsFormSnapshot = {
         ats_backup_smb_url: string;
     };
     brochure: BrochureForm;
+    crewList: CrewMember[];
     cloudService: "dropbox" | "custom_api";
     dropbox: { db_app_key: string; db_app_secret: string };
     customApi: {
@@ -411,6 +416,9 @@ export function SettingsDialog({
         brochure_export_name: "Infobroschuere.pdf",
         brochure_subdir: "",
     });
+    const [crewList, setCrewList] = useState<CrewMember[]>(() =>
+        DEFAULT_CREW_LIST.map((m) => ({...m, aliases: [...m.aliases]})),
+    );
     const [bridgeStatusLabel, setBridgeStatusLabel] = useState("—");
     const [bridgeInstanceId, setBridgeInstanceId] = useState("");
     const [bridgeBusy, setBridgeBusy] = useState(false);
@@ -494,6 +502,7 @@ export function SettingsDialog({
                 themeMode,
                 general,
                 brochure,
+                crewList,
                 cloudService,
                 dropbox,
                 customApi,
@@ -502,7 +511,7 @@ export function SettingsDialog({
                 shortener,
                 whatsapp,
             }),
-        [themeMode, general, brochure, cloudService, dropbox, customApi, email, sms, shortener, whatsapp],
+        [themeMode, general, brochure, crewList, cloudService, dropbox, customApi, email, sms, shortener, whatsapp],
     );
 
     const isDirty =
@@ -680,6 +689,7 @@ export function SettingsDialog({
                 brochure_enabled,
                 brochure_export_name,
                 brochure_subdir,
+                crew_list_raw,
             ] = await Promise.all([
                 getSetting("monitor_path", ""),
                 getSetting("archive_path", ""),
@@ -716,6 +726,7 @@ export function SettingsDialog({
                 getSetting("brochure_enabled", "false"),
                 getSetting("brochure_export_name", "Infobroschuere.pdf"),
                 getSetting("brochure_subdir", ""),
+                getSetting("crew_list", ""),
             ]);
 
             setGeneral({
@@ -737,6 +748,8 @@ export function SettingsDialog({
                 brochure_export_name: brochure_export_name || "Infobroschuere.pdf",
                 brochure_subdir: brochure_subdir ?? "",
             });
+            const loadedCrew = parseCrewList(crew_list_raw);
+            setCrewList(loadedCrew);
             setBridgeStatusLoading(true);
             void getBridgeStatus()
                 .then((status) => {
@@ -918,6 +931,7 @@ export function SettingsDialog({
                             brochure_export_name: brochure_export_name || "Infobroschuere.pdf",
                             brochure_subdir: brochure_subdir ?? "",
                         },
+                        crewList: loadedCrew,
                         cloudService:
                             selected_cloud_service === "custom_api" ? "custom_api" : "dropbox",
                         dropbox: {
@@ -1109,6 +1123,7 @@ export function SettingsDialog({
                 brochure.brochure_export_name.trim() || "Infobroschuere.pdf",
             );
             await saveSetting("brochure_subdir", brochure.brochure_subdir.trim());
+            await saveSetting("crew_list", serializeCrewList(crewList));
             await saveSetting("ui_theme", themeMode);
             await saveSetting("selected_cloud_service", cloudService);
             await saveSetting(
@@ -1194,6 +1209,7 @@ export function SettingsDialog({
                     themeMode,
                     general: savedGeneral,
                     brochure,
+                    crewList,
                     cloudService,
                     dropbox,
                     customApi,
@@ -1330,7 +1346,7 @@ export function SettingsDialog({
             }}
         >
             <DialogContent
-                className="relative flex h-[min(85vh,42rem)] max-w-2xl flex-col gap-4 overflow-visible"
+                className="relative flex h-[min(85vh,42rem)] max-w-4xl flex-col gap-4 overflow-visible"
                 onPointerDownOutside={(e) => {
                     if (busy) e.preventDefault();
                 }}
@@ -1354,7 +1370,7 @@ export function SettingsDialog({
                         onValueChange={(v) => setTab(v as TabId)}
                         className="flex min-h-0 flex-1 flex-col overflow-hidden"
                     >
-                        <TabsList className="flex h-auto shrink-0 flex-wrap gap-1">
+                        <TabsList className="flex h-auto shrink-0 flex-nowrap gap-1 overflow-x-auto">
                             {TAB_ITEMS.map(({id, label}) => (
                                 <TabsTrigger key={id} value={id}>
                                     {label}
@@ -1918,6 +1934,13 @@ export function SettingsDialog({
                                         )}
                                     </div>
                                 </SettingsSection>
+                            </TabsContent>
+
+                            <TabsContent value="crew" className="mt-4 space-y-4">
+                                <CrewSettingsSection
+                                    value={crewList}
+                                    onChange={setCrewList}
+                                />
                             </TabsContent>
 
                             <TabsContent value="cloud" className="mt-4 space-y-4">

@@ -24,8 +24,8 @@ pub use cloud::{
 };
 pub use customers::{
     assign_customer_to_folder, assign_customers_batch, delete_customer, get_assignment_history,
-    list_customers, list_media_folders_cmd, propose_customer_assignments, save_customer,
-    set_customer_processed, update_customer,
+    list_customers, list_media_folders_cmd, lookup_customer_intake, preview_id_assign,
+    propose_customer_assignments, save_customer, set_customer_processed, update_customer,
 };
 pub use history::{clear_history, delete_history_items, get_history, get_history_entry};
 pub use monitor::{
