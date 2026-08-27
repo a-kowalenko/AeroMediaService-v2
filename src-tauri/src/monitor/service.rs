@@ -219,6 +219,19 @@ fn remove_handoff_entries(
     });
 }
 
+/// Claim-timeout clock runs only while the monitor can process entries.
+/// Bridge `handoff/ready` may arrive while stopped; reset on start so the 90s
+/// window does not expire before the first scan.
+fn arm_handoff_claim_clocks(store: &Mutex<Vec<HandoffPendingEntry>>) {
+    let now = Instant::now();
+    let mut guard = store.lock().unwrap_or_else(|e| e.into_inner());
+    for entry in guard.iter_mut() {
+        if !entry.outbox_written {
+            entry.since = now;
+        }
+    }
+}
+
 fn prune_handoff_entries(
     store: &Mutex<Vec<HandoffPendingEntry>>,
     scan_path: &Path,
@@ -227,18 +240,19 @@ fn prune_handoff_entries(
     let now = Instant::now();
     let mut guard = store.lock().unwrap_or_else(|e| e.into_inner());
     guard.retain(|entry| {
-        if entry.outbox_written {
-            if let Some(at) = entry.outbox_at {
-                return now.saturating_duration_since(at) < HANDOFF_REJECTED_UI_TTL;
-            }
-            return false;
-        }
         let path = scan_path.join(&entry.dir_name);
+        // Upload won (registry or claim marker) — drop even a prior false reject.
         if registry.is_registered(&path) {
             return false;
         }
         let (_, processing_path) = marker_paths(&path);
         if processing_path.is_file() {
+            return false;
+        }
+        if entry.outbox_written {
+            if let Some(at) = entry.outbox_at {
+                return now.saturating_duration_since(at) < HANDOFF_REJECTED_UI_TTL;
+            }
             return false;
         }
         if path.is_dir() {
@@ -250,7 +264,7 @@ fn prune_handoff_entries(
 
 fn handoff_timeout_error(phase: &str) -> (&'static str, String) {
     match phase {
-        HANDOFF_PHASE_WAITING_FOLDER | HANDOFF_PHASE_SIGNALED => (
+        HANDOFF_PHASE_WAITING_FOLDER => (
             CODE_HANDOFF_FOLDER_MISSING,
             "Handoff-Ordner auf dem Share nicht sichtbar.".into(),
         ),
@@ -262,6 +276,7 @@ fn handoff_timeout_error(phase: &str) -> (&'static str, String) {
             CODE_HANDOFF_NO_MEDIA,
             "Keine Medien-Dateien im Handoff-Ordner.".into(),
         ),
+        // `signaled` = folder visible and claimable; do not blame a missing folder.
         _ => (
             CODE_HANDOFF_TIMEOUT,
             "AMS konnte den Handoff-Auftrag nicht übernehmen (Timeout).".into(),
@@ -376,6 +391,8 @@ impl MonitorState {
         if let Some(previous) = task_guard.take() {
             previous.abort();
         }
+
+        arm_handoff_claim_clocks(&self.handoff_pending);
 
         self.running.store(true, Ordering::SeqCst);
         let running = Arc::clone(&self.running);
@@ -561,6 +578,10 @@ async fn wait_until_stopped(running: &AtomicBool) {
 }
 
 /// Claim Bridge-notified folders by explicit path; update UI phase + timeout outbox for ATS.
+///
+/// Claimable folders are always attempted (even past the claim timeout) so a stale
+/// Bridge clock cannot reject a job that `scan_once` would take in the same pass.
+/// Timeout rejection applies only while the folder is still not claim-ready.
 async fn process_handoff_pending(
     scan_path: &Path,
     handoff_pending: &Mutex<Vec<HandoffPendingEntry>>,
@@ -582,6 +603,7 @@ async fn process_handoff_pending(
         }
         let folder = scan_path.join(dir_name);
 
+        let mut claimable = false;
         if !folder.is_dir() {
             entry.phase = HANDOFF_PHASE_WAITING_FOLDER.to_string();
         } else {
@@ -593,9 +615,58 @@ async fn process_handoff_pending(
                 entry.phase = HANDOFF_PHASE_WAITING_FERTIG.to_string();
             } else if !has_uploadable_files(&folder) {
                 entry.phase = HANDOFF_PHASE_WAITING_MEDIA.to_string();
-            } else if entry.phase != HANDOFF_PHASE_REJECTED {
+            } else {
                 entry.phase = HANDOFF_PHASE_SIGNALED.to_string();
+                claimable = true;
             }
+        }
+
+        if claimable {
+            match try_claim_and_enqueue(&folder, ctx).await {
+                ClaimResult::Queued => {
+                    logging::log_info(&format!(
+                        "Handoff-Ordner '{dir_name}' zur Upload-Warteschlange hinzugefügt."
+                    ));
+                    found += 1;
+                }
+                ClaimResult::NoFertigMarker => {
+                    entry.phase = HANDOFF_PHASE_WAITING_FERTIG.to_string();
+                }
+                ClaimResult::NoMedia => {
+                    entry.phase = HANDOFF_PHASE_WAITING_MEDIA.to_string();
+                }
+                ClaimResult::ManifestRejected { code, message } => {
+                    entry.phase = HANDOFF_PHASE_REJECTED.to_string();
+                    entry.error_code = code.clone();
+                    entry.error_message = message.clone();
+                    entry.outbox_written = true;
+                    entry.outbox_at = Some(now);
+                    logging::log_warn(&format!(
+                        "Handoff '{dir_name}' abgelehnt ({code}): {message}"
+                    ));
+                }
+                ClaimResult::CustomerLookupFailed => {
+                    entry.phase = HANDOFF_PHASE_REJECTED.to_string();
+                    entry.error_code = CODE_CUSTOMER_LOOKUP_FAILED.to_string();
+                    entry.error_message = "Customer-Lookup fehlgeschlagen.".into();
+                    entry.outbox_written = true;
+                    entry.outbox_at = Some(now);
+                }
+                ClaimResult::MarkerError(msg) | ClaimResult::IoError(msg) => {
+                    entry.phase = HANDOFF_PHASE_REJECTED.to_string();
+                    entry.error_code = CODE_MARKER_INVALID.to_string();
+                    entry.error_message = msg.clone();
+                    entry.outbox_written = true;
+                    entry.outbox_at = Some(now);
+                    logging::log_error(&format!(
+                        "Handoff '{dir_name}' konnte nicht übernommen werden: {msg}"
+                    ));
+                }
+                ClaimResult::AlreadyProcessing
+                | ClaimResult::AlreadyClaimed
+                | ClaimResult::NotAFolder => {}
+            }
+            continue;
         }
 
         if now.saturating_duration_since(entry.since) >= HANDOFF_CLAIM_TIMEOUT {
@@ -610,55 +681,6 @@ async fn process_handoff_pending(
                 entry.error_message = message;
                 entry.outbox_written = true;
                 entry.outbox_at = Some(now);
-            }
-            continue;
-        }
-
-        if !folder.is_dir() {
-            continue;
-        }
-
-        match try_claim_and_enqueue(&folder, ctx).await {
-            ClaimResult::Queued => {
-                logging::log_info(&format!(
-                    "Handoff-Ordner '{dir_name}' zur Upload-Warteschlange hinzugefügt."
-                ));
-                found += 1;
-            }
-            ClaimResult::NoFertigMarker => {
-                entry.phase = HANDOFF_PHASE_WAITING_FERTIG.to_string();
-            }
-            ClaimResult::NoMedia => {
-                entry.phase = HANDOFF_PHASE_WAITING_MEDIA.to_string();
-            }
-            ClaimResult::ManifestRejected { code, message } => {
-                entry.phase = HANDOFF_PHASE_REJECTED.to_string();
-                entry.error_code = code.clone();
-                entry.error_message = message.clone();
-                entry.outbox_written = true;
-                entry.outbox_at = Some(now);
-                logging::log_warn(&format!(
-                    "Handoff '{dir_name}' abgelehnt ({code}): {message}"
-                ));
-            }
-            ClaimResult::CustomerLookupFailed => {
-                entry.phase = HANDOFF_PHASE_REJECTED.to_string();
-                entry.error_code = CODE_CUSTOMER_LOOKUP_FAILED.to_string();
-                entry.error_message = "Customer-Lookup fehlgeschlagen.".into();
-                entry.outbox_written = true;
-                entry.outbox_at = Some(now);
-            }
-            ClaimResult::MarkerError(msg) | ClaimResult::IoError(msg) => {
-                entry.phase = HANDOFF_PHASE_REJECTED.to_string();
-                entry.error_code = CODE_MARKER_INVALID.to_string();
-                entry.error_message = msg.clone();
-                entry.outbox_written = true;
-                entry.outbox_at = Some(now);
-                logging::log_error(&format!(
-                    "Handoff '{dir_name}' konnte nicht übernommen werden: {msg}"
-                ));
-            }
-            ClaimResult::AlreadyProcessing | ClaimResult::AlreadyClaimed | ClaimResult::NotAFolder => {
             }
         }
     }
@@ -1381,6 +1403,48 @@ mod tests {
     }
 
     #[test]
+    fn prune_handoff_drops_rejected_when_upload_took_over() {
+        let root = tempdir().unwrap();
+        let job = root.path().join("JobRejectedThenClaimed");
+        fs::create_dir(&job).unwrap();
+        fs::write(job.join(MARKER_PROCESSING), b"x").unwrap();
+        let mut entry = sample_handoff("JobRejectedThenClaimed", "cid-rej");
+        entry.phase = HANDOFF_PHASE_REJECTED.to_string();
+        entry.error_code = CODE_HANDOFF_FOLDER_MISSING.into();
+        entry.error_message = "Handoff-Ordner auf dem Share nicht sichtbar.".into();
+        entry.outbox_written = true;
+        entry.outbox_at = Some(Instant::now());
+        let store = Mutex::new(vec![entry]);
+        let registry = UploadQueueRegistry::new();
+        prune_handoff_entries(&store, root.path(), &registry);
+        assert!(
+            store.lock().unwrap().is_empty(),
+            "rejected UI row must drop once claim/upload owns the folder"
+        );
+    }
+
+    #[test]
+    fn arm_handoff_claim_clocks_resets_open_entries_only() {
+        let mut open = sample_handoff("Open", "c1");
+        open.since = Instant::now()
+            .checked_sub(HANDOFF_CLAIM_TIMEOUT + Duration::from_secs(30))
+            .unwrap();
+        let mut rejected = sample_handoff("Rejected", "c2");
+        rejected.phase = HANDOFF_PHASE_REJECTED.to_string();
+        rejected.outbox_written = true;
+        rejected.outbox_at = Some(Instant::now());
+        let old_rejected_since = rejected.since;
+        let store = Mutex::new(vec![open, rejected]);
+        arm_handoff_claim_clocks(&store);
+        let guard = store.lock().unwrap();
+        assert!(
+            Instant::now().saturating_duration_since(guard[0].since) < Duration::from_secs(2),
+            "open entry clock must reset on monitor start"
+        );
+        assert_eq!(guard[1].since, old_rejected_since);
+    }
+
+    #[test]
     fn handoff_timeout_error_maps_phases() {
         use crate::model::handoff::{
             CODE_HANDOFF_FOLDER_MISSING, CODE_HANDOFF_NO_FERTIG, CODE_HANDOFF_NO_MEDIA,
@@ -1398,6 +1462,10 @@ mod tests {
         assert_eq!(
             handoff_timeout_error(HANDOFF_PHASE_WAITING_MEDIA).0,
             CODE_HANDOFF_NO_MEDIA
+        );
+        assert_eq!(
+            handoff_timeout_error(HANDOFF_PHASE_SIGNALED).0,
+            CODE_HANDOFF_TIMEOUT
         );
         assert_eq!(
             handoff_timeout_error("unknown").0,
@@ -1427,6 +1495,36 @@ mod tests {
         let guard = store.lock().unwrap();
         assert!(guard[0].outbox_written);
         assert_eq!(guard[0].phase, HANDOFF_PHASE_REJECTED);
+        assert_eq!(guard[0].error_code, CODE_HANDOFF_FOLDER_MISSING);
+    }
+
+    #[tokio::test]
+    async fn handoff_past_timeout_still_claims_when_folder_ready() {
+        let root = tempdir().unwrap();
+        let share = root.path().join("aktuell");
+        let job = share.join("JobLateClaim");
+        fs::create_dir_all(&job).unwrap();
+        write_media(&job);
+        write_fertig_marker(&job, contact_marker()).unwrap();
+        let cid = "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee";
+        let mut entry = sample_handoff("JobLateClaim", cid);
+        entry.since = Instant::now()
+            .checked_sub(HANDOFF_CLAIM_TIMEOUT + Duration::from_secs(5))
+            .unwrap();
+        entry.phase = HANDOFF_PHASE_SIGNALED.to_string();
+        let store = Mutex::new(vec![entry]);
+        let registry = UploadQueueRegistry::new();
+        let (jobs_tx, mut jobs_rx) = unbounded_channel();
+        let ctx = ctx(&registry, &jobs_tx, "dropbox", root.path().to_str().unwrap());
+        assert_eq!(process_handoff_pending(&share, &store, &ctx).await, 1);
+        assert!(jobs_rx.try_recv().is_ok());
+        assert!(
+            !share.join(".ams-handoff").join(format!("{cid}.json")).is_file(),
+            "must not write a rejected outbox when the folder was claimable"
+        );
+        let guard = store.lock().unwrap();
+        assert!(!guard[0].outbox_written);
+        assert_ne!(guard[0].phase, HANDOFF_PHASE_REJECTED);
     }
 
     fn ctx<'a>(
