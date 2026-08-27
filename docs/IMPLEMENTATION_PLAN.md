@@ -72,8 +72,10 @@
 | Multi-Dropbox-Konten (Native + Custom-API) | ✅ Phase 16 — 16a ✅ · 16b ✅ · 16c ✅ · 16d ✅ |
 | Infobroschüre PDF (Erst-Upload) | ✅ Phase 17 |
 | Release-Kanäle (Beta / Stable / Auto-Latest) | ✅ Phase 18 |
+| Kundenaufnahme ID-Flow + Ordner-Normalisierung | ⬜ Phase 19 — Spec unten · 19a–19d offen |
 
-**Nächste Phase:** Phase 13 / **P6b** — Bridge Path Hints (ATS Health-DTO + Diff); Spec: [`HANDOFF.md`](./HANDOFF.md) §9.3 · ATS = Phase 35
+**Nächste Phase (AMS):** Phase 19 / **19a** — Crew-Roster + Ordnername-Predictor  
+**Parallel (ATS):** Phase 13 / **P6b** — Bridge Path Hints; Spec: [`HANDOFF.md`](./HANDOFF.md) §9.3 · ATS = Phase 35
 
 ---
 
@@ -985,12 +987,142 @@ Nur Phase 18. Danach cargo test && npm run test:scripts.
 
 ---
 
+### Phase 19 — Kundenaufnahme ID-Flow + Job-Ordner-Normalisierung
+
+**Ziel:** Optional `kunden_id` + `booking_id` in der Kundenaufnahme; API-Lookup füllt Kontakt/Medienflags; bei Zuweisung solcher Kunden den **ATS-ID-Flow** lokal nachstellen (Medienlayout → Rename → Manifest → `_fertig.txt`), inkl. robustem TM/VS-Predictor und Review-Dialog bei Unsicherheit.
+
+**Zwei Pfade (verbindlich, kein Hybrid-Marker):**
+
+| Kundendaten | Zuweisung |
+|-------------|-----------|
+| Ohne beide IDs | Unverändert Phase 12: Pure-Contact-`_fertig.txt`, kein Umbau, kein Manifest |
+| Mit beiden IDs | ID-Flow: Busy → Medien umsortieren → Rename → Manifest → API-ID-`_fertig.txt` |
+
+**Vorbild / Referenz (nur lesen):**
+
+```
+@C:\Users\Kowalenko\PycharmProjects\AeroTandemStudio-v2\src-tauri\src\video\marker.rs
+@C:\Users\Kowalenko\PycharmProjects\AeroTandemStudio-v2\src-tauri\src\video\export_paths.rs
+@C:\Users\Kowalenko\PycharmProjects\AeroTandemStudio-v2\src-tauri\src\video\handoff_manifest.rs
+@C:\Users\Kowalenko\PycharmProjects\AeroTandemStudio-v2\src\lib\tauri.ts   (DEFAULT_CREW_LIST)
+AMS: src-tauri/src/model/marker.rs (build_kunde_from_customer, media_option)
+AMS: src-tauri/src/storage/customers.rs (assign_to_folder, Pure Contact)
+AMS: docs/HANDOFF.md §5–6 (Schreibreihenfolge, Manifest)
+```
+
+**Produktregeln (abgestimmt):**
+
+1. **Medienziel** aus gebuchtem Typ/Flags: Videos → `Outside_Video` oder `Handcam_Video`; Fotos → `Outside_Foto` oder `Handcam_Foto`. Nur Ordner für gebuchte Medienarten anlegen; bereits vorhandene Zielordner weiter befüllen.
+2. **Rename** nach ATS: `{YYYYMMDD}_{Gast}_TA_{TM}[_V_{VS}][_Dropzone]`. Gast aus Kundendaten (sanitized). `_V_{VS}` nur bei Outside-Video.
+3. **Datum:** aus Customer-API-Lookup; fehlt → heute. **Nicht** aus Ordnerpräfix (Tippfehler).
+4. **TM/VS:** aus Original-Ordnernamen + Crew-Liste (Rollen + Aliases) mit Confidence; bei Unsicherheit oder Outside ohne VS → Review-Dialog.
+5. **Marker:** wie ATS ID-Mode (`kunden_id`, `booking_id`, `type`, acht Media-/Paid-Flags; kein PII).
+6. **Manifest:** Schema wie ATS; `producer.app = "AeroMediaService"` (AMS als Quelle); `marker_hint.format = "api_id"`.
+7. **Lookup:** beim Ausfüllen beider IDs in der Aufnahme (Diff bei Konflikten: anzeigen, API übernehmen oder Formular behalten). Nach Zuweisung erneuter Lookup durch normalen Monitor-ID-Flow.
+8. **Kollisionen:** `(1)`, `(2)`, …; Nicht-Medien bleiben (inkl. ihrer Subordner); leere Ordner nach Medien-Move löschen, aber nicht wenn Nicht-Medien darin liegen.
+9. **Busy:** während Umbau sperren; Reihenfolge strikt: Umbau → Rename → Manifest → `_fertig.txt`.
+10. **Batch:** gleicher ID-Umbau-Flow, sequentiell pro Ordner.
+
+**Slices (eine pro Session):**
+
+#### 19a — Crew-Roster + Ordnername-Predictor
+
+- [ ] Config: `crew_list` analog ATS (`name`, `tandemmaster`, `videospringer`, **`aliases: string[]`**)
+- [ ] Defaults aus ATS-`DEFAULT_CREW_LIST` + sinnvolle Start-Aliases (z. B. Cornelius→`Corni`)
+- [ ] Settings-UI: Crew pflegen (Rollen + Aliases hinzufügen/entfernen)
+- [ ] Modul `folder_rename` / Predictor: Tokenisieren (Whitespace/`_`/`-`, CamelCase, `TACorni`), Noise droppen (Load/L#, Gera/G, Media-Codes), Struktur-Marker (`TA`/`TD`→TA), Crew-Match inkl. Aliases
+- [ ] Confidence + `needs_review`-Regeln (TM fehlt/unsicher; Outside-Video ohne VS; Mehrfachkandidaten)
+- [ ] Dropzone-Suffix aus Ordner ableiten wenn klar (`G`/`Gera`→`_G`), sonst optional/leer
+- [ ] Unit-Tests: Gold-Set aus den abgestimmten Beispielordnern (Roman→Stefan+Robin, Niels→Cornelius, Christin→Futti, Emilia `TD`→Ralph, Sabine `F`+Ralph, …)
+
+**Nicht in 19a:** Intake-UI, Assign-Pipeline, Manifest-Schreiben.
+
+#### 19b — Kundenaufnahme: IDs, Lookup, Persistenz
+
+- [ ] `customers.db` erweitern: `kunden_id`, `booking_id`, Buchungsdatum (optional), `typ`/Media-Flags (acht Booleans + Paid), Roh-`media_option` optional
+- [ ] Formular ganz oben: optionale `kunden_id` + `booking_id`
+- [ ] Wenn beide sicher gefüllt: Customer-API-Lookup (bestehender Client); leere Kontaktfelder füllen; Medienflags setzen
+- [ ] Bei Unterschieden: Diff-UI (Feldliste API vs. Formular) → pro Konflikt / global: API übernehmen oder Formular behalten
+- [ ] Speichern nur mit konsistentem Zustand; Kundenliste zeigt ID-Badge wenn IDs gesetzt
+- [ ] Edit-Dialog: IDs/Flags sichtbar/editierbar wo sinnvoll
+- [ ] Ohne IDs: Verhalten Phase 12 unverändert
+
+**Nicht in 19b:** Ordner-Umbau bei Assign (weiter Pure Contact wenn ohne IDs; mit IDs Assign erst ab 19c/19d).
+
+#### 19c — Assign-Backend: Layout, Rename, Manifest, ID-Marker
+
+- [ ] Verzweigung in `assign_to_folder` / Batch: mit IDs → ID-Pipeline; ohne → Pure Contact
+- [ ] Busy-Sperre (FolderState Busy / Belegt-Check inkl. laufendem Umbau)
+- [ ] Rekursiv Medien finden; nach Flags in Ziel-Subdirs verschieben; Kollision `(1)`…; Nicht-Medien unangetastet; leere Ordner aufräumen
+- [ ] Zielname bauen (Datum Lookup/heute, Gast, TM/VS aus Predictor-Ergebnis oder Caller-Override, Dropzone)
+- [ ] Ordner umbenennen (Konfliktbehandlung wenn Zielname existiert)
+- [ ] `_ams_manifest.v1.json` atomar (Integrity size; producer AMS; `api_id` hint; alle Upload-relevanten Dateien inkl. Nicht-Medien-Pfade)
+- [ ] `_fertig.txt` atomar wie ATS ID-Marker
+- [ ] Reihenfolge verbindlich; bei Fehler kein Fertig-Marker; klarer Fehlerstatus / teilweiser Rollback soweit machbar
+- [ ] Unit-Tests: Layout-Move, Kollision, leere Ordner, Marker-JSON, Manifest-Gate ready
+
+**Nicht in 19c:** Review-Dialog-UI (Predictor-Override kommt als Parameter); Settings Crew nur nutzen, nicht bauen.
+
+#### 19d — Assign-UI: Review-Dialog, Batch, Integration
+
+- [ ] Vor ID-Assign: Predictor aufrufen; wenn `needs_review` oder Outside ohne VS → Dialog
+- [ ] Dialog: Live-Vorschau Zielordnername; Felder TM/VS (Crew-Combobox, Rollenfilter); vorausgefüllt; **fehlende Pflichtfelder** markierter Border + Focus
+- [ ] Bestätigen erst wenn Pflichtfelder gesetzt; dann 19c-Pipeline
+- [ ] Batch: sequentiell; pro unsicherer Zeile Dialog (oder Zeilen-Review in Batch-UI); sichere Zeilen still
+- [ ] Fortschritt/Fehler pro Assign sichtbar; Busy während Lauf
+- [ ] Manuelle Abnahme: ID-Kunde → unstrukturierter Ordner → fertiger ATS-artiger Job → Monitor Claim/Upload
+
+**DoD (Phase 19 gesamt)**
+
+- [ ] Zwei Pfade klar getrennt (kein Hybrid-Marker)
+- [ ] Gold-Set Predictor-Tests grün; Review erzwingt VS bei Outside ohne Treffer
+- [ ] Datum nur Lookup/heute
+- [ ] Crew-Aliases in Settings pflegbar
+- [ ] Manifest + ID-`_fertig` → Gate Ready / Legacy nicht für ID-Pfad
+- [ ] `cargo test` + `npm run tauri dev`
+
+**Abhängigkeiten:** Phase 12 (Kunden-UI), 2/5 (Marker + Customer API), 13 (Manifest-Schema/Gate).  
+**Nicht-Ziele:** Pure-Contact abschaffen; Ordnerdatum als Datumsquelle; ATS-Crew-Sync über Bridge (optional später); Hash-Marker (`kunden_id_hash`) in der Aufnahme.
+
+**Agent-Prompts:**
+
+```
+Implementiere Phase 19 Teilphase 19a aus @docs/IMPLEMENTATION_PLAN.md
+Regeln: @AGENTS.md
+Nur 19a (Crew + Predictor + Tests). Kein Assign-Umbau.
+Danach cargo test && npm run tauri dev.
+```
+
+```
+Implementiere Phase 19 Teilphase 19b aus @docs/IMPLEMENTATION_PLAN.md
+Regeln: @AGENTS.md
+Nur 19b (IDs, Lookup, Diff, Persistenz). Kein Ordner-Umbau.
+Danach cargo test && npm run tauri dev.
+```
+
+```
+Implementiere Phase 19 Teilphase 19c aus @docs/IMPLEMENTATION_PLAN.md
+Regeln: @AGENTS.md
+Nur 19c (Assign-Backend ID-Pipeline). Review-UI = 19d.
+Danach cargo test && npm run tauri dev.
+```
+
+```
+Implementiere Phase 19 Teilphase 19d aus @docs/IMPLEMENTATION_PLAN.md
+Regeln: @AGENTS.md
+Nur 19d (Review-Dialog, Batch, Integration).
+Danach cargo test && npm run tauri dev.
+```
+
+---
+
 ## 10. Teststrategie
 
 - Rust Unit-Tests für Marker, Status, Payload-Builder, Checkpoint-Logik
 - Ab Phase 13: Manifest-Validierung, Gate (Legacy vs. Handoff), Ignore `.ams-handoff`
 - Ab Phase 17: Broschüre-Injektion (Erst-Upload only, Append skip, Idempotenz, 5 MB-Limit)
 - Ab Phase 18: SemVer/Prerelease-Ordering, Changelog Beta-Snapshot, `resolve_best_update`
+- Ab Phase 19: Crew/Alias-Match, Ordnername-Predictor (Gold-Set), ID-Marker-JSON, Medien-Layout-Move, Manifest nach AMS-Assign
 - Legacy `_test_*.py` als Spezifikation, nicht ausführen
 - Manuelle Abnahme: Monitor → Upload → Notify → Archiv
 - Ab Phase 10: CI auf Win/Mac/Linux
@@ -1029,3 +1161,4 @@ Updater-Endpoint und Signing: siehe [`docs/RELEASE.md`](./RELEASE.md) (analog Ae
 | 16 | Multi-Dropbox-Konten (Native + Custom-API) | ✅ 16a ✅ · 16b ✅ · 16c ✅ · 16d ✅ |
 | 17 | Infobroschüre PDF (Erst-Upload) | ✅ |
 | 18 | Release-Kanäle (Beta / Stable / Auto-Latest) | ✅ |
+| 19 | Kundenaufnahme ID-Flow + Ordner-Normalisierung | ⬜ 19a–19d offen |
