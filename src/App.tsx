@@ -59,6 +59,9 @@ function App() {
   const [version, setVersion] = useState<string>("…");
   const [monitorBusy, setMonitorBusy] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsInitialTab, setSettingsInitialTab] = useState<
+    "general" | "bridge"
+  >("general");
   const [atsClientsOpen, setAtsClientsOpen] = useState(false);
   const [setupWizardOpen, setSetupWizardOpen] = useState(false);
   const [splashOpen, setSplashOpen] = useState(true);
@@ -507,7 +510,12 @@ function App() {
                 <span className="hidden sm:inline">Start</span>
               </Button>
             )}
-            <SettingsCluster onOpenSettings={() => setSettingsOpen(true)} />
+            <SettingsCluster
+              onOpenSettings={() => {
+                setSettingsInitialTab("general");
+                setSettingsOpen(true);
+              }}
+            />
           </>
         }
       >
@@ -556,7 +564,10 @@ function App() {
             variant="secondary"
             size="sm"
             className="shrink-0"
-            onClick={() => setSettingsOpen(true)}
+            onClick={() => {
+              setSettingsInitialTab("bridge");
+              setSettingsOpen(true);
+            }}
           >
             Bridge-Einstellungen
           </Button>
@@ -619,9 +630,11 @@ function App() {
 
       <SettingsDialog
         open={settingsOpen && !(updateDialogOpen && updateInstalling)}
+        initialTab={settingsInitialTab}
         onClose={() => {
           if (updateDialogOpen || updateInstalling) return;
           setSettingsOpen(false);
+          setSettingsInitialTab("general");
           bumpCloudChips();
           void refreshPathHintsWarning();
         }}
@@ -632,6 +645,7 @@ function App() {
         onRequestVersionSwitch={openVersionSwitchDialog}
         onOpenSetupWizard={() => {
           setSettingsOpen(false);
+          setSettingsInitialTab("general");
           setSetupWizardOpen(true);
         }}
       />

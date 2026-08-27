@@ -72,11 +72,13 @@ import {CONNECTION_STATUS_CHANGED} from "@/lib/events";
 import {showAppToast} from "@/lib/toast";
 import {eventTypeLabel} from "@/lib/atsActivityDisplay";
 import {evaluatePathHints, formatPathsV1Status} from "@/lib/pathHints";
+import {SmbUrlField} from "@/components/SmbUrlField";
 import {useThemeStore, type ThemeMode} from "@/store/themeStore";
 import {useUiStore} from "@/store/uiStore";
 
 type TabId =
     | "general"
+    | "bridge"
     | "cloud"
     | "email"
     | "sms"
@@ -86,6 +88,8 @@ type TabId =
 type Props = {
     open: boolean;
     onClose: () => void;
+    /** Open on this tab when the dialog becomes visible (e.g. Bridge banner). */
+    initialTab?: TabId;
     appVersion?: string;
     platformHint?: string | null;
     installBlockedReason?: string | null;
@@ -96,6 +100,7 @@ type Props = {
 
 const TAB_ITEMS: { id: TabId; label: string }[] = [
     {id: "general", label: "Allgemein"},
+    {id: "bridge", label: "Bridge"},
     {id: "cloud", label: "Cloud-Dienst"},
     {id: "email", label: "E-Mail"},
     {id: "sms", label: "SMS"},
@@ -369,6 +374,7 @@ async function pickDirectory(current: string): Promise<string | null> {
 export function SettingsDialog({
                                    open: isOpen,
                                    onClose,
+                                   initialTab = "general",
                                    appVersion = "",
                                    platformHint = null,
                                    installBlockedReason = null,
@@ -381,7 +387,7 @@ export function SettingsDialog({
     const showError = useUiStore((s) => s.showError);
     const showSuccess = useUiStore((s) => s.showSuccess);
     const confirm = useUiStore((s) => s.confirm);
-    const [tab, setTab] = useState<TabId>("general");
+    const [tab, setTab] = useState<TabId>(initialTab);
     const [busy, setBusy] = useState(false);
     const [loadError, setLoadError] = useState("");
     const [savedSnapshot, setSavedSnapshot] = useState<SettingsFormSnapshot | null>(null);
@@ -1000,8 +1006,9 @@ export function SettingsDialog({
 
     useEffect(() => {
         if (!isOpen) return;
+        setTab(initialTab);
         void loadAll();
-    }, [isOpen, loadAll]);
+    }, [isOpen, initialTab, loadAll]);
 
     // Keep Custom-API status in sync with backend events while Settings is open.
     useEffect(() => {
@@ -1027,7 +1034,7 @@ export function SettingsDialog({
     }, [isOpen, cloudService]);
 
     useEffect(() => {
-        if (!isOpen || tab !== "general") return;
+        if (!isOpen || tab !== "bridge") return;
         void loadAtsHosts();
         const timer = window.setInterval(() => {
             void loadAtsHosts();
@@ -1036,7 +1043,7 @@ export function SettingsDialog({
     }, [isOpen, tab, loadAtsHosts]);
 
     useEffect(() => {
-        if (!isOpen || tab !== "general" || !selectedAtsHostId) {
+        if (!isOpen || tab !== "bridge" || !selectedAtsHostId) {
             setSelectedAtsDetails(null);
             return;
         }
@@ -1440,6 +1447,43 @@ export function SettingsDialog({
                                     </div>
                                 </SettingsSection>
 
+                                <BrochureSettingsSection
+                                    active={isOpen && tab === "general"}
+                                    value={brochure}
+                                    onChange={setBrochure}
+                                />
+
+                                <SettingsSection
+                                    title="Darstellung"
+                                    description="Hell- oder Dunkelmodus der Oberfläche."
+                                >
+                                    <div className="flex flex-wrap gap-2">
+                                        {(["dark", "light"] as ThemeMode[]).map((mode) => (
+                                            <Button
+                                                key={mode}
+                                                type="button"
+                                                variant={themeMode === mode ? "default" : "secondary"}
+                                                onClick={() => {
+                                                    setThemeMode(mode);
+                                                    void saveSetting("ui_theme", mode);
+                                                    setSavedSnapshot((prev) =>
+                                                        prev ? {...prev, themeMode: mode} : prev,
+                                                    );
+                                                }}
+                                            >
+                                                {mode === "dark" ? (
+                                                    <Moon className="h-4 w-4"/>
+                                                ) : (
+                                                    <Sun className="h-4 w-4"/>
+                                                )}
+                                                {mode === "dark" ? "Dunkel" : "Hell"}
+                                            </Button>
+                                        ))}
+                                    </div>
+                                </SettingsSection>
+                            </TabsContent>
+
+                            <TabsContent value="bridge" className="mt-4 space-y-4">
                                 <SettingsSection
                                     title="LAN-Bridge (ATS)"
                                     description="Optionaler Control-Plane-Server im LAN (inkl. mDNS-Advertise _ams-bridge._tcp). Datei-Handoff funktioniert auch ohne Bridge."
@@ -1573,28 +1617,28 @@ export function SettingsDialog({
                                                         ) : null}
                                                     </div>
                                                 ) : null}
-                                                <Field label="ATS Primär-Share (smb:// …)">
-                                                    <Input
+                                                <Field label="ATS Primär-Share">
+                                                    <SmbUrlField
                                                         value={general.ats_primary_smb_url}
-                                                        onChange={(e) =>
+                                                        onChange={(v) =>
                                                             setGeneral((p) => ({
                                                                 ...p,
-                                                                ats_primary_smb_url: e.target.value,
+                                                                ats_primary_smb_url: v,
                                                             }))
                                                         }
-                                                        placeholder="smb://169.254.169.254/aktuell"
+                                                        aria-label="Primär-Share Protokoll"
                                                     />
                                                 </Field>
                                                 <Field label="ATS Backup-Share (optional)">
-                                                    <Input
+                                                    <SmbUrlField
                                                         value={general.ats_backup_smb_url}
-                                                        onChange={(e) =>
+                                                        onChange={(v) =>
                                                             setGeneral((p) => ({
                                                                 ...p,
-                                                                ats_backup_smb_url: e.target.value,
+                                                                ats_backup_smb_url: v,
                                                             }))
                                                         }
-                                                        placeholder="smb://169.254.169.254/aktuell-backup"
+                                                        aria-label="Backup-Share Protokoll"
                                                     />
                                                 </Field>
                                                 <p className="text-[11px] text-muted">
@@ -1872,41 +1916,6 @@ export function SettingsDialog({
                                                 </div>
                                             </div>
                                         )}
-                                    </div>
-                                </SettingsSection>
-
-                                <BrochureSettingsSection
-                                    active={isOpen && tab === "general"}
-                                    value={brochure}
-                                    onChange={setBrochure}
-                                />
-
-                                <SettingsSection
-                                    title="Darstellung"
-                                    description="Hell- oder Dunkelmodus der Oberfläche."
-                                >
-                                    <div className="flex flex-wrap gap-2">
-                                        {(["dark", "light"] as ThemeMode[]).map((mode) => (
-                                            <Button
-                                                key={mode}
-                                                type="button"
-                                                variant={themeMode === mode ? "default" : "secondary"}
-                                                onClick={() => {
-                                                    setThemeMode(mode);
-                                                    void saveSetting("ui_theme", mode);
-                                                    setSavedSnapshot((prev) =>
-                                                        prev ? {...prev, themeMode: mode} : prev,
-                                                    );
-                                                }}
-                                            >
-                                                {mode === "dark" ? (
-                                                    <Moon className="h-4 w-4"/>
-                                                ) : (
-                                                    <Sun className="h-4 w-4"/>
-                                                )}
-                                                {mode === "dark" ? "Dunkel" : "Hell"}
-                                            </Button>
-                                        ))}
                                     </div>
                                 </SettingsSection>
                             </TabsContent>
