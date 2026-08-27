@@ -483,6 +483,7 @@ export function AppendMediaDialog({
       <DialogContent
         hideCloseButton
         className="relative z-[55] !flex h-[min(88vh,720px)] w-[min(1100px,96vw)] max-w-none flex-col gap-0 overflow-hidden p-0"
+        overlayClassName="z-[55]"
       >
         <header className="grid shrink-0 grid-cols-[minmax(5.5rem,1fr)_auto_minmax(5.5rem,1fr)] items-center border-b border-border/60 px-3 py-2">
           <button

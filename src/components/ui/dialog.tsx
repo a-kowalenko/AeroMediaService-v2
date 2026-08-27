@@ -43,7 +43,8 @@ export const DialogContent = React.forwardRef<
 
   return (
     <DialogPortal>
-      <DialogOverlay className={overlayClassName} />
+      {/* Keep overlay on the same layer as the panel wrapper (className z-* alone used to leave overlay at z-50). */}
+      <DialogOverlay className={cn(layerZ, overlayClassName)} />
       {/*
         Flex-center the panel without transform on Content, so portaled Select/Combobox
         fixed coords stay correct — and WebKit (macOS) doesn't break on inset+m-auto+h-fit.
