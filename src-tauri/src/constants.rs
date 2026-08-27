@@ -47,6 +47,8 @@ pub fn setting_default(key: &str) -> Option<&'static str> {
         "scan_interval" => Some(DEFAULT_SCAN_INTERVAL),
         "folder_stability_enabled" => Some("true"),
         "folder_stability_seconds" => Some(DEFAULT_FOLDER_STABILITY_SECONDS),
+        // Last intentional monitor start/stop; auto-stops (cloud disconnect) do not clear this.
+        "monitoring_enabled" => Some("true"),
         "manifest_required" => Some("false"),
         "bridge_enabled" => Some("false"),
         "bridge_bind" => Some("0.0.0.0:8787"),
@@ -192,6 +194,7 @@ mod tests {
         assert_eq!(setting_default("scan_interval"), Some("10"));
         assert_eq!(setting_default("folder_stability_enabled"), Some("true"));
         assert_eq!(setting_default("folder_stability_seconds"), Some("15"));
+        assert_eq!(setting_default("monitoring_enabled"), Some("true"));
         assert_eq!(setting_default("manifest_required"), Some("false"));
         assert_eq!(setting_default("bridge_enabled"), Some("false"));
         assert_eq!(setting_default("bridge_bind"), Some("0.0.0.0:8787"));

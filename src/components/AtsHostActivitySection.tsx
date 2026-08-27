@@ -1,5 +1,5 @@
 import {ChevronDown} from "lucide-react";
-import {useCallback, useEffect, useMemo, useState} from "react";
+import {useCallback, useEffect, useMemo, useRef, useState} from "react";
 import {AtsActivityEventCard} from "@/components/AtsActivityEventCard";
 import {Spinner} from "@/components/Spinner";
 import {Button} from "@/components/ui/button";
@@ -72,17 +72,20 @@ function HealthRunCard({entries}: {entries: AtsActivityEntry[]}) {
 
 type Props = {
   instanceId: string;
+  /** Bump to soft-reload without blanking the list. */
+  refreshToken?: number;
 };
 
-export function AtsHostActivitySection({instanceId}: Props) {
+export function AtsHostActivitySection({instanceId, refreshToken = 0}: Props) {
   const [items, setItems] = useState<AtsActivityEntry[]>([]);
   const [total, setTotal] = useState(0);
   const [hasMore, setHasMore] = useState(false);
   const [loading, setLoading] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState("");
+  const lastSoftTokenRef = useRef(0);
 
-  const loadInitial = useCallback(async (id: string) => {
+  const loadInitial = useCallback(async (id: string, soft: boolean) => {
     const trimmed = id.trim();
     if (!trimmed) {
       setItems([]);
@@ -90,7 +93,7 @@ export function AtsHostActivitySection({instanceId}: Props) {
       setHasMore(false);
       return;
     }
-    setLoading(true);
+    if (!soft) setLoading(true);
     setError("");
     try {
       const page = await getAtsHostActivity(trimmed, 0, ATS_ACTIVITY_PAGE_SIZE);
@@ -98,9 +101,11 @@ export function AtsHostActivitySection({instanceId}: Props) {
       setTotal(page.total);
       setHasMore(page.has_more);
     } catch (err) {
-      setItems([]);
-      setTotal(0);
-      setHasMore(false);
+      if (!soft) {
+        setItems([]);
+        setTotal(0);
+        setHasMore(false);
+      }
       setError(String(err));
     } finally {
       setLoading(false);
@@ -108,8 +113,14 @@ export function AtsHostActivitySection({instanceId}: Props) {
   }, []);
 
   useEffect(() => {
-    void loadInitial(instanceId);
+    void loadInitial(instanceId, false);
   }, [instanceId, loadInitial]);
+
+  useEffect(() => {
+    if (refreshToken <= 0 || refreshToken === lastSoftTokenRef.current) return;
+    lastSoftTokenRef.current = refreshToken;
+    void loadInitial(instanceId, true);
+  }, [refreshToken, instanceId, loadInitial]);
 
   const loadMore = useCallback(async () => {
     const trimmed = instanceId.trim();

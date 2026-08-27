@@ -1,7 +1,8 @@
-import {FormEvent, type ReactNode, useCallback, useEffect, useMemo, useState} from "react";
+import {FormEvent, type ReactNode, useCallback, useEffect, useMemo, useRef, useState} from "react";
 import {listen} from "@tauri-apps/api/event";
 import {open as openDirectoryDialog} from "@tauri-apps/plugin-dialog";
-import {FolderOpen, Moon, Sun, AlertTriangle} from "lucide-react";
+import {FolderOpen, Moon, RefreshCw, Sun, AlertTriangle} from "lucide-react";
+import {cn, ensureMinDuration} from "@/lib/utils";
 import {Spinner} from "@/components/Spinner";
 import {StatusChip} from "@/components/StatusChip";
 import {SettingsSection} from "@/components/settings/SettingsSection";
@@ -431,6 +432,12 @@ export function SettingsDialog({
     const [selectedAtsDetails, setSelectedAtsDetails] = useState<AtsHostDetails | null>(null);
     const [atsDetailsLoading, setAtsDetailsLoading] = useState(false);
     const [atsRemovalBusy, setAtsRemovalBusy] = useState(false);
+    const [atsActivityRefreshToken, setAtsActivityRefreshToken] = useState(0);
+    const atsHostsLoadingRef = useRef(false);
+    const selectedAtsHostIdRef = useRef(selectedAtsHostId);
+    selectedAtsHostIdRef.current = selectedAtsHostId;
+    const selectedAtsDetailsRef = useRef(selectedAtsDetails);
+    selectedAtsDetailsRef.current = selectedAtsDetails;
 
     const [cloudService, setCloudService] = useState<"dropbox" | "custom_api">("dropbox");
     const [dropbox, setDropbox] = useState({
@@ -565,43 +572,52 @@ export function SettingsDialog({
         pathHintsStatus.suggested_primary_smb_url.length > 0 &&
         (pathHintsStatus.drift === "missing_primary" || pathHintsStatus.drift === "drift");
 
-    const loadAtsHosts = useCallback(async () => {
-        setAtsHostsLoading(true);
-        setAtsHostsError("");
-        try {
-            const items = await getAtsHostsSummary(60);
-            setAtsHosts(items);
-            setSelectedAtsHostId((prev) => {
-                if (prev && items.some((host) => host.instance_id === prev)) return prev;
-                return defaultAtsHostSelection(items);
-            });
-        } catch (err) {
-            setAtsHosts([]);
-            setSelectedAtsHostId("");
-            setSelectedAtsDetails(null);
-            setAtsHostsError(String(err));
-        } finally {
-            setAtsHostsLoading(false);
-        }
-    }, []);
-
-    const loadAtsDetails = useCallback(async (instanceId: string) => {
+    const loadAtsDetails = useCallback(async (instanceId: string, soft = false) => {
         const id = instanceId.trim();
         if (!id) {
             setSelectedAtsDetails(null);
             return;
         }
-        setAtsDetailsLoading(true);
+        if (!soft) setAtsDetailsLoading(true);
         try {
             const details = await getAtsHostDetails(id, 60, 100);
             setSelectedAtsDetails(details);
         } catch (err) {
-            setSelectedAtsDetails(null);
+            if (!soft) setSelectedAtsDetails(null);
             setAtsHostsError(String(err));
         } finally {
-            setAtsDetailsLoading(false);
+            if (!soft) setAtsDetailsLoading(false);
         }
     }, []);
+
+    const loadAtsHosts = useCallback(async () => {
+        if (atsHostsLoadingRef.current) return;
+        atsHostsLoadingRef.current = true;
+        setAtsHostsLoading(true);
+        setAtsHostsError("");
+        const startedAt = Date.now();
+        try {
+            const items = await getAtsHostsSummary(60);
+            setAtsHosts(items);
+            let nextId = selectedAtsHostIdRef.current;
+            if (!nextId || !items.some((host) => host.instance_id === nextId)) {
+                nextId = defaultAtsHostSelection(items);
+            }
+            setSelectedAtsHostId(nextId);
+            if (nextId) {
+                const soft = selectedAtsDetailsRef.current?.host.instance_id === nextId;
+                await loadAtsDetails(nextId, soft);
+            }
+            setAtsActivityRefreshToken((n) => n + 1);
+        } catch (err) {
+            // Soft refresh: keep last known hosts so counts/list do not flicker empty.
+            setAtsHostsError(String(err));
+        } finally {
+            await ensureMinDuration(startedAt, 450);
+            atsHostsLoadingRef.current = false;
+            setAtsHostsLoading(false);
+        }
+    }, [loadAtsDetails]);
 
     const forgetSelectedAtsHost = useCallback(async () => {
         if (!selectedAtsHost || !canForgetAtsHost(selectedAtsHost)) return;
@@ -1061,7 +1077,8 @@ export function SettingsDialog({
             setSelectedAtsDetails(null);
             return;
         }
-        void loadAtsDetails(selectedAtsHostId);
+        if (selectedAtsDetailsRef.current?.host.instance_id === selectedAtsHostId) return;
+        void loadAtsDetails(selectedAtsHostId, false);
     }, [isOpen, tab, selectedAtsHostId, loadAtsDetails]);
 
     async function saveAll(event: FormEvent) {
@@ -1527,18 +1544,30 @@ export function SettingsDialog({
                                                     }`}
                                                     onClick={() => setBridgeView("clients")}
                                                 >
-                                                    ATS-Clients ({atsHostsLoading ? "…" : connectedAtsHostsCount})
+                                                    ATS-Clients ({connectedAtsHostsCount})
                                                 </button>
                                             </div>
                                             {bridgeView === "clients" ? (
                                                 <Button
                                                     type="button"
                                                     variant="secondary"
-                                                    size="sm"
+                                                    size="icon"
+                                                    className={cn(
+                                                        "h-8 w-8",
+                                                        atsHostsLoading && "disabled:opacity-100",
+                                                    )}
                                                     disabled={atsHostsLoading}
                                                     onClick={() => void loadAtsHosts()}
+                                                    title="Aktualisieren"
+                                                    aria-label="Aktualisieren"
+                                                    aria-busy={atsHostsLoading}
                                                 >
-                                                    Aktualisieren
+                                                    <RefreshCw
+                                                        className={cn(
+                                                            "h-3.5 w-3.5",
+                                                            atsHostsLoading && "animate-spin",
+                                                        )}
+                                                    />
                                                 </Button>
                                             ) : null}
                                         </div>
@@ -1773,7 +1802,7 @@ export function SettingsDialog({
                                                             Verbundene Clients
                                                         </p>
                                                         <p className="mt-1 text-2xl font-semibold text-foreground">
-                                                            {atsHostsLoading ? "…" : connectedAtsHostsCount}
+                                                            {connectedAtsHostsCount}
                                                         </p>
                                                     </div>
                                                     <div className="rounded-lg border border-border/60 bg-muted/15 p-3">
@@ -1781,7 +1810,7 @@ export function SettingsDialog({
                                                             Aktiv
                                                         </p>
                                                         <p className="mt-1 text-2xl font-semibold text-foreground">
-                                                            {atsHostsLoading ? "…" : activeAtsHostsCount}
+                                                            {activeAtsHostsCount}
                                                         </p>
                                                     </div>
                                                     <div className="rounded-lg border border-border/60 bg-muted/15 p-3">
@@ -1888,6 +1917,7 @@ export function SettingsDialog({
 
                                                                 <AtsHostActivitySection
                                                                     instanceId={selectedAtsDetails.host.instance_id}
+                                                                    refreshToken={atsActivityRefreshToken}
                                                                 />
 
                                                                 <div className="space-y-2">

@@ -365,8 +365,13 @@ function App() {
           setSplashError(null);
 
           const monitorPath = (await getSetting("monitor_path", "")).trim();
-          if (monitorPath && !cancelled) {
-            setSplashStatus("Monitor-Status wird abgerufen…");
+          const monitoringEnabled = (
+            await getSetting("monitoring_enabled", "true")
+          )
+            .trim()
+            .toLowerCase();
+          if (monitorPath && monitoringEnabled === "true" && !cancelled) {
+            setSplashStatus("Monitoring wird gestartet…");
             try {
               await startMonitoring();
               await syncMonitoringState();

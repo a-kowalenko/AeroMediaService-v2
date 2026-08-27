@@ -76,21 +76,30 @@ export function FolderSelectionModal({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
-  const loadDirectory = useCallback(async (path: string | null = null) => {
-    setLoading(true);
-    setError("");
-    try {
-      const res = await listMediaFolders(path, vorname, nachname);
-      setFolders(res.folders);
-      setCurrentPath(res.path);
-      setParentPath(res.parent);
-    } catch (err) {
-      setError(String(err));
-      setFolders([]);
-    } finally {
-      setLoading(false);
-    }
-  }, [vorname, nachname]);
+  const loadDirectory = useCallback(
+    async (path: string | null = null, opts?: { silent?: boolean }) => {
+      const silent = opts?.silent ?? false;
+      if (!silent) {
+        setLoading(true);
+        setError("");
+      }
+      try {
+        const res = await listMediaFolders(path, vorname, nachname);
+        setFolders(res.folders);
+        setCurrentPath(res.path);
+        setParentPath(res.parent);
+        if (silent) setError("");
+      } catch (err) {
+        if (!silent) {
+          setError(String(err));
+          setFolders([]);
+        }
+      } finally {
+        if (!silent) setLoading(false);
+      }
+    },
+    [vorname, nachname],
+  );
 
   useEffect(() => {
     if (!open) {
@@ -106,7 +115,7 @@ export function FolderSelectionModal({
   useEffect(() => {
     if (!open || !currentPath) return;
     const interval = window.setInterval(() => {
-      void loadDirectory(currentPath);
+      void loadDirectory(currentPath, { silent: true });
     }, 2000);
     return () => window.clearInterval(interval);
   }, [open, currentPath, loadDirectory]);

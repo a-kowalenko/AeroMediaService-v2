@@ -1,4 +1,5 @@
-﻿import {useCallback, useEffect, useMemo, useState} from "react";
+﻿import {useCallback, useEffect, useMemo, useRef, useState} from "react";
+import {RefreshCw} from "lucide-react";
 import {AtsHostActivitySection} from "@/components/AtsHostActivitySection";
 import {Spinner} from "@/components/Spinner";
 import {StatusChip} from "@/components/StatusChip";
@@ -15,6 +16,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import {Button} from "@/components/ui/button";
+import {cn, ensureMinDuration} from "@/lib/utils";
 import {
   atsPresenceChipLabel,
   atsPresenceChipTone,
@@ -75,6 +77,12 @@ export function AtsClientsDialog({open, onClose, onHostsChanged}: Props) {
   const [details, setDetails] = useState<AtsHostDetails | null>(null);
   const [detailsLoading, setDetailsLoading] = useState(false);
   const [removalBusy, setRemovalBusy] = useState(false);
+  const [activityRefreshToken, setActivityRefreshToken] = useState(0);
+  const hostsLoadingRef = useRef(false);
+  const selectedHostIdRef = useRef(selectedHostId);
+  selectedHostIdRef.current = selectedHostId;
+  const detailsRef = useRef(details);
+  detailsRef.current = details;
 
   const connectedHostsCount = useMemo(() => countConnectedAtsHosts(hosts), [hosts]);
   const activeHostsCount = useMemo(() => countActiveAtsHosts(hosts), [hosts]);
@@ -88,43 +96,52 @@ export function AtsClientsDialog({open, onClose, onHostsChanged}: Props) {
     [hosts, selectedHostId],
   );
 
-  const loadHosts = useCallback(async () => {
-    setHostsLoading(true);
-    setHostsError("");
-    try {
-      const items = await getAtsHostsSummary(60);
-      setHosts(items);
-      setSelectedHostId((prev) => {
-        if (prev && items.some((host) => host.instance_id === prev)) return prev;
-        return defaultAtsHostSelection(items);
-      });
-    } catch (err) {
-      setHosts([]);
-      setSelectedHostId("");
-      setDetails(null);
-      setHostsError(String(err));
-    } finally {
-      setHostsLoading(false);
-    }
-  }, []);
-
-  const loadDetails = useCallback(async (instanceId: string) => {
+  const loadDetails = useCallback(async (instanceId: string, soft = false) => {
     const id = instanceId.trim();
     if (!id) {
       setDetails(null);
       return;
     }
-    setDetailsLoading(true);
+    if (!soft) setDetailsLoading(true);
     try {
       const next = await getAtsHostDetails(id, 60, 100);
       setDetails(next);
     } catch (err) {
-      setDetails(null);
+      if (!soft) setDetails(null);
       setHostsError(String(err));
     } finally {
-      setDetailsLoading(false);
+      if (!soft) setDetailsLoading(false);
     }
   }, []);
+
+  const loadHosts = useCallback(async () => {
+    if (hostsLoadingRef.current) return;
+    hostsLoadingRef.current = true;
+    setHostsLoading(true);
+    setHostsError("");
+    const startedAt = Date.now();
+    try {
+      const items = await getAtsHostsSummary(60);
+      setHosts(items);
+      let nextId = selectedHostIdRef.current;
+      if (!nextId || !items.some((host) => host.instance_id === nextId)) {
+        nextId = defaultAtsHostSelection(items);
+      }
+      setSelectedHostId(nextId);
+      if (nextId) {
+        const soft = detailsRef.current?.host.instance_id === nextId;
+        await loadDetails(nextId, soft);
+      }
+      setActivityRefreshToken((n) => n + 1);
+    } catch (err) {
+      // Soft refresh: keep last known hosts so counts/list do not flicker empty.
+      setHostsError(String(err));
+    } finally {
+      await ensureMinDuration(startedAt, 450);
+      hostsLoadingRef.current = false;
+      setHostsLoading(false);
+    }
+  }, [loadDetails]);
 
   useEffect(() => {
     if (!open) return;
@@ -135,7 +152,10 @@ export function AtsClientsDialog({open, onClose, onHostsChanged}: Props) {
 
   useEffect(() => {
     if (!open || !selectedHostId) return;
-    void loadDetails(selectedHostId);
+    // Selection change: hard load only when details are for another host.
+    // Host refresh already soft-updates details via loadHosts.
+    if (detailsRef.current?.host.instance_id === selectedHostId) return;
+    void loadDetails(selectedHostId, false);
   }, [open, selectedHostId, loadDetails]);
 
   const notifyHostsChanged = useCallback(() => {
@@ -206,7 +226,7 @@ export function AtsClientsDialog({open, onClose, onHostsChanged}: Props) {
               Verbundene Clients
             </p>
             <p className="mt-1 text-2xl font-semibold text-foreground">
-              {hostsLoading ? "..." : connectedHostsCount}
+              {connectedHostsCount}
             </p>
           </div>
           <div className="rounded-lg border border-border/60 bg-muted/15 p-3">
@@ -214,7 +234,7 @@ export function AtsClientsDialog({open, onClose, onHostsChanged}: Props) {
               Aktiv
             </p>
             <p className="mt-1 text-2xl font-semibold text-foreground">
-              {hostsLoading ? "..." : activeHostsCount}
+              {activeHostsCount}
             </p>
           </div>
           <div className="flex items-center justify-between rounded-lg border border-border/60 bg-muted/15 p-3">
@@ -224,8 +244,18 @@ export function AtsClientsDialog({open, onClose, onHostsChanged}: Props) {
               </p>
               <p className="mt-1 text-sm text-muted">30s Auto-Refresh</p>
             </div>
-            <Button type="button" variant="secondary" size="sm" disabled={hostsLoading} onClick={() => void loadHosts()}>
-              Aktualisieren
+            <Button
+              type="button"
+              variant="secondary"
+              size="icon"
+              className={cn("h-8 w-8", hostsLoading && "disabled:opacity-100")}
+              disabled={hostsLoading}
+              onClick={() => void loadHosts()}
+              title="Aktualisieren"
+              aria-label="Aktualisieren"
+              aria-busy={hostsLoading}
+            >
+              <RefreshCw className={cn("h-3.5 w-3.5", hostsLoading && "animate-spin")} />
             </Button>
           </div>
         </div>
@@ -295,7 +325,10 @@ export function AtsClientsDialog({open, onClose, onHostsChanged}: Props) {
                   </div>
                 </div>
 
-                <AtsHostActivitySection instanceId={details.host.instance_id} />
+                <AtsHostActivitySection
+                  instanceId={details.host.instance_id}
+                  refreshToken={activityRefreshToken}
+                />
 
                 <div className="space-y-2">
                   <p className="text-xs font-semibold uppercase tracking-wide text-muted">Letzte Vorgänge</p>

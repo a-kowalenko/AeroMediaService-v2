@@ -6,6 +6,16 @@ export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
+/** Keep loading UI visible long enough for a paint (fast IPC otherwise looks like a no-op). */
+export async function ensureMinDuration(startedAtMs: number, minMs: number): Promise<void> {
+  const remaining = minMs - (Date.now() - startedAtMs);
+  if (remaining > 0) {
+    await new Promise<void>((resolve) => {
+      window.setTimeout(resolve, remaining);
+    });
+  }
+}
+
 export function formatHistoryDate(raw: string): string {
   if (!raw) return "";
   if (raw.includes("T")) {
