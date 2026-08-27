@@ -36,6 +36,11 @@ Patch ohne Unreleased-Text: Notes der Vorgängerversion werden übernommen.
 
 - Windows-Release-Builds nutzen nur noch **NSIS** (kein MSI), damit Beta-Tags wie `0.1.14-beta.1` in CI durchlaufen
 - **Auto-Update** wieder vollständig: macOS-Updater-Archive (`.app.tar.gz`) werden in CI zuverlässig hochgeladen; `latest.json`-Merge erst nach grünem Matrix-Build
+- Übergabe vom Schnittplatz: Wartezeit startet erst mit aktivem Monitoring — Aufträge werden nicht abgelehnt, nur weil AMS kurz aus war
+- Fertige Übergabe-Ordner werden auch nach Ablauf der Wartezeit noch übernommen, sobald sie bereit sind
+- Timeout-Meldung bei sichtbarem Ordner nicht mehr fälschlich als „Ordner nicht sichtbar“
+- Abgelehnte Übergabe verschwindet aus der Ansicht, sobald der Upload den Ordner übernommen hat
+- Dialog **Medien nachreichen**: Abdunkelung liegt wieder korrekt hinter dem Fenster
 
 ### Hinweis
 
