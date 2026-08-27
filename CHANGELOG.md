@@ -21,6 +21,8 @@ Patch ohne Unreleased-Text: Notes der Vorgängerversion werden übernommen.
 - Update-Dialog: Hinweis bei **Vorabversionen (Beta)**; Patchnotes aufklappbar
 - Versionsliste in den Einstellungen mit Kennzeichnung (Neueste, Beta, Installiert)
 - Hinweis in der App und unter Bridge-Einstellungen, wenn der Primär-Share fehlt oder nicht zum Monitor-Pfad passt
+- Einstellungen: eigener Reiter **Bridge** — Warnhinweis öffnet dort direkt
+- Primär- und Backup-Share mit Protokollwahl (`smb://` oder UNC `\\`)
 
 ### Behoben
 
