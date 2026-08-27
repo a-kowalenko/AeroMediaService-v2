@@ -12,12 +12,15 @@ Patch ohne Unreleased-Text: Notes der Vorgängerversion werden übernommen.
 
 - Einstellung **Betatester** unter Wartung → Software-Update: Vorabversionen anzeigen und per Auto-Update erhalten
 - In den Einstellungen gezielt auf eine **andere Version wechseln** (Upgrade oder Downgrade mit Bestätigung)
+- Bridge: **Primär-Share** und optionalen **Backup-Share** für Schnittplätze hinterlegen (`smb://…`)
+- Bei Netzwerk-Monitorpfad: Vorschlag **Primär aus Monitor übernehmen**
 
 ### Verbessert
 
 - Upload **Abbrechen**: Status „Abbruch…“, Button „Wird abgebrochen…“ — Pause und erneutes Abbrechen sind während des Abbruchs gesperrt
 - Update-Dialog: Hinweis bei **Vorabversionen (Beta)**; Patchnotes aufklappbar
 - Versionsliste in den Einstellungen mit Kennzeichnung (Neueste, Beta, Installiert)
+- Hinweis in der App und unter Bridge-Einstellungen, wenn der Primär-Share fehlt oder nicht zum Monitor-Pfad passt
 
 ### Behoben
 
