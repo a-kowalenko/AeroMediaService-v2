@@ -45,6 +45,42 @@ Patch ohne Unreleased-Text: Notes der Vorgängerversion werden übernommen.
 
 
 
+
+## [0.1.14-beta.5] - 2026-08-27
+
+### Neu
+
+- Einstellung **Betatester** unter Wartung → Software-Update: Vorabversionen anzeigen und per Auto-Update erhalten
+- In den Einstellungen gezielt auf eine **andere Version wechseln** (Upgrade oder Downgrade mit Bestätigung)
+- Bridge: **Primär-Share** und optionalen **Backup-Share** für Schnittplätze hinterlegen (`smb://…`)
+- Bei Netzwerk-Monitorpfad: Vorschlag **Primär aus Monitor übernehmen**
+- Kundenaufnahme: optional **Kunden-ID** und **Buchungs-ID** — Kontakt und gebuchte Medienarten werden aus der Buchung übernommen
+- Bei abweichenden Daten: Vergleich anzeigen und wählen, ob Buchungsdaten oder Formular behalten werden
+- Einstellungen: Reiter **Crew** — Tandemmaster, Videospringer und Aliases für die Ordnernamen-Vorhersage
+- Zuweisung mit IDs: Medien in die richtigen Unterordner sortieren, Ordner umbenennen und Fertig-Übergabe setzen
+- Bei unsicherer Crew-Erkennung: Dialog **Crew & Ordnername prüfen** mit Live-Vorschau (auch bei Stapel-Zuweisung)
+
+### Verbessert
+
+- Upload **Abbrechen**: Status „Abbruch…“, Button „Wird abgebrochen…“ — Pause und erneutes Abbrechen sind während des Abbruchs gesperrt
+- Update-Dialog: Hinweis bei **Vorabversionen (Beta)**; Patchnotes aufklappbar
+- Versionsliste in den Einstellungen mit Kennzeichnung (Neueste, Beta, Installiert)
+- Hinweis in der App und unter Bridge-Einstellungen, wenn der Primär-Share fehlt oder nicht zum Monitor-Pfad passt
+- Einstellungen: eigener Reiter **Bridge** — Warnhinweis öffnet dort direkt
+- Primär- und Backup-Share mit Protokollwahl (`smb://` oder UNC `\\`)
+- Bridge-Client-Übersicht und Aktivitätsliste: Aktualisieren ohne leeres Flackern
+- Ordnerauswahl bei der Zuweisung: Hintergrund-Aktualisierung ohne sichtbares Neu-Laden
+- Monitoring an/aus bleibt nach Neustart erhalten
+
+### Behoben
+
+- Windows-Release-Builds nutzen nur noch **NSIS** (kein MSI), damit Beta-Tags wie `0.1.14-beta.1` in CI durchlaufen
+- **Auto-Update** wieder vollständig: macOS-Updater-Archive (`.app.tar.gz`) werden in CI zuverlässig hochgeladen; `latest.json`-Merge erst nach grünem Matrix-Build
+
+### Hinweis
+
+- Ohne Kunden-/Buchungs-ID bleibt die bisherige Kontakt-Zuweisung unverändert
+
 ## [0.1.14-beta.4] - 2026-08-27
 
 ### Neu
