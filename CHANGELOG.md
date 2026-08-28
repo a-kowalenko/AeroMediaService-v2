@@ -22,6 +22,8 @@ Patch ohne Unreleased-Text: Notes der Vorgängerversion werden übernommen.
 
 ### Verbessert
 
+- Bridge Share-Vorschläge: **Freigabe zum Monitor-Ordner** wird erkannt und als fertige `smb://`-Adresse angeboten (mit Rechner-IP oder Hostname)
+- Lokale SMB-Freigaben in der Auswahlliste — passende Freigabe als **(Monitor)** hervorgehoben (Windows, macOS, Linux)
 - Bridge Primär-/Backup-Share: **Auswahlliste** mit auf dem AMS-Rechner erkannten Freigaben (Netzlaufwerke, gemountete Shares, lokale Exporte)
 - Button **Lokale Shares aktualisieren** lädt die Vorschlagsliste neu
 - Backup-Share: Vorschlag **vom Primär-Share abgeleitet** (z. B. mit `-backup`)
