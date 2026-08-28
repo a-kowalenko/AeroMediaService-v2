@@ -8,7 +8,7 @@ use serde_json::{json, Value};
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 
 use super::{extract_customer_url, guess_mime, parse_next_offset, CustomApiClient, CHUNK_BYTES};
-use crate::cloud::dropbox::{self, DropboxSessionResume};
+use crate::cloud::dropbox::{self, UploadFile, DropboxSessionResume};
 use crate::cloud::guards::{assert_checkpoint_binding_matches, merge_checkpoint_binding};
 use crate::cloud::manifest::build_manifest_v11;
 use crate::cloud::traits::{should_skip_upload_file, CloudClient, CloudError};
@@ -866,26 +866,11 @@ impl CustomApiClient {
             |next_idx, _bytes, u| {
                 if let Ok(mut list) = uploaded_files_cell.lock() {
                     let file = &files_for_ck[u.file_index];
-                    let already = list.iter().any(|row| {
-                        row.get("rel_path").and_then(Value::as_str) == Some(file.rel_norm.as_str())
-                            || row.get("file_name").and_then(Value::as_str)
-                                == file
-                                    .local_path
-                                    .file_name()
-                                    .and_then(|n| n.to_str())
-                    });
-                    if !already {
-                        let mut row = json!({
-                            "name": file.local_path.file_name().and_then(|n| n.to_str()).unwrap_or(""),
-                            "rel_path": file.rel_norm,
-                            "size": file.size,
-                            "mime": guess_mime(&file.local_path),
-                        });
-                        if let Some(id) = &u.dropbox_id {
-                            row["dropbox_id"] = json!(id);
-                        }
-                        list.push(row);
-                    }
+                    upsert_uploaded_manifest_row(
+                        &mut list,
+                        file,
+                        u.dropbox_id.as_deref(),
+                    );
                 }
                 let snapshot = uploaded_files_cell
                     .lock()
@@ -917,23 +902,11 @@ impl CustomApiClient {
                 if let Ok(mut list) = uploaded_files_cell.lock() {
                     for u in uploaded {
                         let file = &files_for_ck[u.file_index];
-                        let already = list.iter().any(|row| {
-                            row.get("rel_path").and_then(Value::as_str)
-                                == Some(file.rel_norm.as_str())
-                        });
-                        if already {
-                            continue;
-                        }
-                        let mut row = json!({
-                            "name": file.local_path.file_name().and_then(|n| n.to_str()).unwrap_or(""),
-                            "rel_path": file.rel_norm,
-                            "size": file.size,
-                            "mime": guess_mime(&file.local_path),
-                        });
-                        if let Some(id) = &u.dropbox_id {
-                            row["dropbox_id"] = json!(id);
-                        }
-                        list.push(row);
+                        upsert_uploaded_manifest_row(
+                            &mut list,
+                            file,
+                            u.dropbox_id.as_deref(),
+                        );
                     }
                 }
                 let snapshot = uploaded_files_cell
@@ -1136,6 +1109,47 @@ impl CustomApiClient {
     }
 }
 
+/// Merge a completed upload into the manifest checkpoint list.
+/// Large session-batch uploads call `on_file_done` before commit (no id yet), then
+/// `on_group_done` with ids — existing rows must be updated, not skipped.
+fn upsert_uploaded_manifest_row(
+    list: &mut Vec<Value>,
+    file: &UploadFile,
+    dropbox_id: Option<&str>,
+) {
+    let rel_path = file.rel_norm.as_str();
+    let file_name = file
+        .local_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("");
+
+    let existing_idx = list.iter().position(|row| {
+        row.get("rel_path").and_then(Value::as_str) == Some(rel_path)
+            || row.get("file_name").and_then(Value::as_str) == Some(file_name)
+    });
+
+    if let Some(idx) = existing_idx {
+        if let Some(id) = dropbox_id.filter(|s| !s.is_empty()) {
+            if let Some(obj) = list[idx].as_object_mut() {
+                obj.insert("dropbox_id".into(), json!(id));
+            }
+        }
+        return;
+    }
+
+    let mut row = json!({
+        "name": file_name,
+        "rel_path": rel_path,
+        "size": file.size,
+        "mime": guess_mime(&file.local_path),
+    });
+    if let Some(id) = dropbox_id.filter(|s| !s.is_empty()) {
+        row["dropbox_id"] = json!(id);
+    }
+    list.push(row);
+}
+
 fn collect_proxied_files(local_dir_path: &Path) -> Vec<ProxiedFile> {
     let mut files = Vec::new();
     walk_proxied(local_dir_path, local_dir_path, &mut files);
@@ -1271,6 +1285,31 @@ mod tests {
         assert_eq!(payload["metadata"]["type"], "Outside");
         assert_eq!(payload["metadata"]["first_name"], "Anna");
         assert_eq!(payload["metadata"]["base_folder_name"], "Job-1");
+    }
+
+    #[test]
+    fn upsert_uploaded_manifest_row_backfills_dropbox_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let local = dir.path().join("clip.mp4");
+        fs::write(&local, b"mp4").unwrap();
+        let file = UploadFile {
+            local_path: local.clone(),
+            dropbox_path: "/Job/Outside_Video/clip.mp4".into(),
+            rel_norm: "Outside_Video/clip.mp4".into(),
+            size: 3,
+        };
+        let mut list = vec![json!({
+            "name": "clip.mp4",
+            "rel_path": "Outside_Video/clip.mp4",
+            "size": 3,
+            "mime": "video/mp4",
+        })];
+        upsert_uploaded_manifest_row(&mut list, &file, Some("id:abc123"));
+        assert_eq!(list.len(), 1);
+        assert_eq!(
+            list[0].get("dropbox_id").and_then(Value::as_str),
+            Some("id:abc123")
+        );
     }
 
     #[tokio::test]

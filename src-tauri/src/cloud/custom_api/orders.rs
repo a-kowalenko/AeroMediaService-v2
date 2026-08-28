@@ -238,6 +238,12 @@ pub async fn lookup_customer_url(
     None
 }
 
+fn manifest_response_file_failures(data: &Value) -> u64 {
+    data.get("files_failed")
+        .and_then(|v| v.as_u64().or_else(|| v.as_i64().map(|n| n.max(0) as u64)))
+        .unwrap_or(0)
+}
+
 impl CustomApiClient {
     pub(super) fn apply_order_create_response(&self, data: &Value) {
         if let Some(url) = data
@@ -299,6 +305,12 @@ impl CustomApiClient {
                     if let Ok(data) = response.json::<Value>().await {
                         let status = data.get("status").and_then(Value::as_str).unwrap_or("");
                         if status == "completed" {
+                            let files_failed = manifest_response_file_failures(&data);
+                            if files_failed > 0 {
+                                return Err(CloudError::Message(format!(
+                                    "manifest-status: {files_failed} Datei(en) nicht verknüpft"
+                                )));
+                            }
                             logging::log_info(&format!(
                                 "Manifest-Verknüpfung abgeschlossen (order_id={order_id})."
                             ));
