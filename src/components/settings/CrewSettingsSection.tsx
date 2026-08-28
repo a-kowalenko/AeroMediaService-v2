@@ -2,7 +2,7 @@
 import {Check, Pencil, Plus, Trash2, X} from "lucide-react";
 import {SettingsSection} from "@/components/settings/SettingsSection";
 import {Button} from "@/components/ui/button";
-import {Checkbox} from "@/components/ui/checkbox";
+import {Switch} from "@/components/ui/switch";
 import {Input} from "@/components/ui/input";
 import {Label} from "@/components/ui/label";
 import {
@@ -191,116 +191,24 @@ export function CrewSettingsSection({value, onChange}: Props) {
         ) : null}
       </div>
 
-      <ul className="divide-y divide-border rounded-lg border border-border">
-        {mode.kind === "add" ? (
-          <li className="bg-muted/30 px-3 py-3">
-            <MemberEditor
-              draft={draft}
-              setDraft={setDraft}
-              aliasInput={aliasInput}
-              setAliasInput={setAliasInput}
-              onAddAliases={addAliasesFromInput}
-              onRemoveAlias={removeAlias}
-              onSave={saveMember}
-              onCancel={resetEditor}
-            />
-          </li>
-        ) : null}
+      {mode.kind === "add" ? (
+        <div className="mb-3 rounded-md border border-border bg-muted/30 px-3 py-3">
+          <MemberEditor
+            draft={draft}
+            setDraft={setDraft}
+            aliasInput={aliasInput}
+            setAliasInput={setAliasInput}
+            onAddAliases={addAliasesFromInput}
+            onRemoveAlias={removeAlias}
+            onSave={saveMember}
+            onCancel={resetEditor}
+          />
+        </div>
+      ) : null}
 
-        {sorted.map(({member, index}) => {
-          const isEditing = mode.kind === "edit" && mode.index === index;
-          return (
-            <li
-              key={`${member.name}-${index}`}
-              className={cn(
-                "px-3 py-2",
-                isEditing && "bg-muted/30 py-3",
-              )}
-            >
-              {isEditing ? (
-                <MemberEditor
-                  draft={draft}
-                  setDraft={setDraft}
-                  aliasInput={aliasInput}
-                  setAliasInput={setAliasInput}
-                  onAddAliases={addAliasesFromInput}
-                  onRemoveAlias={removeAlias}
-                  onSave={saveMember}
-                  onCancel={resetEditor}
-                />
-              ) : (
-                <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                  <div className="min-w-0 space-y-1">
-                    <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
-                      <div className="truncate text-sm font-medium">
-                        {member.name}
-                      </div>
-                      {member.aliases.map((alias) => (
-                        <span
-                          key={alias}
-                          className="inline-flex shrink-0 items-center rounded-md border border-border bg-background/70 px-2 py-0.5 text-xs text-muted"
-                        >
-                          {alias}
-                        </span>
-                      ))}
-                    </div>
-                    <div className="flex flex-wrap gap-3 text-xs">
-                      <label className="flex items-center gap-1.5">
-                        <Checkbox
-                          checked={member.tandemmaster}
-                          disabled={editing}
-                          onCheckedChange={(v) =>
-                            patchRole(index, "tandemmaster", Boolean(v))
-                          }
-                        />
-                        TM
-                      </label>
-                      <label className="flex items-center gap-1.5">
-                        <Checkbox
-                          checked={member.videospringer}
-                          disabled={editing}
-                          onCheckedChange={(v) =>
-                            patchRole(index, "videospringer", Boolean(v))
-                          }
-                        />
-                        VS
-                      </label>
-                    </div>
-                  </div>
-                  <div className="flex shrink-0 gap-0.5">
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="icon"
-                      className="h-8 w-8"
-                      disabled={editing}
-                      onClick={() => startEdit(index)}
-                      title="Bearbeiten"
-                      aria-label="Bearbeiten"
-                    >
-                      <Pencil className="size-3.5" />
-                    </Button>
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="icon"
-                      className="h-8 w-8 text-destructive hover:text-destructive"
-                      disabled={editing}
-                      onClick={() => void deleteMember(index)}
-                      title="Entfernen"
-                      aria-label="Entfernen"
-                    >
-                      <Trash2 className="size-3.5" />
-                    </Button>
-                  </div>
-                </div>
-              )}
-            </li>
-          );
-        })}
-
+      <div className="max-h-72 overflow-auto rounded-md border border-border">
         {sorted.length === 0 && mode.kind !== "add" ? (
-          <li className="px-3 py-4 text-sm text-muted">
+          <p className="px-3 py-6 text-center text-sm text-muted">
             Keine Crew-Einträge.{" "}
             <button
               type="button"
@@ -309,9 +217,110 @@ export function CrewSettingsSection({value, onChange}: Props) {
             >
               Erste Person hinzufügen
             </button>
-          </li>
+          </p>
+        ) : sorted.length > 0 ? (
+          <>
+            <div className="sticky top-0 z-10 grid grid-cols-[minmax(0,1fr)_auto_auto_auto] items-center gap-3 border-b border-border bg-card-elevated/95 px-3 py-1.5 text-[10px] font-semibold tracking-wide text-muted uppercase">
+              <span>Name</span>
+              <span className="w-28 text-center">Tandemmaster</span>
+              <span className="w-28 text-center">Videospringer</span>
+              <span className="w-20 text-right">Aktion</span>
+            </div>
+            <ul className="divide-y divide-border">
+              {sorted.map(({member, index}) => {
+                const isEditing = mode.kind === "edit" && mode.index === index;
+                return (
+                  <li
+                    key={`${member.name}-${index}`}
+                    className={cn(
+                      isEditing && "bg-muted/30",
+                    )}
+                  >
+                    {isEditing ? (
+                      <div className="px-3 py-3">
+                        <MemberEditor
+                          draft={draft}
+                          setDraft={setDraft}
+                          aliasInput={aliasInput}
+                          setAliasInput={setAliasInput}
+                          onAddAliases={addAliasesFromInput}
+                          onRemoveAlias={removeAlias}
+                          onSave={saveMember}
+                          onCancel={resetEditor}
+                        />
+                      </div>
+                    ) : (
+                      <div className="grid grid-cols-[minmax(0,1fr)_auto_auto_auto] items-center gap-3 px-3 py-2">
+                        <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+                          <p
+                            className="truncate text-sm font-medium"
+                            title={member.name}
+                          >
+                            {member.name}
+                          </p>
+                          {member.aliases.map((alias) => (
+                            <span
+                              key={alias}
+                              className="inline-flex shrink-0 items-center rounded-md border border-border bg-background/70 px-2 py-0.5 text-xs text-muted"
+                            >
+                              {alias}
+                            </span>
+                          ))}
+                        </div>
+                        <div className="flex w-28 justify-center">
+                          <Switch
+                            checked={member.tandemmaster}
+                            disabled={editing}
+                            onCheckedChange={(v) =>
+                              patchRole(index, "tandemmaster", v)
+                            }
+                            aria-label={`${member.name} — Tandemmaster`}
+                          />
+                        </div>
+                        <div className="flex w-28 justify-center">
+                          <Switch
+                            checked={member.videospringer}
+                            disabled={editing}
+                            onCheckedChange={(v) =>
+                              patchRole(index, "videospringer", v)
+                            }
+                            aria-label={`${member.name} — Videospringer`}
+                          />
+                        </div>
+                        <div className="flex w-20 justify-end gap-0.5">
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="icon"
+                            disabled={editing}
+                            onClick={() => startEdit(index)}
+                            title="Bearbeiten"
+                            aria-label="Bearbeiten"
+                          >
+                            <Pencil className="h-3.5 w-3.5" />
+                          </Button>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="icon"
+                            className="text-destructive hover:text-destructive"
+                            disabled={editing}
+                            onClick={() => void deleteMember(index)}
+                            title="Entfernen"
+                            aria-label="Entfernen"
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </Button>
+                        </div>
+                      </div>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
+          </>
         ) : null}
-      </ul>
+      </div>
     </SettingsSection>
   );
 }
@@ -390,24 +399,26 @@ function MemberEditor({
         </div>
       </div>
 
-      <div className="flex flex-wrap gap-4">
-        <label className="flex items-center gap-2 text-sm">
-          <Checkbox
+      <div className="grid gap-2 sm:grid-cols-2">
+        <label className="flex items-center justify-between gap-3 rounded-lg border border-border bg-background/70 px-3 py-2 text-sm">
+          <span>Tandemmaster</span>
+          <Switch
             checked={draft.tandemmaster}
             onCheckedChange={(v) =>
-              setDraft((prev) => ({...prev, tandemmaster: Boolean(v)}))
+              setDraft((prev) => ({...prev, tandemmaster: v}))
             }
+            aria-label="Tandemmaster"
           />
-          Tandemmaster
         </label>
-        <label className="flex items-center gap-2 text-sm">
-          <Checkbox
+        <label className="flex items-center justify-between gap-3 rounded-lg border border-border bg-background/70 px-3 py-2 text-sm">
+          <span>Videospringer</span>
+          <Switch
             checked={draft.videospringer}
             onCheckedChange={(v) =>
-              setDraft((prev) => ({...prev, videospringer: Boolean(v)}))
+              setDraft((prev) => ({...prev, videospringer: v}))
             }
+            aria-label="Videospringer"
           />
-          Videospringer
         </label>
       </div>
 

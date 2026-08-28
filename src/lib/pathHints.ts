@@ -1,5 +1,10 @@
 /** Client-side mirror of `bridge::types::PathHintsStatus` (P6d). */
 
+import {
+  isNetworkShareUrl,
+  sanitizeSharePath,
+} from "@/lib/smbUrl";
+
 export type PathHintsDrift = "disabled" | "ok" | "missing_primary" | "drift";
 
 export type PathHintsStatus = {
@@ -14,28 +19,16 @@ export type PathHintsStatus = {
 };
 
 export function toSmbUrl(raw: string): string {
-  const t = raw.trim();
-  if (!t) return "";
-  if (t.length >= 6 && t.slice(0, 6).toLowerCase() === "smb://") {
-    return `smb://${t.slice(6).replace(/\\/g, "/")}`;
-  }
-  if (t.startsWith("\\\\") || t.startsWith("//")) {
-    const rest = t.startsWith("\\\\") ? t.slice(2) : t.slice(2);
-    return `smb://${rest.replace(/\\/g, "/")}`;
-  }
-  return t;
+  return sanitizeSharePath(raw);
 }
 
 export function isNetworkSharePath(raw: string): boolean {
-  const t = raw.trim();
-  if (!t) return false;
-  if (t.length >= 6 && t.slice(0, 6).toLowerCase() === "smb://") return true;
-  return t.startsWith("\\\\") || t.startsWith("//");
+  return isNetworkShareUrl(raw);
 }
 
 function normalizeSmbForCompare(raw: string): string {
-  let s = toSmbUrl(raw).toLowerCase();
-  while (s.endsWith("/") && s.length > "smb://".length) {
+  let s = sanitizeSharePath(raw).toLowerCase().replace(/\\/g, "/");
+  while (s.endsWith("/") && s.length > 1) {
     s = s.slice(0, -1);
   }
   return s;
@@ -50,7 +43,9 @@ export function evaluatePathHints(
   const pathsV1 = primarySmbUrl.length > 0;
   const monitorIsNetworkShare = isNetworkSharePath(monitorPath);
   const monitorSmbUrl = monitorIsNetworkShare ? toSmbUrl(monitorPath) : "";
-  const suggestedPrimarySmbUrl = monitorSmbUrl;
+  const suggestedPrimarySmbUrl = monitorIsNetworkShare
+    ? monitorSmbUrl
+    : monitorPath.trim();
 
   let drift: PathHintsDrift;
   if (!bridgeEnabled) {
@@ -68,10 +63,10 @@ export function evaluatePathHints(
 
   let warning: string | null = null;
   if (drift === "missing_primary") {
-    warning =
-      monitorIsNetworkShare && monitorSmbUrl
-        ? `Primär-Share fehlt — paths-v1 ist inaktiv. Monitor: ${monitorSmbUrl}`
-        : "Primär-Share fehlt — Capability paths-v1 ist nicht aktiv.";
+    const monitorHint = monitorSmbUrl || monitorPath.trim();
+    warning = monitorHint
+      ? `Primär-Share fehlt — paths-v1 ist inaktiv. Monitor: ${monitorHint}`
+      : "Primär-Share fehlt — Capability paths-v1 ist nicht aktiv.";
   } else if (drift === "drift") {
     warning = `Primär-Share weicht vom Monitor-Pfad ab (Primär: ${primarySmbUrl}, Monitor: ${monitorSmbUrl}).`;
   }

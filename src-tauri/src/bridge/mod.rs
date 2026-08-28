@@ -11,7 +11,10 @@ mod types;
 pub use identity::{ensure_instance_id, resolve_display_name};
 
 pub use server::{BridgeRuntime, BridgeStatus, MonitorCancelFn, MonitorWakeFn};
-pub use types::{AtsPathsHint, DEFAULT_BRIDGE_BIND, P3_CAPABILITIES, PathHintsStatus};
+pub use types::{
+    is_network_share_path, to_smb_url, AtsPathsHint, DEFAULT_BRIDGE_BIND, P3_CAPABILITIES,
+    PathHintsStatus,
+};
 
 use std::sync::{Arc, Mutex};
 

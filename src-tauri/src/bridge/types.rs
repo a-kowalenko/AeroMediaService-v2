@@ -51,14 +51,17 @@ impl AtsPathsHint {
 }
 
 /// Normalize operator input to wire-preferred `smb://` (UNC → smb).
+/// Local paths with a mistaken `smb://` prefix are returned as-is (local).
 pub fn to_smb_url(raw: &str) -> String {
     let t = raw.trim();
     if t.is_empty() {
         return String::new();
     }
     if t.len() >= 6 && t[..6].eq_ignore_ascii_case("smb://") {
-        // Keep scheme lower-case; normalize path separators.
-        let rest = &t[6..];
+        let rest = t[6..].trim_start_matches('/');
+        if is_local_path_body(rest) {
+            return rest.to_string();
+        }
         return format!("smb://{}", rest.replace('\\', "/"));
     }
     let unc = t
@@ -70,6 +73,18 @@ pub fn to_smb_url(raw: &str) -> String {
     t.to_string()
 }
 
+fn is_local_path_body(s: &str) -> bool {
+    let s = s.trim();
+    if s.is_empty() {
+        return false;
+    }
+    let b = s.as_bytes();
+    if b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':' {
+        return true;
+    }
+    s.starts_with('/') || s.starts_with('\\')
+}
+
 /// Whether `monitor_path` is UNC or `smb://` (P6d drift checks apply only then).
 pub fn is_network_share_path(raw: &str) -> bool {
     let t = raw.trim();
@@ -77,7 +92,8 @@ pub fn is_network_share_path(raw: &str) -> bool {
         return false;
     }
     if t.len() >= 6 && t[..6].eq_ignore_ascii_case("smb://") {
-        return true;
+        let rest = t[6..].trim_start_matches('/');
+        return !is_local_path_body(rest);
     }
     t.starts_with(r"\\") || t.starts_with("//")
 }
@@ -124,7 +140,11 @@ impl PathHintsStatus {
         } else {
             String::new()
         };
-        let suggested_primary_smb_url = monitor_smb_url.clone();
+        let suggested_primary_smb_url = if monitor_is_network_share {
+            monitor_smb_url.clone()
+        } else {
+            monitor_path.trim().to_string()
+        };
 
         let drift = if !bridge_enabled {
             PathHintsDrift::Disabled
@@ -145,9 +165,14 @@ impl PathHintsStatus {
         let warning = match drift {
             PathHintsDrift::Disabled | PathHintsDrift::Ok => None,
             PathHintsDrift::MissingPrimary => {
-                if monitor_is_network_share && !monitor_smb_url.is_empty() {
+                let monitor_hint = if !monitor_smb_url.is_empty() {
+                    monitor_smb_url.as_str()
+                } else {
+                    monitor_path.trim()
+                };
+                if !monitor_hint.is_empty() {
                     Some(format!(
-                        "Primär-Share fehlt — paths-v1 ist inaktiv. Monitor: {monitor_smb_url}"
+                        "Primär-Share fehlt — paths-v1 ist inaktiv. Monitor: {monitor_hint}"
                     ))
                 } else {
                     Some(
@@ -445,6 +470,17 @@ mod tests {
         assert_eq!(to_smb_url("SMB://Host/Share"), "smb://Host/Share");
         assert_eq!(to_smb_url(""), "");
         assert_eq!(to_smb_url("  "), "");
+        assert_eq!(to_smb_url(r"D:\Shares\aktuell"), r"D:\Shares\aktuell");
+        assert_eq!(to_smb_url("/mnt/share/aktuell"), "/mnt/share/aktuell");
+        assert_eq!(
+            to_smb_url(r"smb://C:\Shares\aktuell"),
+            r"C:\Shares\aktuell"
+        );
+    }
+
+    #[test]
+    fn is_network_share_path_rejects_smb_local() {
+        assert!(!is_network_share_path(r"smb://C:\Shares\aktuell"));
     }
 
     #[test]
@@ -463,6 +499,15 @@ mod tests {
         assert_eq!(s.drift, PathHintsDrift::MissingPrimary);
         assert!(s.warning.as_ref().unwrap().contains("paths-v1"));
         assert_eq!(s.suggested_primary_smb_url, "smb://host/aktuell");
+    }
+
+    #[test]
+    fn path_hints_suggests_local_monitor_path() {
+        let s = PathHintsStatus::evaluate(true, r"D:\Shares\aktuell", "");
+        assert!(!s.paths_v1);
+        assert_eq!(s.drift, PathHintsDrift::MissingPrimary);
+        assert_eq!(s.suggested_primary_smb_url, r"D:\Shares\aktuell");
+        assert!(s.warning.as_ref().unwrap().contains(r"D:\Shares\aktuell"));
     }
 
     #[test]

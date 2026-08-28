@@ -11,7 +11,8 @@ pub mod upload;
 
 pub use bridge::{
     apply_bridge_config, get_ats_host_activity, get_ats_host_details, get_ats_hosts_summary,
-    get_ats_jobs_by_host, get_bridge_status, get_path_hints_status, remove_ats_host,
+    get_ats_jobs_by_host, get_bridge_status, get_path_hints_status, list_local_share_candidates_cmd,
+    remove_ats_host,
     remove_inactive_long_ats_hosts,
 };
 pub use brochure::{get_brochure_status, import_brochure, open_brochure, remove_brochure};

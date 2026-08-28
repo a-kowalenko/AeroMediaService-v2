@@ -4,6 +4,7 @@ use tauri::State;
 
 use crate::bridge::{BridgeState, BridgeStatus, PathHintsStatus};
 use crate::commands::ConfigState;
+use crate::util::local_shares::{list_local_share_candidates, LocalShareCandidate};
 use crate::storage::ats_presence::{
     AtsActivityPage, AtsHostDetails, AtsHostSummary, AtsJobOriginRecord, AtsPresenceState,
 };
@@ -33,6 +34,41 @@ pub fn get_path_hints_status(config: State<'_, ConfigState>) -> PathHintsStatus 
         .get("ats_primary_smb_url", Some(""))
         .unwrap_or_default();
     PathHintsStatus::evaluate(bridge_enabled, &monitor_path, &primary)
+}
+
+/// Locally visible SMB/network paths for Bridge share pickers.
+#[tauri::command]
+pub fn list_local_share_candidates_cmd(
+    config: State<'_, ConfigState>,
+    monitor_path: Option<String>,
+    primary: Option<String>,
+    backup: Option<String>,
+) -> Vec<LocalShareCandidate> {
+    let monitor_path = monitor_path
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| {
+            config
+                .inner()
+                .get("monitor_path", Some(""))
+                .unwrap_or_default()
+        });
+    let primary = primary
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| {
+            config
+                .inner()
+                .get("ats_primary_smb_url", Some(""))
+                .unwrap_or_default()
+        });
+    let backup = backup
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| {
+            config
+                .inner()
+                .get("ats_backup_smb_url", Some(""))
+                .unwrap_or_default()
+        });
+    list_local_share_candidates(&monitor_path, &primary, &backup)
 }
 
 /// Start, restart, or stop the bridge according to current settings + token.

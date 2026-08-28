@@ -1,7 +1,7 @@
 import {FormEvent, type ReactNode, useCallback, useEffect, useMemo, useRef, useState} from "react";
 import {listen} from "@tauri-apps/api/event";
 import {open as openDirectoryDialog} from "@tauri-apps/plugin-dialog";
-import {FolderOpen, Moon, RefreshCw, Sun, AlertTriangle} from "lucide-react";
+import {Moon, RefreshCw, Sun, AlertTriangle} from "lucide-react";
 import {cn, ensureMinDuration} from "@/lib/utils";
 import {Spinner} from "@/components/Spinner";
 import {StatusChip} from "@/components/StatusChip";
@@ -38,6 +38,7 @@ import {
     getSecret,
     getSetting,
     getSmsBalance,
+    listLocalShareCandidates,
     removeAtsHost,
     removeInactiveLongAtsHosts,
     saveSecret,
@@ -46,6 +47,7 @@ import {
     type AtsHostDetails,
     type AtsHostSummary,
     type AvailableRelease,
+    type LocalShareCandidate,
 } from "@/lib/tauri";
 import {AtsHostActivitySection} from "@/components/AtsHostActivitySection";
 import {DropboxAccountsSection} from "@/components/settings/DropboxAccountsSection";
@@ -75,6 +77,13 @@ import {CONNECTION_STATUS_CHANGED} from "@/lib/events";
 import {showAppToast} from "@/lib/toast";
 import {eventTypeLabel} from "@/lib/atsActivityDisplay";
 import {evaluatePathHints, formatPathsV1Status} from "@/lib/pathHints";
+import {
+    appendDraftShareOptions,
+    deriveBackupShareSuggestion,
+    sharePathKey,
+    toShareComboboxOptions,
+} from "@/lib/localShareCandidates";
+import {DirectoryPathField} from "@/components/DirectoryPathField";
 import {SmbUrlField} from "@/components/SmbUrlField";
 import {useThemeStore, type ThemeMode} from "@/store/themeStore";
 import {useUiStore} from "@/store/uiStore";
@@ -297,42 +306,6 @@ function formatTimestamp(value: string): string {
     }).format(date);
 }
 
-function PathField({
-                       label,
-                       value,
-                       placeholder,
-                       onChange,
-                       onPick,
-                   }: {
-    label: string;
-    value: string;
-    placeholder?: string;
-    onChange: (v: string) => void;
-    onPick: () => void;
-}) {
-    return (
-        <div className="space-y-1.5">
-            <Label>{label}</Label>
-            <div className="flex gap-2">
-                <Input
-                    value={value}
-                    onChange={(e) => onChange(e.target.value)}
-                    placeholder={placeholder}
-                />
-                <Button
-                    type="button"
-                    variant="secondary"
-                    size="icon"
-                    onClick={onPick}
-                    title="Ordner wählen"
-                >
-                    <FolderOpen className="h-4 w-4"/>
-                </Button>
-            </div>
-        </div>
-    );
-}
-
 function boolFromSetting(value: string, fallback = false): boolean {
     const v = value.trim().toLowerCase();
     if (!v) return fallback;
@@ -424,6 +397,8 @@ export function SettingsDialog({
     const [bridgeInstanceId, setBridgeInstanceId] = useState("");
     const [bridgeBusy, setBridgeBusy] = useState(false);
     const [bridgeStatusLoading, setBridgeStatusLoading] = useState(false);
+    const [shareCandidates, setShareCandidates] = useState<LocalShareCandidate[]>([]);
+    const [shareCandidatesLoading, setShareCandidatesLoading] = useState(false);
     const [bridgeView, setBridgeView] = useState<"monitoring" | "clients">("monitoring");
     const [atsHosts, setAtsHosts] = useState<AtsHostSummary[]>([]);
     const [atsHostsLoading, setAtsHostsLoading] = useState(false);
@@ -568,9 +543,79 @@ export function SettingsDialog({
     );
     const canAdoptMonitorPrimary =
         general.bridge_enabled &&
-        pathHintsStatus.monitor_is_network_share &&
         pathHintsStatus.suggested_primary_smb_url.length > 0 &&
         (pathHintsStatus.drift === "missing_primary" || pathHintsStatus.drift === "drift");
+
+    const loadShareCandidates = useCallback(async () => {
+        setShareCandidatesLoading(true);
+        try {
+            const items = await listLocalShareCandidates({
+                monitor_path: general.monitor_path,
+                primary: savedSnapshot?.general.ats_primary_smb_url ?? "",
+                backup: savedSnapshot?.general.ats_backup_smb_url ?? "",
+            });
+            setShareCandidates(items);
+        } catch {
+            setShareCandidates([]);
+        } finally {
+            setShareCandidatesLoading(false);
+        }
+    }, [general.monitor_path, savedSnapshot]);
+
+    const savedSharePrimary =
+        savedSnapshot?.general.ats_primary_smb_url ?? general.ats_primary_smb_url;
+    const savedShareBackup =
+        savedSnapshot?.general.ats_backup_smb_url ?? general.ats_backup_smb_url;
+
+    const primaryShareOptions = useMemo(
+        () =>
+            appendDraftShareOptions(toShareComboboxOptions(shareCandidates), [
+                {
+                    path: general.ats_primary_smb_url,
+                    label: "Entwurf Primär-Share",
+                },
+                {
+                    path: general.ats_backup_smb_url,
+                    label: "Entwurf Backup-Share",
+                },
+            ].filter(
+                (d) =>
+                    d.path.trim() &&
+                    sharePathKey(d.path) !== sharePathKey(savedSharePrimary) &&
+                    sharePathKey(d.path) !== sharePathKey(savedShareBackup),
+            )),
+        [
+            shareCandidates,
+            general.ats_primary_smb_url,
+            general.ats_backup_smb_url,
+            savedSharePrimary,
+            savedShareBackup,
+        ],
+    );
+
+    const backupShareOptions = useMemo(() => {
+        const base = appendDraftShareOptions(
+            toShareComboboxOptions(shareCandidates, general.ats_primary_smb_url),
+            [
+                {
+                    path: general.ats_backup_smb_url,
+                    label: "Entwurf Backup-Share",
+                },
+            ].filter(
+                (d) =>
+                    d.path.trim() &&
+                    sharePathKey(d.path) !== sharePathKey(savedShareBackup) &&
+                    sharePathKey(d.path) !== sharePathKey(general.ats_primary_smb_url),
+            ),
+        );
+        const derived = deriveBackupShareSuggestion(general.ats_primary_smb_url);
+        if (!derived) return base;
+        const exists = base.some(
+            (o) => o.value.trim().toLowerCase() === derived.trim().toLowerCase(),
+        );
+        if (exists) return base;
+        return [{value: derived, label: "Abgeleitet vom Primär-Share"}, ...base];
+    }, [shareCandidates, general.ats_primary_smb_url]);
 
     const loadAtsDetails = useCallback(async (instanceId: string, soft = false) => {
         const id = instanceId.trim();
@@ -1040,6 +1085,11 @@ export function SettingsDialog({
         void loadAll();
     }, [isOpen, initialTab, loadAll]);
 
+    useEffect(() => {
+        if (!isOpen) return;
+        void loadShareCandidates();
+    }, [isOpen, loadShareCandidates]);
+
     // Keep Custom-API status in sync with backend events while Settings is open.
     useEffect(() => {
         if (!isOpen || cloudService !== "custom_api") return;
@@ -1399,7 +1449,7 @@ export function SettingsDialog({
                             <TabsContent value="general" className="mt-4 space-y-4">
                                 <SettingsSection title="Ordner & Scan">
                                     <div className="space-y-3">
-                                        <PathField
+                                        <DirectoryPathField
                                             label="Zu überwachender Ordner"
                                             value={general.monitor_path}
                                             onChange={(v) =>
@@ -1411,7 +1461,7 @@ export function SettingsDialog({
                                                 });
                                             }}
                                         />
-                                        <PathField
+                                        <DirectoryPathField
                                             label="Archiv-Ordner"
                                             value={general.archive_path}
                                             onChange={(v) =>
@@ -1423,7 +1473,7 @@ export function SettingsDialog({
                                                 });
                                             }}
                                         />
-                                        <PathField
+                                        <DirectoryPathField
                                             label="Log-Datei-Ordner"
                                             value={general.log_file_path}
                                             placeholder="Leer = App-Datenverzeichnis"
@@ -1671,6 +1721,7 @@ export function SettingsDialog({
                                                                 ats_primary_smb_url: v,
                                                             }))
                                                         }
+                                                        suggestions={primaryShareOptions}
                                                         aria-label="Primär-Share Protokoll"
                                                     />
                                                 </Field>
@@ -1683,15 +1734,44 @@ export function SettingsDialog({
                                                                 ats_backup_smb_url: v,
                                                             }))
                                                         }
+                                                        suggestions={backupShareOptions}
                                                         aria-label="Backup-Share Protokoll"
                                                     />
                                                 </Field>
+                                                <div className="flex items-center gap-2">
+                                                    <Button
+                                                        type="button"
+                                                        variant="ghost"
+                                                        size="sm"
+                                                        className="h-7 px-2 text-xs"
+                                                        disabled={shareCandidatesLoading}
+                                                        onClick={() => {
+                                                            void loadShareCandidates();
+                                                        }}
+                                                    >
+                                                        <RefreshCw
+                                                            className={cn(
+                                                                "mr-1.5 h-3.5 w-3.5",
+                                                                shareCandidatesLoading &&
+                                                                    "animate-spin",
+                                                            )}
+                                                            aria-hidden
+                                                        />
+                                                        Lokale Shares aktualisieren
+                                                    </Button>
+                                                    <span className="text-[10px] text-muted">
+                                                        Vorschläge vom AMS-Rechner (gemountet /
+                                                        Netzlaufwerk / Freigaben)
+                                                    </span>
+                                                </div>
                                                 <p className="text-[11px] text-muted">
                                                     Client-Hints für ATS über Bridge-Health (
                                                     <span className="font-mono">ats_paths</span>
-                                                    ). Nicht der AMS-Monitorpfad — bevorzugt{" "}
-                                                    <span className="font-mono">smb://</span>, UNC
-                                                    wird beim Publish normalisiert. Capability{" "}
+                                                    ). Nicht der AMS-Monitorpfad — für Remote-ATS
+                                                    bevorzugt <span className="font-mono">smb://</span>{" "}
+                                                    (UNC wird normalisiert). Modus{" "}
+                                                    <span className="font-mono">Pfad</span> nur, wenn
+                                                    ATS denselben lokalen Pfad sieht. Capability{" "}
                                                     <span className="font-mono">paths-v1</span> nur
                                                     bei gesetztem Primär-Share.
                                                 </p>

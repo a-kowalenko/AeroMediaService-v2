@@ -165,7 +165,7 @@ export function ServerUrlSchemePicker({
           setOpen((v) => !v);
         }}
         className={cn(
-          "flex h-9 w-[4.75rem] items-center gap-0.5 rounded-l-md border-0 border-r border-border",
+          "flex h-9 w-[5rem] items-center gap-0.5 rounded-l-md border-0 border-r border-border",
           "bg-card px-1.5 text-xs font-mono text-foreground outline-none",
           "disabled:cursor-not-allowed",
         )}

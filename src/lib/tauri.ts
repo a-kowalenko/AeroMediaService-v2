@@ -194,6 +194,32 @@ export function getPathHintsStatus(): Promise<PathHintsStatus> {
     return invoke<PathHintsStatus>("get_path_hints_status");
 }
 
+export type LocalShareKind =
+    | "monitor"
+    | "mapped_drive"
+    | "mount"
+    | "local_export"
+    | "saved_primary"
+    | "saved_backup";
+
+export type LocalShareCandidate = {
+    path: string;
+    label: string;
+    kind: LocalShareKind;
+};
+
+export function listLocalShareCandidates(params?: {
+    monitor_path?: string;
+    primary?: string;
+    backup?: string;
+}): Promise<LocalShareCandidate[]> {
+    return invoke<LocalShareCandidate[]>("list_local_share_candidates_cmd", {
+        monitor_path: params?.monitor_path?.trim() || null,
+        primary: params?.primary?.trim() || null,
+        backup: params?.backup?.trim() || null,
+    });
+}
+
 export type AtsPresenceCategory = "connected" | "disconnected" | "inactive_long";
 
 export type AtsHostSummary = {
