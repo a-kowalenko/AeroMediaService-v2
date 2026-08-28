@@ -64,6 +64,58 @@ Patch ohne Unreleased-Text: Notes der Vorgängerversion werden übernommen.
 
 
 
+
+## [0.2.0-beta.2] - 2026-08-28
+
+### Neu
+
+- Einstellung **Betatester** unter Wartung → Software-Update: Vorabversionen anzeigen und per Auto-Update erhalten
+- In den Einstellungen gezielt auf eine **andere Version wechseln** (Upgrade oder Downgrade mit Bestätigung)
+- Bridge: **Primär-Share** und optionalen **Backup-Share** für Schnittplätze hinterlegen (`smb://…`)
+- Bei Netzwerk-Monitorpfad: Vorschlag **Primär aus Monitor übernehmen**
+- Kundenaufnahme: optional **Kunden-ID** und **Buchungs-ID** — Kontakt und gebuchte Medienarten werden aus der Buchung übernommen
+- Bei abweichenden Daten: Vergleich anzeigen und wählen, ob Buchungsdaten oder Formular behalten werden
+- Einstellungen: Reiter **Crew** — Tandemmaster, Videospringer und Aliases für die Ordnernamen-Vorhersage
+- Zuweisung mit IDs: Medien in die richtigen Unterordner sortieren, Ordner umbenennen und Fertig-Übergabe setzen
+- Bei unsicherer Crew-Erkennung: Dialog **Crew & Ordnername prüfen** mit Live-Vorschau (auch bei Stapel-Zuweisung)
+
+### Verbessert
+
+- Bridge Share-Vorschläge: **Freigabe zum Monitor-Ordner** wird erkannt und als fertige `smb://`-Adresse angeboten (mit Rechner-IP oder Hostname)
+- Lokale SMB-Freigaben in der Auswahlliste — passende Freigabe als **(Monitor)** hervorgehoben (Windows, macOS, Linux)
+- Bridge Primär-/Backup-Share: **Auswahlliste** mit auf dem AMS-Rechner erkannten Freigaben (Netzlaufwerke, gemountete Shares, lokale Exporte)
+- Button **Lokale Shares aktualisieren** lädt die Vorschlagsliste neu
+- Backup-Share: Vorschlag **vom Primär-Share abgeleitet** (z. B. mit `-backup`)
+- **Primär aus Monitor übernehmen** — auch wenn der Monitor ein lokaler Pfad ist (Modus **Pfad**, nicht nur Netzwerk)
+- Upload **Abbrechen**: Status „Abbruch…“, Button „Wird abgebrochen…“ — Pause und erneutes Abbrechen sind während des Abbruchs gesperrt
+- Update-Dialog: Hinweis bei **Vorabversionen (Beta)**; Patchnotes aufklappbar
+- Versionsliste in den Einstellungen mit Kennzeichnung (Neueste, Beta, Installiert)
+- Hinweis in der App und unter Bridge-Einstellungen, wenn der Primär-Share fehlt oder nicht zum Monitor-Pfad passt
+- Einstellungen: eigener Reiter **Bridge** — Warnhinweis öffnet dort direkt
+- Primär- und Backup-Share mit Protokollwahl (`smb://`, UNC `\\` oder lokaler **Pfad**)
+- Crew-Reiter: Rollen TM/VS als **Schalter**; übersichtlichere Mitgliederliste
+- Bridge-Client-Übersicht und Aktivitätsliste: Aktualisieren ohne leeres Flackern
+- Ordnerauswahl bei der Zuweisung: Hintergrund-Aktualisierung ohne sichtbares Neu-Laden
+- Monitoring an/aus bleibt nach Neustart erhalten
+
+### Behoben
+
+- **Medien nachreichen** startet wieder normal, auch wenn der vorherige Upload abgebrochen oder pausiert war
+- Abgebrochener Upload: am Schnittplatz nicht mehr fälschlich **Fertig**, wenn die Statusdatei noch „erledigt“ meldet — **Abgebrochen** aus der Historie hat Vorrang
+- Bridge-Jobstatus: fehlende Statusdatei wird aus der **Historie** geliefert (auch bei Abbruch)
+- Share-Pfade: falsches `smb://`-Präfix vor lokalen Windows-Pfaden wird beim Eingeben bereinigt
+- Windows-Release-Builds nutzen nur noch **NSIS** (kein MSI), damit Beta-Tags wie `0.1.14-beta.1` in CI durchlaufen
+- **Auto-Update** wieder vollständig: macOS-Updater-Archive (`.app.tar.gz`) werden in CI zuverlässig hochgeladen; `latest.json`-Merge erst nach grünem Matrix-Build
+- Übergabe vom Schnittplatz: Wartezeit startet erst mit aktivem Monitoring — Aufträge werden nicht abgelehnt, nur weil AMS kurz aus war
+- Fertige Übergabe-Ordner werden auch nach Ablauf der Wartezeit noch übernommen, sobald sie bereit sind
+- Timeout-Meldung bei sichtbarem Ordner nicht mehr fälschlich als „Ordner nicht sichtbar“
+- Abgelehnte Übergabe verschwindet aus der Ansicht, sobald der Upload den Ordner übernommen hat
+- Dialog **Medien nachreichen**: Abdunkelung liegt wieder korrekt hinter dem Fenster
+
+### Hinweis
+
+- Ohne Kunden-/Buchungs-ID bleibt die bisherige Kontakt-Zuweisung unverändert
+
 ## [0.2.0-beta.1] - 2026-08-28
 
 ### Neu
