@@ -3,12 +3,16 @@
 use serde::Serialize;
 
 use crate::bridge::to_smb_url;
+use crate::util::local_ips::list_smb_host_endpoints;
+use crate::util::smb_export::{local_paths_match, ShareExport};
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum LocalShareKind {
     Monitor,
     MappedDrive,
+    /// Exported SMB share whose path matches `monitor_path`.
+    LocalExportMonitor,
     Mount,
     LocalExport,
     SavedPrimary,
@@ -30,6 +34,7 @@ pub fn list_local_share_candidates(
     backup_raw: &str,
 ) -> Vec<LocalShareCandidate> {
     let mut out: Vec<LocalShareCandidate> = Vec::new();
+    let monitor = monitor_path.trim();
 
     push_unique(
         &mut out,
@@ -59,13 +64,13 @@ pub fn list_local_share_candidates(
     );
 
     #[cfg(target_os = "windows")]
-    collect_windows(&mut out);
+    collect_windows(&mut out, monitor);
 
     #[cfg(target_os = "macos")]
-    collect_macos(&mut out);
+    collect_macos(&mut out, monitor);
 
     #[cfg(target_os = "linux")]
-    collect_linux(&mut out);
+    collect_linux(&mut out, monitor);
 
     sort_candidates(&mut out);
     out
@@ -112,18 +117,52 @@ fn sort_candidates(out: &mut [LocalShareCandidate]) {
 fn kind_rank(kind: &LocalShareKind) -> u8 {
     match kind {
         LocalShareKind::Monitor => 0,
-        LocalShareKind::MappedDrive => 1,
-        LocalShareKind::Mount => 2,
-        LocalShareKind::LocalExport => 3,
-        LocalShareKind::SavedPrimary => 4,
-        LocalShareKind::SavedBackup => 5,
+        LocalShareKind::LocalExportMonitor => 1,
+        LocalShareKind::MappedDrive => 2,
+        LocalShareKind::Mount => 3,
+        LocalShareKind::LocalExport => 4,
+        LocalShareKind::SavedPrimary => 5,
+        LocalShareKind::SavedBackup => 6,
+    }
+}
+
+fn push_share_export_urls(
+    out: &mut Vec<LocalShareCandidate>,
+    export: &ShareExport,
+    monitor_path: &str,
+    hosts: &[String],
+) {
+    if export.share_name.is_empty() || hosts.is_empty() {
+        return;
+    }
+    let matches_monitor = local_paths_match(&export.local_path, monitor_path);
+    let kind = if matches_monitor {
+        LocalShareKind::LocalExportMonitor
+    } else {
+        LocalShareKind::LocalExport
+    };
+    for host in hosts {
+        let url = format!("smb://{}/{}", host, export.share_name);
+        let label = if matches_monitor {
+            format!("Freigabe {} (Monitor) — {host}", export.share_name)
+        } else {
+            format!("Lokale Freigabe {} — {host}", export.share_name)
+        };
+        push_unique(
+            out,
+            LocalShareCandidate {
+                path: url,
+                label,
+                kind,
+            },
+        );
     }
 }
 
 #[cfg(target_os = "windows")]
-fn collect_windows(out: &mut Vec<LocalShareCandidate>) {
+fn collect_windows(out: &mut Vec<LocalShareCandidate>, monitor_path: &str) {
     collect_windows_mapped_drives(out);
-    collect_windows_local_exports(out);
+    collect_windows_local_exports(out, monitor_path);
 }
 
 #[cfg(target_os = "windows")]
@@ -162,25 +201,22 @@ fn collect_windows_mapped_drives(out: &mut Vec<LocalShareCandidate>) {
 }
 
 #[cfg(target_os = "windows")]
-fn collect_windows_local_exports(out: &mut Vec<LocalShareCandidate>) {
-    let host = local_host_label();
-    let output = std::process::Command::new("net")
-        .args(["share"])
-        .output()
-        .ok();
-    let Some(output) = output else {
+fn collect_windows_local_exports(out: &mut Vec<LocalShareCandidate>, monitor_path: &str) {
+    let Ok(output) = std::process::Command::new("net").args(["share"]).output() else {
         return;
     };
     if !output.status.success() {
         return;
     }
+    let hosts = list_smb_host_endpoints();
     let text = String::from_utf8_lossy(&output.stdout);
     for line in text.lines().skip(2) {
         let line = line.trim_end();
         if line.is_empty() || line.starts_with('-') {
             continue;
         }
-        let Some((share_name, _rest)) = line.split_once(char::is_whitespace) else {
+        let mut parts = line.split_whitespace();
+        let Some(share_name) = parts.next() else {
             continue;
         };
         let share_name = share_name.trim();
@@ -190,27 +226,88 @@ fn collect_windows_local_exports(out: &mut Vec<LocalShareCandidate>) {
         {
             continue;
         }
-        let unc = format!(r"\\{host}\{share_name}");
-        push_unique(
+        let resource = parts.next().unwrap_or("").trim();
+        push_share_export_urls(
             out,
-            LocalShareCandidate {
-                path: to_smb_url(&unc),
-                label: format!("Lokale Freigabe {share_name}"),
-                kind: LocalShareKind::LocalExport,
+            &ShareExport {
+                share_name: share_name.to_string(),
+                local_path: resource.to_string(),
             },
+            monitor_path,
+            &hosts,
         );
     }
 }
 
 #[cfg(target_os = "macos")]
-fn collect_macos(out: &mut Vec<LocalShareCandidate>) {
+fn collect_macos(out: &mut Vec<LocalShareCandidate>, monitor_path: &str) {
+    collect_macos_file_sharing_exports(out, monitor_path);
     collect_mount_table(out, &["mount"]);
 }
 
+#[cfg(target_os = "macos")]
+fn collect_macos_file_sharing_exports(out: &mut Vec<LocalShareCandidate>, monitor_path: &str) {
+    let exports = read_macos_sharing_exports();
+    if exports.is_empty() {
+        return;
+    }
+    let hosts = list_smb_host_endpoints();
+    for export in &exports {
+        push_share_export_urls(out, export, monitor_path, &hosts);
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn read_macos_sharing_exports() -> Vec<ShareExport> {
+    use crate::util::smb_export::parse_macos_sharing_list;
+    let Ok(output) = std::process::Command::new("sharing").args(["-l"]).output() else {
+        return Vec::new();
+    };
+    if !output.status.success() {
+        return Vec::new();
+    }
+    parse_macos_sharing_list(&String::from_utf8_lossy(&output.stdout))
+}
+
 #[cfg(target_os = "linux")]
-fn collect_linux(out: &mut Vec<LocalShareCandidate>) {
+fn collect_linux(out: &mut Vec<LocalShareCandidate>, monitor_path: &str) {
+    collect_linux_samba_exports(out, monitor_path);
     collect_mount_table(out, &["mount"]);
     collect_proc_mounts(out);
+}
+
+#[cfg(target_os = "linux")]
+fn collect_linux_samba_exports(out: &mut Vec<LocalShareCandidate>, monitor_path: &str) {
+    let exports = read_linux_samba_exports();
+    if exports.is_empty() {
+        return;
+    }
+    let hosts = list_smb_host_endpoints();
+    for export in &exports {
+        push_share_export_urls(out, export, monitor_path, &hosts);
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn read_linux_samba_exports() -> Vec<ShareExport> {
+    use crate::util::smb_export::parse_smb_conf_exports;
+    if let Ok(output) = std::process::Command::new("testparm").args(["-s"]).output() {
+        if output.status.success() {
+            let parsed = parse_smb_conf_exports(&String::from_utf8_lossy(&output.stdout));
+            if !parsed.is_empty() {
+                return parsed;
+            }
+        }
+    }
+    for path in ["/etc/samba/smb.conf", "/etc/smb.conf"] {
+        if let Ok(text) = std::fs::read_to_string(path) {
+            let parsed = parse_smb_conf_exports(&text);
+            if !parsed.is_empty() {
+                return parsed;
+            }
+        }
+    }
+    Vec::new()
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -233,20 +330,18 @@ fn collect_proc_mounts(out: &mut Vec<LocalShareCandidate>) {
         return;
     };
     for line in text.lines() {
-        let Some((source, _mount_point, fs_type)) = parse_proc_mount_fields(line) else {
+        let Some((source, mount_point, fs_type)) = parse_proc_mount_fields(line) else {
             continue;
         };
         if !is_smb_fs_type(fs_type) {
             continue;
         }
-        push_mount_source(out, source, _mount_point);
+        push_mount_source(out, source, mount_point);
     }
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 fn parse_mount_line(out: &mut Vec<LocalShareCandidate>, line: &str) {
-    // //user@host/share on /Volumes/share (smbfs, …)
-    // //host/share on /mnt/share type cifs (...)
     let Some(on_idx) = line.find(" on ") else {
         return;
     };
@@ -313,17 +408,10 @@ fn is_smb_fs_type(fs_type: &str) -> bool {
     )
 }
 
-fn local_host_label() -> String {
-    hostname::get()
-        .ok()
-        .and_then(|h| h.into_string().ok())
-        .filter(|s| !s.trim().is_empty())
-        .unwrap_or_else(|| "localhost".into())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::util::smb_export::ShareExport;
 
     #[test]
     fn repairs_smb_prefix_on_local_windows_path() {
@@ -375,6 +463,24 @@ mod tests {
         );
         assert!(list.iter().any(|c| c.kind == LocalShareKind::SavedBackup));
         assert!(list.iter().any(|c| c.path == "smb://host/aktuell-backup"));
+    }
+
+    #[test]
+    fn push_share_export_urls_emits_per_host() {
+        let mut out = Vec::new();
+        push_share_export_urls(
+            &mut out,
+            &ShareExport {
+                share_name: "aktuell".into(),
+                local_path: "/home/user/aktuell".into(),
+            },
+            "/home/user/aktuell",
+            &["192.168.178.89".into(), "169.254.169.254".into()],
+        );
+        assert_eq!(out.len(), 2);
+        assert!(out.iter().all(|c| c.kind == LocalShareKind::LocalExportMonitor));
+        assert!(out.iter().any(|c| c.path == "smb://192.168.178.89/aktuell"));
+        assert!(out.iter().any(|c| c.path == "smb://169.254.169.254/aktuell"));
     }
 
     #[cfg(target_os = "linux")]

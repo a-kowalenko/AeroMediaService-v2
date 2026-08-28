@@ -197,6 +197,7 @@ export function getPathHintsStatus(): Promise<PathHintsStatus> {
 export type LocalShareKind =
     | "monitor"
     | "mapped_drive"
+    | "local_export_monitor"
     | "mount"
     | "local_export"
     | "saved_primary"
