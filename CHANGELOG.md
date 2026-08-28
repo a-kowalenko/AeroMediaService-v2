@@ -39,6 +39,8 @@ Patch ohne Unreleased-Text: Notes der Vorgängerversion werden übernommen.
 
 ### Behoben
 
+- Abgebrochener Upload: am Schnittplatz nicht mehr fälschlich **Fertig**, wenn die Statusdatei noch „erledigt“ meldet — **Abgebrochen** aus der Historie hat Vorrang
+- Bridge-Jobstatus: fehlende Statusdatei wird aus der **Historie** geliefert (auch bei Abbruch)
 - Share-Pfade: falsches `smb://`-Präfix vor lokalen Windows-Pfaden wird beim Eingeben bereinigt
 - Windows-Release-Builds nutzen nur noch **NSIS** (kein MSI), damit Beta-Tags wie `0.1.14-beta.1` in CI durchlaufen
 - **Auto-Update** wieder vollständig: macOS-Updater-Archive (`.app.tar.gz`) werden in CI zuverlässig hochgeladen; `latest.json`-Merge erst nach grünem Matrix-Build
