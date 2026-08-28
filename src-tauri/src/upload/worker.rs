@@ -320,6 +320,9 @@ async fn process_append_job(
     registry: &UploadQueueRegistry,
     archive_path: &str,
 ) {
+    // Same as run_single_job: clear pause/cancel from a prior job (e.g. manual abort).
+    control.reset_for_new_job();
+
     let local_dir_path = job.dir_path.as_path();
     let dir_name = local_dir_path
         .file_name()
@@ -696,7 +699,7 @@ mod tests {
     use super::*;
     use crate::model::kunde::Kunde;
     use crate::model::marker::{write_processing_marker, MARKER_PROCESSING};
-    use crate::upload::registry::UploadQueueRegistry;
+    use crate::upload::registry::{AppendTarget, UploadQueueRegistry};
     use async_trait::async_trait;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -877,6 +880,62 @@ mod tests {
 
         assert!(archive.join(ARCHIVE_CANCELLED).join("job-cancel").is_dir());
         assert!(!job_dir.exists());
+    }
+
+    fn make_append_job(dir: &Path) -> UploadJob {
+        let mut job = make_job(dir);
+        job.append = Some(AppendTarget {
+            parent_dir_name: "parent-job".into(),
+            remote_path: "/parent-job".into(),
+            order_id: Some("order-123".into()),
+            share_link: Some("https://dropbox.com/s/parent".into()),
+            dropbox_account_ams_id: None,
+            dropbox_account_pool: None,
+            dropbox_account_id: None,
+            dropbox_account_email: None,
+        });
+        job
+    }
+
+    #[tokio::test]
+    async fn append_after_prior_cancel_clears_stale_flag_and_succeeds() {
+        let root = tempdir().unwrap();
+        let job_dir = root.path().join("parent-job_nachreichung_01");
+        std::fs::create_dir(&job_dir).unwrap();
+        let archive = root.path().join("archive");
+        let job = make_append_job(&job_dir);
+        let registry = UploadQueueRegistry::new();
+        let (tx, _rx) = unbounded_channel();
+        registry.enqueue(&tx, job.clone(), false);
+
+        let control = UploadControl::new();
+        control.request_cancel();
+        assert!(control.is_cancelled());
+
+        let client = MockClient::ok();
+        process_job(
+            &job,
+            &client,
+            &control,
+            &registry,
+            archive.to_str().unwrap(),
+        )
+        .await;
+
+        assert!(
+            archive
+                .join(ARCHIVE_SUCCESS)
+                .join("parent-job_nachreichung_01")
+                .join("photo.jpg")
+                .is_file(),
+            "append must not inherit cancel from a prior job"
+        );
+        assert!(!archive
+            .join(ARCHIVE_CANCELLED)
+            .join("parent-job_nachreichung_01")
+            .exists());
+        assert_eq!(client.uploads.load(Ordering::SeqCst), 1);
+        assert!(!control.is_cancelled());
     }
 
     #[test]
