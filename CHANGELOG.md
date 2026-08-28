@@ -41,6 +41,8 @@ Patch ohne Unreleased-Text: Notes der Vorgängerversion werden übernommen.
 
 ### Behoben
 
+- **Skydive Media**: Große Videos werden nach parallelem Upload vollständig im Cloud-Manifest verknüpft — die Dropbox-Zuordnung fehlte zuvor teilweise
+- Upload schlägt mit klarer Meldung fehl, wenn Dateien im Cloud-Manifest nicht verknüpft werden konnten (statt still als **Fertig**)
 - **Medien nachreichen** startet wieder normal, auch wenn der vorherige Upload abgebrochen oder pausiert war
 - Abgebrochener Upload: am Schnittplatz nicht mehr fälschlich **Fertig**, wenn die Statusdatei noch „erledigt“ meldet — **Abgebrochen** aus der Historie hat Vorrang
 - Bridge-Jobstatus: fehlende Statusdatei wird aus der **Historie** geliefert (auch bei Abbruch)
