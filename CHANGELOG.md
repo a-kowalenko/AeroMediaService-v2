@@ -22,18 +22,24 @@ Patch ohne Unreleased-Text: Notes der Vorgängerversion werden übernommen.
 
 ### Verbessert
 
+- Bridge Primär-/Backup-Share: **Auswahlliste** mit auf dem AMS-Rechner erkannten Freigaben (Netzlaufwerke, gemountete Shares, lokale Exporte)
+- Button **Lokale Shares aktualisieren** lädt die Vorschlagsliste neu
+- Backup-Share: Vorschlag **vom Primär-Share abgeleitet** (z. B. mit `-backup`)
+- **Primär aus Monitor übernehmen** — auch wenn der Monitor ein lokaler Pfad ist (Modus **Pfad**, nicht nur Netzwerk)
 - Upload **Abbrechen**: Status „Abbruch…“, Button „Wird abgebrochen…“ — Pause und erneutes Abbrechen sind während des Abbruchs gesperrt
 - Update-Dialog: Hinweis bei **Vorabversionen (Beta)**; Patchnotes aufklappbar
 - Versionsliste in den Einstellungen mit Kennzeichnung (Neueste, Beta, Installiert)
 - Hinweis in der App und unter Bridge-Einstellungen, wenn der Primär-Share fehlt oder nicht zum Monitor-Pfad passt
 - Einstellungen: eigener Reiter **Bridge** — Warnhinweis öffnet dort direkt
-- Primär- und Backup-Share mit Protokollwahl (`smb://` oder UNC `\\`)
+- Primär- und Backup-Share mit Protokollwahl (`smb://`, UNC `\\` oder lokaler **Pfad**)
+- Crew-Reiter: Rollen TM/VS als **Schalter**; übersichtlichere Mitgliederliste
 - Bridge-Client-Übersicht und Aktivitätsliste: Aktualisieren ohne leeres Flackern
 - Ordnerauswahl bei der Zuweisung: Hintergrund-Aktualisierung ohne sichtbares Neu-Laden
 - Monitoring an/aus bleibt nach Neustart erhalten
 
 ### Behoben
 
+- Share-Pfade: falsches `smb://`-Präfix vor lokalen Windows-Pfaden wird beim Eingeben bereinigt
 - Windows-Release-Builds nutzen nur noch **NSIS** (kein MSI), damit Beta-Tags wie `0.1.14-beta.1` in CI durchlaufen
 - **Auto-Update** wieder vollständig: macOS-Updater-Archive (`.app.tar.gz`) werden in CI zuverlässig hochgeladen; `latest.json`-Merge erst nach grünem Matrix-Build
 - Übergabe vom Schnittplatz: Wartezeit startet erst mit aktivem Monitoring — Aufträge werden nicht abgelehnt, nur weil AMS kurz aus war
