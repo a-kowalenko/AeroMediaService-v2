@@ -8,8 +8,9 @@
  *   2) Choose channel: stable | beta
  *
  * Already on prerelease (e.g. 0.1.14-beta.1):
- *   beta   → 0.1.14-beta.2
- *   stable → 0.1.14 (promote)
+ *   beta        → 0.1.14-beta.2
+ *   stable      → 0.1.14 (promote)
+ *   new beta    → bump core + x.y.z-beta.1 (patch | minor | major)
  *
  * Changelog:
  *   beta   → snapshot ## [x.y.z-beta.N] (Unreleased kept)
@@ -32,6 +33,7 @@ import {
 import {
   bumpCore,
   isPrereleaseVersion,
+  nextBetaLineVersion,
   nextBetaVersion,
   parseSemVer,
   toStableVersion,
@@ -158,17 +160,48 @@ async function ask(rl, question) {
   return (await rl.question(question)).trim();
 }
 
+const BUMP_KIND_MAP = {
+  1: "patch",
+  patch: "patch",
+  2: "minor",
+  minor: "minor",
+  3: "major",
+  major: "major",
+};
+
+/**
+ * @returns {Promise<"major"|"minor"|"patch"|null>}
+ */
+async function askBumpKind(rl) {
+  console.log("Ziel-Bump wählen:");
+  console.log("  1) patch  — Bugfixes        (x.y.Z)");
+  console.log("  2) minor  — neue Features   (x.Y.0)");
+  console.log("  3) major  — Breaking Change (X.0.0)");
+  console.log("  q) abbrechen\n");
+
+  const bumpChoice = (await ask(rl, "Auswahl [1/2/3/q]: ")).toLowerCase();
+  if (bumpChoice === "q" || bumpChoice === "quit" || bumpChoice === "abort") {
+    return null;
+  }
+  const kind = BUMP_KIND_MAP[bumpChoice];
+  if (!kind) {
+    throw new Error(`Ungültige Auswahl: ${bumpChoice}`);
+  }
+  return kind;
+}
+
 /**
  * @returns {Promise<{ next: string, channel: "stable"|"beta", kind: "major"|"minor"|"patch"|"promote"|"beta-next" }|null>}
  */
 async function resolveNextVersion(rl, current) {
   if (isPrereleaseVersion(current)) {
     console.log("Aktuell auf Vorabversion — nächster Schritt:");
-    console.log("  1) beta    — nächste Beta   (…-beta.N+1)");
-    console.log("  2) stable  — finale Version (Suffix entfernen)");
+    console.log("  1) beta            — nächste Beta        (…-beta.N+1)");
+    console.log("  2) stable          — finale Version      (Suffix entfernen)");
+    console.log("  3) neue Beta-Linie — Core bump + beta.1  (patch / minor / major)");
     console.log("  q) abbrechen\n");
 
-    const choice = (await ask(rl, "Auswahl [1/2/q]: ")).toLowerCase();
+    const choice = (await ask(rl, "Auswahl [1/2/3/q]: ")).toLowerCase();
     if (choice === "q" || choice === "quit" || choice === "abort") {
       return null;
     }
@@ -186,30 +219,30 @@ async function resolveNextVersion(rl, current) {
         kind: "promote",
       };
     }
+    if (
+      choice === "3" ||
+      choice === "neu" ||
+      choice === "neue" ||
+      choice === "line" ||
+      choice === "bump"
+    ) {
+      console.log("");
+      const kind = await askBumpKind(rl);
+      if (!kind) {
+        return null;
+      }
+      return {
+        next: nextBetaLineVersion(current, kind),
+        channel: "beta",
+        kind,
+      };
+    }
     throw new Error(`Ungültige Auswahl: ${choice}`);
   }
 
-  console.log("Ziel-Bump wählen:");
-  console.log("  1) patch  — Bugfixes        (x.y.Z)");
-  console.log("  2) minor  — neue Features   (x.Y.0)");
-  console.log("  3) major  — Breaking Change (X.0.0)");
-  console.log("  q) abbrechen\n");
-
-  const bumpChoice = (await ask(rl, "Auswahl [1/2/3/q]: ")).toLowerCase();
-  const kindMap = {
-    1: "patch",
-    patch: "patch",
-    2: "minor",
-    minor: "minor",
-    3: "major",
-    major: "major",
-  };
-  if (bumpChoice === "q" || bumpChoice === "quit" || bumpChoice === "abort") {
-    return null;
-  }
-  const kind = kindMap[bumpChoice];
+  const kind = await askBumpKind(rl);
   if (!kind) {
-    throw new Error(`Ungültige Auswahl: ${bumpChoice}`);
+    return null;
   }
 
   console.log("\nKanal wählen:");

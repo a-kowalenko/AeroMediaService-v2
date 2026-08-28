@@ -4,6 +4,7 @@ import {
   bumpCore,
   compareSemVer,
   isPrereleaseVersion,
+  nextBetaLineVersion,
   nextBetaVersion,
   toStableVersion,
 } from "./semver.mjs";
@@ -28,6 +29,13 @@ describe("semver", () => {
     assert.equal(bumpCore("0.1.13", "patch"), "0.1.14");
     assert.ok(isPrereleaseVersion("0.1.14-beta.1"));
     assert.ok(!isPrereleaseVersion("0.1.14"));
+  });
+
+  it("starts new beta line from prerelease", () => {
+    assert.equal(nextBetaLineVersion("0.1.14-beta.6", "patch"), "0.1.15-beta.1");
+    assert.equal(nextBetaLineVersion("0.1.14-beta.6", "minor"), "0.2.0-beta.1");
+    assert.equal(nextBetaLineVersion("0.1.14-beta.6", "major"), "1.0.0-beta.1");
+    assert.ok(compareSemVer("0.1.14-beta.6", "0.2.0-beta.1") < 0);
   });
 });
 
