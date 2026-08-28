@@ -84,14 +84,15 @@ pub fn run() {
     let ats_presence_state = AtsPresenceState::new().unwrap_or_else(|e| {
         panic!("failed to initialize ATS presence store: {e}");
     });
+    let history_state = HistoryState::new().unwrap_or_else(|e| {
+        panic!("failed to initialize history store: {e}");
+    });
     let bridge_state = BridgeState::new(
         monitor_state.wake_fn(),
         monitor_state.cancel_fn(),
         ats_presence_state.clone(),
+        history_state.clone(),
     );
-    let history_state = HistoryState::new().unwrap_or_else(|e| {
-        panic!("failed to initialize history store: {e}");
-    });
     let customer_state = CustomerState::new().unwrap_or_else(|e| {
         panic!("failed to initialize customer store: {e}");
     });

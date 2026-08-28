@@ -340,6 +340,58 @@ pub fn read_status_outbox(
     serde_json::from_str(raw.trim()).map_err(|e| ManifestError::InvalidJson(e.to_string()))
 }
 
+/// When AMS Historie says „Abgebrochen“ but the share outbox still says `completed`, ATS must see cancel.
+pub fn merge_history_cancel_override(doc: &mut StatusOutboxV1, entry: &crate::storage::history::HistoryEntry) {
+    use crate::model::history_status::is_cancelled_status;
+
+    let cancelled = entry.overall_status.eq_ignore_ascii_case("Abgebrochen")
+        || is_cancelled_status(Some(entry.status.as_str()));
+    if !cancelled {
+        return;
+    }
+
+    doc.state = OutboxState::Failed;
+    doc.error = Some(OutboxError {
+        code: CODE_CANCELLED.to_string(),
+        message: if entry.status.trim().is_empty() {
+            "Abgebrochen".into()
+        } else {
+            entry.status.clone()
+        },
+    });
+    let arch = entry.archived_path.trim();
+    if !arch.is_empty() {
+        doc.ams.archive = Some(arch.to_string());
+    } else if !entry.archive_subfolder.trim().is_empty() {
+        doc.ams.archive = Some(entry.archive_subfolder.clone());
+    }
+    let updated = entry.last_updated.trim();
+    if !updated.is_empty() {
+        doc.updated_at = updated.to_string();
+    }
+}
+
+/// Build outbox payload from Historie when share outbox is missing/stale.
+pub fn status_outbox_from_history(
+    correlation_id: &str,
+    entry: &crate::storage::history::HistoryEntry,
+) -> StatusOutboxV1 {
+    let mut doc = StatusOutboxV1 {
+        schema: SCHEMA_V1,
+        correlation_id: correlation_id.trim().to_string(),
+        updated_at: entry.last_updated.clone(),
+        state: OutboxState::Completed,
+        error: None,
+        ams: OutboxAmsMeta {
+            history_id: Some(entry.id.clone()),
+            archive: None,
+        },
+        extensions: Value::Object(Default::default()),
+    };
+    merge_history_cancel_override(&mut doc, entry);
+    doc
+}
+
 /// Atomically write bytes (temp → rename). Used for outbox, manifest, and markers.
 pub fn atomic_write_file(dest: &Path, bytes: &[u8]) -> io::Result<()> {
     if let Some(parent) = dest.parent() {

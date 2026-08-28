@@ -22,11 +22,13 @@ use super::types::{
 use crate::cloud::custom_api::fetch_customer_as_kunde;
 use crate::commands::ConfigState;
 use crate::model::handoff::{
-    read_status_outbox, write_status_outbox, OutboxAmsMeta, OutboxError, OutboxState,
-    CODE_CUSTOMER_LOOKUP_FAILED, CODE_CANCELLED,
+    merge_history_cancel_override, read_status_outbox, status_outbox_from_history,
+    write_status_outbox, OutboxAmsMeta, OutboxError, OutboxState, CODE_CANCELLED,
+    CODE_CUSTOMER_LOOKUP_FAILED,
 };
 use crate::model::marker::{normalize_marker_type, ApiMarkerQuery};
 use crate::storage::ats_presence::AtsPresenceState;
+use crate::storage::history::HistoryState;
 use crate::storage::logging;
 use super::presence::{record_bridge_event, BridgeEventKind};
 use super::{ensure_instance_id, resolve_display_name};
@@ -45,6 +47,7 @@ struct AppState {
     /// Live monitor_path from config on each health / jobs call.
     config: ConfigState,
     presence: AtsPresenceState,
+    history: HistoryState,
     wake_monitor: MonitorWakeFn,
     cancel_monitor: MonitorCancelFn,
 }
@@ -101,6 +104,7 @@ impl BridgeRuntime {
         presence: AtsPresenceState,
         wake_monitor: MonitorWakeFn,
         cancel_monitor: MonitorCancelFn,
+        history: HistoryState,
     ) -> Result<Self, String> {
         let addr: SocketAddr = bind
             .parse()
@@ -130,6 +134,7 @@ impl BridgeRuntime {
             version: version.clone(),
             config,
             presence,
+            history,
             wake_monitor,
             cancel_monitor,
         };
@@ -426,7 +431,26 @@ async fn job_status(
 
     let share_root = Path::new(monitor_path);
     let path = crate::model::handoff::outbox_path(share_root, cid);
+
+    let history_entry = state.history.find_by_correlation_id(cid).ok().flatten();
+
     if !path.is_file() {
+        if let Some(entry) = history_entry.as_ref() {
+            let doc = status_outbox_from_history(cid, entry);
+            let response = (StatusCode::OK, Json(JobStatusResponse::found(doc)));
+            record_bridge_event(
+                &state.presence,
+                &headers,
+                BridgeEventKind::JobStatus,
+                "/v1/jobs/{correlation_id}",
+                "GET",
+                StatusCode::OK,
+                Some(cid),
+                None,
+                None,
+            );
+            return response;
+        }
         let response = (
             StatusCode::NOT_FOUND,
             Json(JobStatusResponse::not_found(cid)),
@@ -444,8 +468,32 @@ async fn job_status(
         );
         return response;
     }
+
     let response = match read_status_outbox(share_root, cid) {
-        Ok(doc) => (StatusCode::OK, Json(JobStatusResponse::found(doc))),
+        Ok(mut doc) => {
+            if let Some(entry) = history_entry.as_ref() {
+                let before_state = doc.state;
+                let before_code = doc
+                    .error
+                    .as_ref()
+                    .map(|e| e.code.clone())
+                    .unwrap_or_default();
+                merge_history_cancel_override(&mut doc, entry);
+                let repaired = before_state == OutboxState::Completed
+                    && doc.error.as_ref().map(|e| e.code.as_str()) == Some(CODE_CANCELLED)
+                    && before_code != CODE_CANCELLED;
+                if repaired {
+                    let _ = write_status_outbox(
+                        share_root,
+                        cid,
+                        doc.state,
+                        doc.error.clone(),
+                        doc.ams.clone(),
+                    );
+                }
+            }
+            (StatusCode::OK, Json(JobStatusResponse::found(doc)))
+        }
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(JobStatusResponse {
@@ -579,7 +627,10 @@ async fn handoff_cancel(
 mod tests {
     use super::*;
     use crate::constants::CONFIG_DB_FILE;
-    use crate::model::handoff::{write_status_outbox, OutboxAmsMeta, OutboxState, SCHEMA_V1};
+    use crate::model::handoff::{
+        read_status_outbox, write_status_outbox, OutboxAmsMeta, OutboxState, SCHEMA_V1,
+        CODE_CANCELLED,
+    };
     use crate::storage::config::ConfigStore;
     use crate::constants::ATS_PRESENCE_DB_FILE;
     use crate::storage::ats_presence::{AtsPresenceState, AtsPresenceStore};
@@ -611,6 +662,16 @@ mod tests {
         AtsPresenceState::from_store(store)
     }
 
+    fn test_history() -> HistoryState {
+        use crate::constants::HISTORY_DB_FILE;
+        use crate::storage::history::HistoryStore;
+
+        let dir = tempdir().unwrap();
+        let store = HistoryStore::open_at(dir.path().join(HISTORY_DB_FILE)).unwrap();
+        std::mem::forget(dir);
+        HistoryState::from_store(store)
+    }
+
     #[tokio::test]
     async fn health_requires_token_and_returns_ready_capability() {
         let config = test_config_with_monitor(r"\\test\aktuell");
@@ -623,6 +684,7 @@ mod tests {
             test_presence(),
             noop_wake(),
             noop_cancel(),
+            test_history(),
         )
             .await
             .expect("bind");
@@ -684,6 +746,7 @@ mod tests {
             test_presence(),
             noop_wake(),
             noop_cancel(),
+            test_history(),
         )
         .await
         .expect("bind");
@@ -720,6 +783,7 @@ mod tests {
             test_presence(),
             noop_wake(),
             noop_cancel(),
+            test_history(),
         )
             .await
             .unwrap();
@@ -766,6 +830,7 @@ mod tests {
             test_presence(),
             noop_wake(),
             noop_cancel(),
+            test_history(),
         )
             .await
             .unwrap();
@@ -798,6 +863,80 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn job_status_merges_history_cancel_over_stale_completed_outbox() {
+        let share = tempdir().unwrap();
+        let cid = "7335c97f-aaaa-bbbb-cccc-dddddddddddd";
+        write_status_outbox(
+            share.path(),
+            cid,
+            OutboxState::Completed,
+            None,
+            OutboxAmsMeta {
+                archive: Some(r"C:\Archiv\1 Erfolgreich\20260826_Andreas".into()),
+                ..OutboxAmsMeta::default()
+            },
+        )
+        .unwrap();
+
+        let history = test_history();
+        history
+            .add_or_update_from_value(&json!({
+                "dir_name": "20260826_Andreas_Kowalenko_TA_Andy_V_Torsten_C",
+                "status": "Abgebrochen",
+                "overall_status": "Abgebrochen",
+                "correlation_id": cid,
+                "archived_path": r"C:\Archiv\2 Abgebrochen\20260826_Andreas_Kowalenko",
+            }))
+            .unwrap();
+
+        let config = test_config_with_monitor(share.path().to_str().unwrap());
+        let runtime = BridgeRuntime::start(
+            "127.0.0.1:0".into(),
+            "tok".into(),
+            String::new(),
+            "0.1.0".into(),
+            config,
+            test_presence(),
+            noop_wake(),
+            noop_cancel(),
+            history,
+        )
+        .await
+        .unwrap();
+        let base = format!("http://{}", runtime.bind_addr);
+        let client = reqwest::Client::new();
+
+        let ok = client
+            .get(format!("{base}/v1/jobs/{cid}"))
+            .header(header::AUTHORIZATION, "Bearer tok")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(ok.status(), StatusCode::OK);
+        let body: JobStatusResponse = ok.json().await.unwrap();
+        assert!(body.ok);
+        let job = body.job.expect("job");
+        assert_eq!(job.state, OutboxState::Failed);
+        assert_eq!(job.error.as_ref().unwrap().code, CODE_CANCELLED);
+        assert!(
+            job.ams
+                .archive
+                .as_deref()
+                .unwrap_or("")
+                .contains("Abgebrochen")
+        );
+
+        let repaired = read_status_outbox(share.path(), cid).unwrap();
+        assert_eq!(repaired.state, OutboxState::Failed);
+        assert_eq!(
+            repaired.error.as_ref().unwrap().code,
+            CODE_CANCELLED
+        );
+
+        runtime.shutdown().await;
+    }
+
+    #[tokio::test]
     async fn handoff_ready_wakes_monitor_without_auth_bypass() {
         let wakes = Arc::new(AtomicUsize::new(0));
         let wakes_c = Arc::clone(&wakes);
@@ -815,6 +954,7 @@ mod tests {
             test_presence(),
             wake,
             noop_cancel(),
+            test_history(),
         )
             .await
             .unwrap();
@@ -872,6 +1012,7 @@ mod tests {
             test_presence(),
             noop_wake(),
             cancel,
+            test_history(),
         )
         .await
         .unwrap();

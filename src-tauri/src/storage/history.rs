@@ -249,9 +249,13 @@ pub struct HistoryState {
 impl HistoryState {
     pub fn new() -> Result<Self, String> {
         let store = HistoryStore::open_default().map_err(|e| e.to_string())?;
-        Ok(Self {
+        Ok(Self::from_store(store))
+    }
+
+    pub fn from_store(store: HistoryStore) -> Self {
+        Self {
             store: Arc::new(Mutex::new(store)),
-        })
+        }
     }
 
     pub fn import_legacy_json_if_needed(&self) -> Result<usize, String> {

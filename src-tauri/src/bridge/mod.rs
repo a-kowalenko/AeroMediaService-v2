@@ -20,6 +20,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::commands::ConfigState;
 use crate::storage::ats_presence::AtsPresenceState;
+use crate::storage::history::HistoryState;
 use crate::storage::logging;
 use crate::storage::secrets;
 
@@ -28,6 +29,7 @@ use crate::storage::secrets;
 pub struct BridgeState {
     inner: Arc<Mutex<Option<BridgeRuntime>>>,
     presence: AtsPresenceState,
+    history: HistoryState,
     wake_monitor: MonitorWakeFn,
     cancel_monitor: MonitorCancelFn,
 }
@@ -37,10 +39,12 @@ impl BridgeState {
         wake_monitor: MonitorWakeFn,
         cancel_monitor: MonitorCancelFn,
         presence: AtsPresenceState,
+        history: HistoryState,
     ) -> Self {
         Self {
             inner: Arc::new(Mutex::new(None)),
             presence,
+            history,
             wake_monitor,
             cancel_monitor,
         }
@@ -122,6 +126,7 @@ impl BridgeState {
             self.presence.clone(),
             Arc::clone(&self.wake_monitor),
             Arc::clone(&self.cancel_monitor),
+            self.history.clone(),
         )
             .await?;
         let status = runtime.status();
