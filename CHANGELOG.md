@@ -41,6 +41,7 @@ Patch ohne Unreleased-Text: Notes der Vorgängerversion werden übernommen.
 
 ### Behoben
 
+- **Medien nachreichen** startet wieder normal, auch wenn der vorherige Upload abgebrochen oder pausiert war
 - Abgebrochener Upload: am Schnittplatz nicht mehr fälschlich **Fertig**, wenn die Statusdatei noch „erledigt“ meldet — **Abgebrochen** aus der Historie hat Vorrang
 - Bridge-Jobstatus: fehlende Statusdatei wird aus der **Historie** geliefert (auch bei Abbruch)
 - Share-Pfade: falsches `smb://`-Präfix vor lokalen Windows-Pfaden wird beim Eingeben bereinigt
