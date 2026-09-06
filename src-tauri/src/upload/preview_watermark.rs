@@ -1,10 +1,11 @@
 //! Preview watermark for operator append (photo via `image`, video via FFmpeg in PATH).
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use image::imageops::FilterType;
 use image::{DynamicImage, ImageFormat, RgbaImage};
+
+use crate::util::process::hidden_command;
 
 const PREVIEW_STEMPEL: &str = "preview_stempel.png";
 
@@ -97,7 +98,7 @@ pub fn watermark_video(input: &Path, output: &Path, stamp: &Path) -> Result<(), 
         "[1]scale=320:240:force_original_aspect_ratio=decrease:eval=init[wm_scaled];",
         "[v][wm_scaled]overlay=(W-w)/2:(H-h)/2"
     );
-    let status = Command::new("ffmpeg")
+    let status = hidden_command("ffmpeg")
         .args([
             "-y",
             "-i",

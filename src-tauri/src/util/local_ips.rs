@@ -57,38 +57,20 @@ fn hostname_label() -> String {
 
 #[cfg(windows)]
 fn collect_windows_ipv4(out: &mut Vec<Ipv4Addr>) {
-    let Ok(output) = std::process::Command::new("powershell")
-        .args([
-            "-NoProfile",
-            "-Command",
-            "Get-NetIPAddress -AddressFamily IPv4 | Where-Object { $_.IPAddress -notlike '127.*' -and $_.PrefixOrigin -ne 'WellKnown' } | ForEach-Object { $_.IPAddress }",
-        ])
-        .output()
-    else {
-        collect_ipv4_from_ipconfig(out);
+    // Prefer `ipconfig` over PowerShell: much faster cold start and no console flash
+    // when spawned with `hidden_command` (CREATE_NO_WINDOW).
+    let Ok(output) = crate::util::process::hidden_command("ipconfig").output() else {
         return;
     };
     if !output.status.success() {
-        collect_ipv4_from_ipconfig(out);
         return;
     }
-    parse_ipv4_lines(&String::from_utf8_lossy(&output.stdout), out);
-    if out.is_empty() {
-        collect_ipv4_from_ipconfig(out);
-    }
-}
-
-#[cfg(windows)]
-fn collect_ipv4_from_ipconfig(out: &mut Vec<Ipv4Addr>) {
-    let Ok(output) = std::process::Command::new("ipconfig").output() else {
-        return;
-    };
     parse_ipv4_lines(&String::from_utf8_lossy(&output.stdout), out);
 }
 
 #[cfg(target_os = "linux")]
 fn collect_linux_ipv4(out: &mut Vec<Ipv4Addr>) {
-    if let Ok(output) = std::process::Command::new("ip")
+    if let Ok(output) = crate::util::process::hidden_command("ip")
         .args(["-4", "-o", "addr", "show"])
         .output()
     {
@@ -106,7 +88,10 @@ fn collect_linux_ipv4(out: &mut Vec<Ipv4Addr>) {
         }
     }
     if out.is_empty() {
-        if let Ok(output) = std::process::Command::new("hostname").args(["-I"]).output() {
+        if let Ok(output) = crate::util::process::hidden_command("hostname")
+            .args(["-I"])
+            .output()
+        {
             if output.status.success() {
                 for ip in String::from_utf8_lossy(&output.stdout).split_whitespace() {
                     push_ipv4_str(out, ip);
@@ -118,7 +103,7 @@ fn collect_linux_ipv4(out: &mut Vec<Ipv4Addr>) {
 
 #[cfg(target_os = "macos")]
 fn collect_macos_ipv4(out: &mut Vec<Ipv4Addr>) {
-    let Ok(output) = std::process::Command::new("ifconfig").output() else {
+    let Ok(output) = crate::util::process::hidden_command("ifconfig").output() else {
         return;
     };
     for line in String::from_utf8_lossy(&output.stdout).lines() {
@@ -138,9 +123,17 @@ fn parse_ipv4_lines(text: &str, out: &mut Vec<Ipv4Addr>) {
         if line.is_empty() {
             continue;
         }
-        // PowerShell: bare IP per line; ipconfig: "... : 192.168.1.5"
-        if let Some(rest) = line.rsplit(':').next() {
-            push_ipv4_str(out, rest.trim());
+        let lower = line.to_ascii_lowercase();
+        // ipconfig EN/DE: "IPv4 Address" / "IPv4-Adresse" — skip gateway/mask rows.
+        if lower.contains("ipv4") {
+            if let Some(rest) = line.rsplit(':').next() {
+                push_ipv4_str(out, rest.trim());
+            }
+            continue;
+        }
+        // Bare IP per line from other helpers.
+        if !line.contains(' ') && !line.contains('\t') {
+            push_ipv4_str(out, line);
         }
     }
 }
@@ -165,5 +158,33 @@ mod tests {
     fn link_local_ip_sorts_before_lan() {
         assert!(ip_priority("169.254.169.254") < ip_priority("192.168.178.89"));
         assert!(ip_priority("192.168.1.5") < ip_priority("8.8.8.8"));
+    }
+
+    #[test]
+    fn parses_ipconfig_ipv4_lines() {
+        let sample = "\
+Windows IP Configuration
+
+Ethernet adapter Ethernet:
+
+   Connection-specific DNS Suffix  . :
+   IPv4 Address. . . . . . . . . . . : 192.168.178.89
+   Subnet Mask . . . . . . . . . . . : 255.255.255.0
+   Default Gateway . . . . . . . . . : 192.168.178.1
+
+Wireless LAN adapter Wi-Fi:
+
+   IPv4-Adresse . . . . . . . . . .  : 169.254.169.254
+   Subnetzmaske . . . . . . . . . .  : 255.255.0.0
+";
+        let mut out = Vec::new();
+        parse_ipv4_lines(sample, &mut out);
+        assert_eq!(
+            out,
+            vec![
+                "192.168.178.89".parse::<Ipv4Addr>().unwrap(),
+                "169.254.169.254".parse::<Ipv4Addr>().unwrap(),
+            ]
+        );
     }
 }

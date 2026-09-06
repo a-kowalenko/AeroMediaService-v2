@@ -202,7 +202,10 @@ fn collect_windows_mapped_drives(out: &mut Vec<LocalShareCandidate>) {
 
 #[cfg(target_os = "windows")]
 fn collect_windows_local_exports(out: &mut Vec<LocalShareCandidate>, monitor_path: &str) {
-    let Ok(output) = std::process::Command::new("net").args(["share"]).output() else {
+    let Ok(output) = crate::util::process::hidden_command("net")
+        .args(["share"])
+        .output()
+    else {
         return;
     };
     if !output.status.success() {
@@ -260,7 +263,10 @@ fn collect_macos_file_sharing_exports(out: &mut Vec<LocalShareCandidate>, monito
 #[cfg(target_os = "macos")]
 fn read_macos_sharing_exports() -> Vec<ShareExport> {
     use crate::util::smb_export::parse_macos_sharing_list;
-    let Ok(output) = std::process::Command::new("sharing").args(["-l"]).output() else {
+    let Ok(output) = crate::util::process::hidden_command("sharing")
+        .args(["-l"])
+        .output()
+    else {
         return Vec::new();
     };
     if !output.status.success() {
@@ -291,7 +297,10 @@ fn collect_linux_samba_exports(out: &mut Vec<LocalShareCandidate>, monitor_path:
 #[cfg(target_os = "linux")]
 fn read_linux_samba_exports() -> Vec<ShareExport> {
     use crate::util::smb_export::parse_smb_conf_exports;
-    if let Ok(output) = std::process::Command::new("testparm").args(["-s"]).output() {
+    if let Ok(output) = crate::util::process::hidden_command("testparm")
+        .args(["-s"])
+        .output()
+    {
         if output.status.success() {
             let parsed = parse_smb_conf_exports(&String::from_utf8_lossy(&output.stdout));
             if !parsed.is_empty() {
@@ -312,7 +321,10 @@ fn read_linux_samba_exports() -> Vec<ShareExport> {
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 fn collect_mount_table(out: &mut Vec<LocalShareCandidate>, cmd: &[&str]) {
-    let Ok(output) = std::process::Command::new(cmd[0]).args(&cmd[1..]).output() else {
+    let Ok(output) = crate::util::process::hidden_command(cmd[0])
+        .args(&cmd[1..])
+        .output()
+    else {
         return;
     };
     if !output.status.success() {
