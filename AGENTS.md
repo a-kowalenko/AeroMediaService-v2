@@ -5,7 +5,8 @@
 **Implementierungsplan:** `@docs/IMPLEMENTATION_PLAN.md`  
 **Architektur:** `@docs/ARCHITECTURE.md`  
 **Migration-Mapping:** `@docs/MIGRATION.md`  
-**ATS↔AMS Handoff:** `@docs/HANDOFF.md` (Phase 13)
+**ATS↔AMS Handoff:** `@docs/HANDOFF.md` (Phase 13)  
+**Cloud Append-Vertrag (Partner):** `@docs/CLOUD_APPEND_CONTRACT.md` (Phase 14/21)
 
 In jedem neuen Kontextfenster `@docs/IMPLEMENTATION_PLAN.md` referenzieren und **nur eine Phase** (bzw. eine Handoff-Teilphase P1/P1b/P2/P3/P6a–P6d, Dropbox-Slice 16a–16d, Kunden-ID-Slice 19a–19e, SMB-Slice 20a–20d oder Auto-Append-Slice 21a–21d) implementieren.
 

@@ -24,6 +24,8 @@ type Props = {
   className?: string;
   title?: string;
   compact?: boolean;
+  /** Icon only — label stays in title / aria-label (narrow list rows). */
+  iconOnly?: boolean;
   onClick?: (e: MouseEvent<HTMLButtonElement | HTMLSpanElement>) => void;
 };
 
@@ -120,6 +122,7 @@ export function StatusChip({
   className,
   title,
   compact = false,
+  iconOnly = false,
   onClick,
 }: Props) {
   const label = (status || "—").trim() || "—";
@@ -144,6 +147,7 @@ export function StatusChip({
 
   const classes = cn(
     "inline-flex max-w-full items-center gap-1 truncate rounded border px-1.5 py-0.5 text-[10px] font-medium leading-none transition-colors duration-300",
+    iconOnly && "px-1",
     chipClass(tone),
     tone === "active" && channel !== "sms" && "ams-chip-active",
     successFlash && "ams-chip-success-flash",
@@ -154,10 +158,12 @@ export function StatusChip({
   const body = (
     <>
       <StatusIcon tone={tone} channel={channel} />
-      {showChannel && channelName ? (
+      {!iconOnly && showChannel && channelName ? (
         <span className="shrink-0 opacity-70">{channelName}</span>
       ) : null}
-      <span className={cn("truncate", compact && "max-w-[7rem]")}>{label}</span>
+      {!iconOnly ? (
+        <span className={cn("truncate", compact && "max-w-[7rem]")}>{label}</span>
+      ) : null}
     </>
   );
 

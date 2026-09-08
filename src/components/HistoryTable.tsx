@@ -21,7 +21,9 @@ import { HistoryStatusChips, StatusChip } from "./StatusChip";
 import { VirtualList } from "./VirtualList";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { useMediaQuery } from "@/hooks/useMediaQuery";
 import { UPLOAD_HISTORY_UPDATE } from "@/lib/events";
+import { NARROW_LAYOUT_MQ } from "@/lib/layout";
 import { showAppToast } from "@/lib/toast";
 import {
   canAppendMedia,
@@ -33,6 +35,7 @@ import {
   extraNumber,
   formatAppendHistorySummary,
   formatHistoryDate,
+  formatHistoryDateShort,
   formatHistoryDropboxAccount,
   historyAppendEvents,
   historyDropboxBinding,
@@ -160,6 +163,7 @@ function historyErrorDetail(item: HistoryEntry): ErrorDetail {
 }
 
 export function HistoryTable() {
+  const narrowLayout = useMediaQuery(NARROW_LAYOUT_MQ);
   const items = useHistoryStore((s) => s.items);
   const total = useHistoryStore((s) => s.total);
   const page = useHistoryStore((s) => s.page);
@@ -1065,142 +1069,158 @@ export function HistoryTable() {
         </p>
       ) : null}
 
-      <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden">
-        <div className="flex min-h-0 w-full min-w-0 flex-col lg:w-[min(52%,28rem)] lg:shrink-0 lg:border-r lg:border-border">
-          <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-            <div
-              className="shrink-0 grid grid-cols-[7.5rem_1fr_auto] gap-2 px-3 py-2.5 text-xs font-semibold tracking-wide text-muted uppercase"
-              style={{ background: "var(--ams-table-head)" }}
-            >
-              <span>Datum</span>
-              <span>Name</span>
-              <span>Status</span>
-            </div>
-            <div ref={listHostRef} className="min-h-0 flex-1">
-              <VirtualList
-                items={items}
-                rowHeight={48}
-                height={listHeight}
-                getKey={(item) => item.id}
-                className="bg-card/40"
-                empty={
-                  <div className="px-3 py-10 text-center text-sm text-muted">
-                    {emptyMessage}
-                  </div>
-                }
-                renderRow={(item) => {
-                  const active = item.id === selectedId;
-                  return (
-                    <div
-                      role="button"
-                      tabIndex={0}
-                      aria-selected={active}
-                      aria-label={`${item.display_name || historyDisplayName(item)}, Status ${item.overall_status || "—"}`}
-                      className={cn(
-                        "grid h-full cursor-pointer grid-cols-[7.5rem_1fr_auto] items-center gap-2 px-3 text-sm transition-colors",
-                        active
-                          ? "bg-[var(--ams-row-active)]"
-                          : "hover:bg-[var(--ams-row-hover)]",
-                      )}
-                      onClick={() => select(item.id)}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter" || e.key === " ") {
-                          e.preventDefault();
-                          select(item.id);
-                        }
-                      }}
-                    >
-                      <span className="whitespace-nowrap text-xs text-muted">
-                        {formatHistoryDate(item.created_at)}
-                      </span>
-                      <div className="min-w-0">
-                        <p className="truncate font-medium text-foreground">
-                          {item.display_name || historyDisplayName(item)}
-                        </p>
-                        {item.combined_error ? (
-                          <p
-                            className="truncate text-[11px] text-destructive"
-                            title={item.combined_error}
-                          >
-                            {item.combined_error}
-                          </p>
-                        ) : null}
-                      </div>
-                      <StatusChip
-                        status={item.overall_status}
-                        channel="overall"
-                        compact
-                      />
+      <div className="@container flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+        <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden">
+          <div className="flex min-h-0 w-full min-w-0 flex-col @min-[40rem]:w-[min(52%,28rem)] @min-[40rem]:shrink-0 @min-[40rem]:border-r @min-[40rem]:border-border">
+            <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+              <div
+                className={cn(
+                  "shrink-0 grid gap-2 px-3 py-2.5 text-xs font-semibold tracking-wide text-muted uppercase",
+                  narrowLayout
+                    ? "grid-cols-[5.25rem_minmax(0,1fr)_auto]"
+                    : "grid-cols-[7.5rem_1fr_auto]",
+                )}
+                style={{ background: "var(--ams-table-head)" }}
+              >
+                <span>Datum</span>
+                <span>Name</span>
+                <span>{narrowLayout ? "" : "Status"}</span>
+              </div>
+              <div ref={listHostRef} className="min-h-0 flex-1">
+                <VirtualList
+                  items={items}
+                  rowHeight={48}
+                  height={listHeight}
+                  getKey={(item) => item.id}
+                  className="bg-card/40"
+                  empty={
+                    <div className="px-3 py-10 text-center text-sm text-muted">
+                      {emptyMessage}
                     </div>
-                  );
-                }}
-              />
+                  }
+                  renderRow={(item) => {
+                    const active = item.id === selectedId;
+                    return (
+                      <div
+                        role="button"
+                        tabIndex={0}
+                        aria-selected={active}
+                        aria-label={`${item.display_name || historyDisplayName(item)}, Status ${item.overall_status || "—"}`}
+                        className={cn(
+                          "grid h-full cursor-pointer items-center gap-2 px-3 text-sm transition-colors",
+                          narrowLayout
+                            ? "grid-cols-[5.25rem_minmax(0,1fr)_auto]"
+                            : "grid-cols-[7.5rem_1fr_auto]",
+                          active
+                            ? "bg-[var(--ams-row-active)]"
+                            : "hover:bg-[var(--ams-row-hover)]",
+                        )}
+                        onClick={() => select(item.id)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter" || e.key === " ") {
+                            e.preventDefault();
+                            select(item.id);
+                          }
+                        }}
+                      >
+                        <span
+                          className="whitespace-nowrap text-xs text-muted"
+                          title={formatHistoryDate(item.created_at)}
+                        >
+                          {narrowLayout
+                            ? formatHistoryDateShort(item.created_at)
+                            : formatHistoryDate(item.created_at)}
+                        </span>
+                        <div className="min-w-0">
+                          <p className="truncate font-medium text-foreground">
+                            {item.display_name || historyDisplayName(item)}
+                          </p>
+                          {item.combined_error ? (
+                            <p
+                              className="truncate text-[11px] text-destructive"
+                              title={item.combined_error}
+                            >
+                              {item.combined_error}
+                            </p>
+                          ) : null}
+                        </div>
+                        <StatusChip
+                          status={item.overall_status}
+                          channel="overall"
+                          compact
+                          iconOnly={narrowLayout}
+                        />
+                      </div>
+                    );
+                  }}
+                />
+              </div>
+            </div>
+
+            <div className="flex shrink-0 items-center justify-end gap-2 border-t border-border/70 px-3 py-2 text-sm text-muted">
+              <span className="mr-1 tabular-nums">
+                Seite {page + 1} / {pageCount}
+              </span>
+              <Button
+                type="button"
+                variant="secondary"
+                size="icon"
+                className="h-8 w-8"
+                disabled={page <= 0}
+                onClick={() => setPage(page - 1)}
+                aria-label="Vorherige Seite"
+              >
+                <ChevronLeft className="h-4 w-4" />
+              </Button>
+              <Button
+                type="button"
+                variant="secondary"
+                size="icon"
+                className="h-8 w-8"
+                disabled={page >= maxPage || total === 0}
+                onClick={() => setPage(page + 1)}
+                aria-label="Nächste Seite"
+              >
+                <ChevronRight className="h-4 w-4" />
+              </Button>
             </div>
           </div>
 
-          <div className="flex shrink-0 items-center justify-end gap-2 border-t border-border/70 px-3 py-2 text-sm text-muted">
-            <span className="mr-1 tabular-nums">
-              Seite {page + 1} / {pageCount}
-            </span>
-            <Button
-              type="button"
-              variant="secondary"
-              size="icon"
-              className="h-8 w-8"
-              disabled={page <= 0}
-              onClick={() => setPage(page - 1)}
-              aria-label="Vorherige Seite"
-            >
-              <ChevronLeft className="h-4 w-4" />
-            </Button>
-            <Button
-              type="button"
-              variant="secondary"
-              size="icon"
-              className="h-8 w-8"
-              disabled={page >= maxPage || total === 0}
-              onClick={() => setPage(page + 1)}
-              aria-label="Nächste Seite"
-            >
-              <ChevronRight className="h-4 w-4" />
-            </Button>
-          </div>
+          <aside className="hidden min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto p-4 @min-[40rem]:block">
+            {selected ? (
+              <div className="grid min-w-0 max-w-full gap-2 rounded-xl border border-border bg-card/70 p-4 text-sm shadow-sm backdrop-blur-sm">
+                <div className="mb-1 flex min-w-0 flex-wrap items-start justify-between gap-2">
+                  <h3 className="m-0 shrink-0 text-sm font-semibold tracking-tight text-foreground">
+                    Details
+                  </h3>
+                  <HistoryStatusChips entry={selected} className="min-w-0 max-w-full" />
+                </div>
+                {renderBookingOptions()}
+                {renderDetailRows(detailRows)}
+                {renderAppendTimeline(selectedAppendEvents)}
+              </div>
+            ) : (
+              <div className="flex h-full min-h-[12rem] items-center justify-center rounded-xl border border-dashed border-border/80 bg-card/40 px-6 text-center text-sm text-muted">
+                Eintrag auswählen, um Details zu sehen.
+              </div>
+            )}
+          </aside>
         </div>
 
-        <aside className="hidden min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto p-4 lg:block">
-          {selected ? (
-            <div className="grid min-w-0 max-w-full gap-2 rounded-xl border border-border bg-card/70 p-4 text-sm shadow-sm backdrop-blur-sm">
-              <div className="mb-1 flex min-w-0 flex-wrap items-start justify-between gap-2">
-                <h3 className="m-0 shrink-0 text-sm font-semibold tracking-tight text-foreground">
-                  Details
-                </h3>
-                <HistoryStatusChips entry={selected} className="min-w-0 max-w-full" />
-              </div>
+        {selected ? (
+          <div className="min-w-0 shrink-0 overflow-x-hidden border-t border-border p-4 @min-[40rem]:hidden">
+            <h3 className="mb-2 text-sm font-semibold tracking-tight text-foreground">
+              Details
+            </h3>
+            <HistoryStatusChips entry={selected} className="mb-3 min-w-0 max-w-full" />
+            <div className="grid min-w-0 gap-2 text-sm">
               {renderBookingOptions()}
               {renderDetailRows(detailRows)}
-              {renderAppendTimeline(selectedAppendEvents)}
             </div>
-          ) : (
-            <div className="flex h-full min-h-[12rem] items-center justify-center rounded-xl border border-dashed border-border/80 bg-card/40 px-6 text-center text-sm text-muted">
-              Eintrag auswählen, um Details zu sehen.
-            </div>
-          )}
-        </aside>
-      </div>
-
-      {selected ? (
-        <div className="min-w-0 overflow-x-hidden border-t border-border p-4 lg:hidden">
-          <h3 className="mb-2 text-sm font-semibold tracking-tight text-foreground">
-            Details
-          </h3>
-          <HistoryStatusChips entry={selected} className="mb-3 min-w-0 max-w-full" />
-          <div className="grid min-w-0 gap-2 text-sm">
-            {renderBookingOptions()}
-            {renderDetailRows(detailRows)}
+            {renderAppendTimeline(selectedAppendEvents)}
           </div>
-          {renderAppendTimeline(selectedAppendEvents)}
-        </div>
-      ) : null}
+        ) : null}
+      </div>
 
       {appendOpen && selected ? (
         <AppendMediaDialog

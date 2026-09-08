@@ -1,6 +1,13 @@
 import { useCallback, useEffect, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { Play, Square, Users, AlertTriangle } from "lucide-react";
+import {
+  PanelLeftClose,
+  PanelLeftOpen,
+  Play,
+  Square,
+  Users,
+  AlertTriangle,
+} from "lucide-react";
 import { AppChrome } from "@/components/chrome";
 import { AppFeedbackHost } from "@/components/AppFeedbackHost";
 import { AtsClientsDialog } from "@/components/AtsClientsDialog";
@@ -16,14 +23,17 @@ import { SettingsDialog } from "@/components/SettingsDialog";
 import { SetupWizard } from "@/components/SetupWizard";
 import { UpdateDialog } from "@/components/UpdateDialog";
 import { UploadPanel } from "@/components/UploadPanel";
+import { UploadRailStatus } from "@/components/UploadRailStatus";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { useMediaQuery } from "@/hooks/useMediaQuery";
 import {
   CONNECTION_STATUS_CHANGED,
   MONITORING_STATUS_CHANGED,
   UPDATE_INSTALL_PROGRESS,
   UPLOAD_JOB_ACTIVE,
 } from "@/lib/events";
+import { NARROW_LAYOUT_MQ } from "@/lib/layout";
 import { smbSessionChipTitle } from "@/lib/smbSessions";
 import { showAppToast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
@@ -96,7 +106,9 @@ function App() {
   const [smbSnapshot, setSmbSnapshot] = useState<SmbSessionSnapshot | null>(null);
   const [smbPollSeconds, setSmbPollSeconds] = useState(30);
   const [pathHintsWarning, setPathHintsWarning] = useState<string | null>(null);
+  const [uploadDrawerOpen, setUploadDrawerOpen] = useState(false);
 
+  const narrowLayout = useMediaQuery(NARROW_LAYOUT_MQ);
   const monitoring = useAppStore((s) => s.monitoring);
   const connectionStatus = useAppStore((s) => s.connectionStatus);
   const uploadJobActive = useAppStore((s) => s.uploadJobActive);
@@ -110,9 +122,38 @@ function App() {
   const showWarning = useUiStore((s) => s.showWarning);
   const workspaceTab = useUiStore((s) => s.workspaceTab);
   const setWorkspaceTab = useUiStore((s) => s.setWorkspaceTab);
+  const sidebarCollapsed = useUiStore((s) => s.sidebarCollapsed);
+  const setSidebarCollapsed = useUiStore((s) => s.setSidebarCollapsed);
   const openCustomerCount = useCustomerStore((s) => s.openCount);
   const refreshCustomerCounts = useCustomerStore((s) => s.refreshCounts);
   const connected = isCloudConnected(connectionStatus);
+
+  const showUploadPanel = narrowLayout ? uploadDrawerOpen : !sidebarCollapsed;
+  const showUploadRail = narrowLayout || sidebarCollapsed;
+
+  useEffect(() => {
+    if (!narrowLayout) setUploadDrawerOpen(false);
+  }, [narrowLayout]);
+
+  useEffect(() => {
+    if (!narrowLayout || !uploadDrawerOpen) return;
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        setUploadDrawerOpen(false);
+      }
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [narrowLayout, uploadDrawerOpen]);
+
+  const toggleUploadSidebar = useCallback(() => {
+    if (narrowLayout) {
+      setUploadDrawerOpen((open) => !open);
+      return;
+    }
+    setSidebarCollapsed(!sidebarCollapsed);
+  }, [narrowLayout, setSidebarCollapsed, sidebarCollapsed]);
 
   const bumpCloudChips = useCallback(() => {
     setCloudChipsRefreshToken((n) => n + 1);
@@ -527,7 +568,7 @@ function App() {
               )}
             >
               <Users className="h-3.5 w-3.5" />
-              <span className="hidden sm:inline">Clients</span>
+              <span className="hidden min-[1100px]:inline">Clients</span>
               {smbSnapshot?.warn ? (
                 <AlertTriangle className="h-3.5 w-3.5 text-warning" aria-hidden />
               ) : null}
@@ -542,7 +583,7 @@ function App() {
                 {atsClientCount}
               </span>
             </Button>
-            <ConnectionStatusIndicator />
+            <ConnectionStatusIndicator compact={narrowLayout} />
             {monitoring ? (
               <Button
                 type="button"
@@ -554,7 +595,7 @@ function App() {
                 title="Monitoring stoppen"
               >
                 <Square className="h-3.5 w-3.5" />
-                <span className="hidden sm:inline">Stop</span>
+                <span className="hidden min-[1100px]:inline">Stop</span>
               </Button>
             ) : (
               <Button
@@ -565,7 +606,7 @@ function App() {
                 title="Monitoring starten"
               >
                 <Play className="h-3.5 w-3.5" />
-                <span className="hidden sm:inline">Start</span>
+                <span className="hidden min-[1100px]:inline">Start</span>
               </Button>
             )}
             <SettingsCluster
@@ -590,8 +631,14 @@ function App() {
           </div>
           <div className="flex min-h-[34px] min-w-0 flex-col justify-center gap-0.5">
             <div className="flex min-w-0 items-baseline gap-x-1.5">
-              <h1 className="font-display truncate text-base font-semibold leading-none tracking-tight text-primary">
-                Aero Media Service
+              <h1
+                className="font-display truncate text-base font-semibold leading-none tracking-tight text-primary"
+                title="Aero Media Service"
+              >
+                <span className="min-[1100px]:hidden">AMS</span>
+                <span className="hidden min-[1100px]:inline">
+                  Aero Media Service
+                </span>
               </h1>
               <span className="shrink-0 text-[11px] leading-none text-muted">
                 v{version}
@@ -633,16 +680,83 @@ function App() {
       ) : null}
 
       <div className="flex min-h-0 flex-1 flex-col">
-        <div className="flex min-h-0 flex-1">
-          <aside className="ams-sidebar-bg flex w-full max-w-md flex-col border-r border-border backdrop-blur-md sm:w-[380px]">
-            <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-3.5 [scrollbar-gutter:stable]">
-              <UploadPanel compact />
-            </div>
+        <div className="relative flex min-h-0 flex-1">
+          {showUploadRail ? (
+            <aside
+              className="ams-sidebar-bg flex w-12 shrink-0 flex-col items-center border-r border-border py-2 backdrop-blur-md"
+              aria-label="Upload-Leiste"
+            >
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                className="h-9 w-9"
+                onClick={toggleUploadSidebar}
+                title={
+                  showUploadPanel
+                    ? "Upload-Panel schließen"
+                    : "Upload-Panel öffnen"
+                }
+                aria-expanded={showUploadPanel}
+                aria-controls="ams-upload-sidebar"
+              >
+                {showUploadPanel ? (
+                  <PanelLeftClose className="h-4 w-4" />
+                ) : (
+                  <PanelLeftOpen className="h-4 w-4" />
+                )}
+              </Button>
+              <UploadRailStatus onOpen={toggleUploadSidebar} />
+              <div className="mt-auto flex flex-col items-center gap-1.5 px-1 pb-1">
+                <CloudConnectionChips
+                  refreshToken={cloudChipsRefreshToken}
+                  compact
+                />
+              </div>
+            </aside>
+          ) : null}
 
-            <div className="border-t border-border bg-gradient-to-t from-card/90 to-card/40 px-3.5 py-2.5 backdrop-blur-sm">
-              <CloudConnectionChips refreshToken={cloudChipsRefreshToken} />
-            </div>
-          </aside>
+          {showUploadPanel ? (
+            <>
+              {narrowLayout ? (
+                <button
+                  type="button"
+                  className="absolute inset-0 z-30 bg-black/25"
+                  aria-label="Upload-Panel schließen"
+                  onClick={() => setUploadDrawerOpen(false)}
+                />
+              ) : null}
+              <aside
+                id="ams-upload-sidebar"
+                className={cn(
+                  "ams-sidebar-bg flex flex-col border-r border-border backdrop-blur-md",
+                  narrowLayout
+                    ? "absolute inset-y-0 left-12 z-40 w-[min(100%-3rem,22rem)] max-w-md shadow-xl"
+                    : "w-[min(100%,22rem)] max-w-md shrink-0 xl:w-[380px]",
+                )}
+              >
+                <div className="flex shrink-0 items-center justify-end border-b border-border/70 px-2 py-1">
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    className="h-8 w-8"
+                    onClick={toggleUploadSidebar}
+                    title="Upload-Panel einklappen"
+                    aria-label="Upload-Panel einklappen"
+                  >
+                    <PanelLeftClose className="h-4 w-4" />
+                  </Button>
+                </div>
+                <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-3.5 [scrollbar-gutter:stable]">
+                  <UploadPanel compact />
+                </div>
+                <div className="border-t border-border bg-gradient-to-t from-card/90 to-card/40 px-3.5 py-2.5 backdrop-blur-sm">
+                  <CloudConnectionChips refreshToken={cloudChipsRefreshToken} />
+                </div>
+              </aside>
+            </>
+          ) : null}
 
           <main className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
             <Tabs

@@ -16,7 +16,7 @@
         "title": "Aero Media Service",
         "width": 1280,
         "height": 860,
-        "minWidth": 960,
+        "minWidth": 880,
         "minHeight": 640,
         "decorations": false,
         "shadow": true,

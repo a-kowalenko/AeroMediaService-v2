@@ -179,6 +179,16 @@
   }
 }
 
+@keyframes ams-rail-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.ams-rail-indeterminate {
+  animation: ams-rail-spin 1s linear infinite;
+}
+
 /* react-hot-toast wrapper — keep default chrome invisible for custom cards */
 .ams-hot-toast {
   background: transparent !important;
@@ -251,7 +261,8 @@
 
 @media (prefers-reduced-motion: reduce) {
   .ams-chip-active,
-  .ams-chip-success-flash {
+  .ams-chip-success-flash,
+  .ams-rail-indeterminate {
     animation: none;
   }
   .ams-slot-collapse,

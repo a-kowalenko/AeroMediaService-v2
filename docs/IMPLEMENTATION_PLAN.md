@@ -1473,12 +1473,16 @@ Danach cargo test && npm run tauri dev.
 
 **Cloud (Partner-Repo — Checklist, nicht AMS-Code):**
 
-Dokumentiert für Cloud-Team / Partner-Repo (kein Deploy in diesem Repo):
+Vollständiger Slice-Plan (C0–C4, Priorität, Abnahme, Agent-Prompt):  
+[`CLOUD_APPEND_CONTRACT.md`](./CLOUD_APPEND_CONTRACT.md)
 
-- [ ] `orders/create` mit `existing_order_id`: Dateien an bestehende Order; **`final_url` unverändert**
-- [ ] Gleiche customer+booking ohne `existing_order_id`: bestehende Order wiederverwenden **oder** klarer Fehler (kein stilles „Portal = Alt, Dropbox = Neu“)
-- [ ] Neue `rel_path`s unter bestehendem Root akzeptieren; kein erzwungenes Überschreiben gleichnamiger Dateien serverseitig
-- [ ] Optional: Lookup-Endpoint „aktive Order zu customer+booking“ für Diagnose
+Kurz-Checklist:
+
+- [ ] C0 Audit: Append mit `existing_order_id` schon korrekt?
+- [ ] C1 `orders/create` mit `existing_order_id`: Dateien an bestehende Order; **`final_url` unverändert**
+- [ ] C2 Gleiche customer+booking ohne `existing_order_id`: bestehende Order wiederverwenden **oder** klarer Fehler (kein stilles „Portal = Alt, Dropbox = Neu“)
+- [ ] C3 Neue `rel_path`s unter bestehendem Root akzeptieren; kein erzwungenes Überschreiben gleichnamiger Dateien serverseitig
+- [ ] C4 Optional: Lookup-Endpoint „aktive Order zu customer+booking“ für Diagnose
 
 **ATS (optional, ATS-Repo / eigene Session — kein Pflicht-Feature in 21d):**
 

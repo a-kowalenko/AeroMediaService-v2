@@ -1,6 +1,6 @@
 # Aero Media Service v2 — Architektur
 
-> Kurzübersicht. Details: [IMPLEMENTATION_PLAN.md](./IMPLEMENTATION_PLAN.md) · Handoff ATS↔AMS: [HANDOFF.md](./HANDOFF.md)
+> Kurzübersicht. Details: [IMPLEMENTATION_PLAN.md](./IMPLEMENTATION_PLAN.md) · Handoff ATS↔AMS: [HANDOFF.md](./HANDOFF.md) · Cloud Append: [CLOUD_APPEND_CONTRACT.md](./CLOUD_APPEND_CONTRACT.md)
 
 ## Stack
 
@@ -50,6 +50,7 @@ AeroMediaService-v2/
 │   ├── IMPLEMENTATION_PLAN.md  # ← Hauptdokument
 │   ├── ARCHITECTURE.md         # ← Dieses Dokument
 │   ├── HANDOFF.md              # ATS↔AMS Share-Handoff (Phase 13)
+│   ├── CLOUD_APPEND_CONTRACT.md # Cloud Partner: Append / existing_order_id
 │   └── MIGRATION.md
 └── AGENTS.md
 ```

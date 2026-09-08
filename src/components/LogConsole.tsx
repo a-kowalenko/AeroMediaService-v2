@@ -16,7 +16,9 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { useMediaQuery } from "@/hooks/useMediaQuery";
 import { LOG_MESSAGE } from "@/lib/events";
+import { NARROW_LAYOUT_MQ } from "@/lib/layout";
 import { getRecentLogs, type LogMessage } from "@/lib/tauri";
 import { cn } from "@/lib/utils";
 import {
@@ -28,6 +30,7 @@ import {
 const MIN_HEIGHT = 160;
 const MAX_HEIGHT = 560;
 const DEFAULT_HEIGHT = 280;
+const DEFAULT_HEIGHT_NARROW = 180;
 const MAX_LINES = 500;
 
 function levelClass(name: string): string {
@@ -62,11 +65,23 @@ export function LogConsole({ className }: Props) {
   const replaceEntries = useLogStore((s) => s.replaceEntries);
   const appendEntry = useLogStore((s) => s.appendEntry);
 
-  const [height, setHeight] = useState(DEFAULT_HEIGHT);
+  const narrowLayout = useMediaQuery(NARROW_LAYOUT_MQ);
+  const [height, setHeight] = useState(() =>
+    typeof window !== "undefined" &&
+    window.matchMedia?.(NARROW_LAYOUT_MQ).matches
+      ? DEFAULT_HEIGHT_NARROW
+      : DEFAULT_HEIGHT,
+  );
   const [copyFlash, setCopyFlash] = useState(false);
   const listRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef<{ startY: number; startH: number } | null>(null);
   const bootstrapped = useRef(false);
+  const heightTouched = useRef(false);
+
+  useEffect(() => {
+    if (heightTouched.current) return;
+    setHeight(narrowLayout ? DEFAULT_HEIGHT_NARROW : DEFAULT_HEIGHT);
+  }, [narrowLayout]);
 
   const filtered = useMemo(
     () => filterLogEntries(entries, search, levelFilter),
@@ -179,6 +194,7 @@ export function LogConsole({ className }: Props) {
         aria-label="Konsolenhöhe"
         className="group flex h-2 cursor-ns-resize items-center justify-center"
         onMouseDown={(e) => {
+          heightTouched.current = true;
           dragRef.current = { startY: e.clientY, startH: height };
           document.body.style.cursor = "ns-resize";
           document.body.style.userSelect = "none";

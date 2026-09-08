@@ -176,7 +176,8 @@ Wenn AMS einen **neuen** Job (anderer Ordnername, ggf. ohne `extensions.kind=app
 | History (Parent) | `append_events[]` mit `source_dir_name` + `append_reason: "id_match"`; UI „Auto-Nachgereicht: Quellordner“ |
 | App-Shell | Status „Auto-Nachreichen: …“ / „Auto-Nachgereicht: …“ |
 
-Vollständige Spec/Slices + Cloud-Partner-Checklist + manuelle Abnahme: [`IMPLEMENTATION_PLAN.md`](./IMPLEMENTATION_PLAN.md) Phase 21 (21a–21d ✅).
+Vollständige Spec/Slices + manuelle Abnahme: [`IMPLEMENTATION_PLAN.md`](./IMPLEMENTATION_PLAN.md) Phase 21 (21a–21d ✅).  
+Cloud-Partner-Vertrag / Slices C0–C4: [`CLOUD_APPEND_CONTRACT.md`](./CLOUD_APPEND_CONTRACT.md).
 
 **ATS (optional):** Export-Hinweis oder bewusstes `kind=append` mit Parent-`correlation_id` möglich — nicht erforderlich; AMS matcht auch nur über IDs (Legacy-Marker / neuer Vorgang-Ordner).
 

@@ -17,6 +17,8 @@ type Props = {
   /** Bump / flip to force a refresh (e.g. after Settings close). */
   refreshToken?: number;
   className?: string;
+  /** Icon-only chips for the collapsed sidebar rail. */
+  compact?: boolean;
 };
 
 type ChipTone = "success" | "warning" | "muted" | "danger";
@@ -26,6 +28,7 @@ type StatusChipProps = {
   label: string;
   title: string;
   tone: ChipTone;
+  compact?: boolean;
 };
 
 function dropboxAccountTitle(row: DropboxAccountRow): string {
@@ -50,11 +53,12 @@ function toneForStatus(status: string): ChipTone {
   return "warning";
 }
 
-function StatusChip({ Icon, label, title, tone }: StatusChipProps) {
+function StatusChip({ Icon, label, title, tone, compact = false }: StatusChipProps) {
   return (
     <div
       className={cn(
-        "inline-flex min-w-0 max-w-full items-center gap-1.5 rounded-md border px-2 py-1 text-[11px] leading-none shadow-sm",
+        "inline-flex min-w-0 max-w-full items-center gap-1.5 rounded-md border text-[11px] leading-none shadow-sm",
+        compact ? "justify-center px-1.5 py-1.5" : "px-2 py-1",
         tone === "success" &&
           "border-success/30 bg-success/10 text-success",
         tone === "warning" &&
@@ -65,15 +69,20 @@ function StatusChip({ Icon, label, title, tone }: StatusChipProps) {
           "border-border bg-card/80 text-muted",
       )}
       title={title}
+      aria-label={label}
     >
       <Icon className="h-3 w-3 shrink-0" aria-hidden />
-      <span className="truncate">{label}</span>
+      {!compact ? <span className="truncate">{label}</span> : null}
     </div>
   );
 }
 
 /** Sidebar footer: Custom-API + Dropbox connection chips (or Dropbox alone). */
-export function CloudConnectionChips({ refreshToken = 0, className }: Props) {
+export function CloudConnectionChips({
+  refreshToken = 0,
+  className,
+  compact = false,
+}: Props) {
   const connectionStatus = useAppStore((s) => s.connectionStatus);
   const [cloudService, setCloudService] = useState<"dropbox" | "custom_api">(
     "dropbox",
@@ -143,13 +152,20 @@ export function CloudConnectionChips({ refreshToken = 0, className }: Props) {
   const dropboxName = dropboxLabel ?? "Dropbox";
 
   return (
-    <div className={cn("flex min-w-0 flex-wrap items-center gap-1.5", className)}>
+    <div
+      className={cn(
+        "flex min-w-0 items-center gap-1.5",
+        compact ? "flex-col" : "flex-wrap",
+        className,
+      )}
+    >
       {cloudService === "custom_api" ? (
         <StatusChip
           Icon={apiConnected ? Server : ServerOff}
           label="Skydive Media"
           title={apiStatus || "Nicht verbunden"}
           tone={toneForStatus(apiStatus)}
+          compact={compact}
         />
       ) : null}
       <StatusChip
@@ -157,6 +173,7 @@ export function CloudConnectionChips({ refreshToken = 0, className }: Props) {
         label={dropboxName}
         title={`Dropbox: ${dropboxStatus || "Nicht verbunden"}`}
         tone={toneForStatus(dropboxStatus)}
+        compact={compact}
       />
     </div>
   );

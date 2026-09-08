@@ -8,7 +8,7 @@
 /// Matches `src-tauri/tauri.conf.json` → `app.windows[0]`.
 pub const DEFAULT_INNER_WIDTH: f64 = 1280.0;
 pub const DEFAULT_INNER_HEIGHT: f64 = 860.0;
-pub const MIN_INNER_WIDTH: f64 = 960.0;
+pub const MIN_INNER_WIDTH: f64 = 880.0;
 pub const MIN_INNER_HEIGHT: f64 = 640.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

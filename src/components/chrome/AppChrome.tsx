@@ -46,7 +46,7 @@ export function AppChrome({ children, actions, className }: Props) {
       </div>
 
       <div
-        className="flex shrink-0 flex-wrap items-center justify-end gap-1.5 py-[5px] pr-2 pl-1"
+        className="flex shrink-0 flex-nowrap items-center justify-end gap-1.5 py-[5px] pr-2 pl-1"
         data-tauri-drag-region="false"
       >
         {actions}

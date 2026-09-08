@@ -4,6 +4,7 @@ export type WorkspaceTab = "history" | "customers";
 export type DialogKind = "error" | "success" | "warning" | "confirm" | "prompt" | null;
 
 const WORKSPACE_TAB_KEY = "ams.workspaceTab";
+const SIDEBAR_COLLAPSED_KEY = "ams.sidebarCollapsed";
 
 function readWorkspaceTab(): WorkspaceTab {
   try {
@@ -13,6 +14,14 @@ function readWorkspaceTab(): WorkspaceTab {
     /* private mode / unavailable */
   }
   return "history";
+}
+
+function readSidebarCollapsed(): boolean {
+  try {
+    return localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "1";
+  } catch {
+    return false;
+  }
 }
 
 export type DialogPrimaryAction = {
@@ -42,6 +51,9 @@ export type PromptDialogOptions = {
 type UiState = {
   workspaceTab: WorkspaceTab;
   setWorkspaceTab: (tab: WorkspaceTab) => void;
+  /** Wide-layout preference: collapse upload sidebar to a rail. */
+  sidebarCollapsed: boolean;
+  setSidebarCollapsed: (collapsed: boolean) => void;
   dialogKind: DialogKind;
   dialogTitle: string;
   dialogMessage: string;
@@ -114,6 +126,15 @@ export const useUiStore = create<UiState>((set, get) => ({
     set({ workspaceTab });
     try {
       sessionStorage.setItem(WORKSPACE_TAB_KEY, workspaceTab);
+    } catch {
+      /* ignore */
+    }
+  },
+  sidebarCollapsed: readSidebarCollapsed(),
+  setSidebarCollapsed: (sidebarCollapsed) => {
+    set({ sidebarCollapsed });
+    try {
+      localStorage.setItem(SIDEBAR_COLLAPSED_KEY, sidebarCollapsed ? "1" : "0");
     } catch {
       /* ignore */
     }

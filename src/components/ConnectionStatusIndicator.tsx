@@ -4,10 +4,12 @@ import { isCloudConnected, useAppStore } from "@/store/appStore";
 
 type Props = {
   className?: string;
+  /** Hide text label (titlebar under ~1100px). */
+  compact?: boolean;
 };
 
 /** Compact header chip — mirrors ATS ServerStatusIndicator for cloud + monitoring. */
-export function ConnectionStatusIndicator({ className }: Props) {
+export function ConnectionStatusIndicator({ className, compact = false }: Props) {
   const connectionStatus = useAppStore((s) => s.connectionStatus);
   const monitoring = useAppStore((s) => s.monitoring);
   const uploadJobActive = useAppStore((s) => s.uploadJobActive);
@@ -46,14 +48,16 @@ export function ConnectionStatusIndicator({ className }: Props) {
   return (
     <div
       className={cn(
-        "flex items-center gap-2 rounded-lg border border-border bg-card/80 px-2.5 py-1.5 text-xs shadow-sm",
+        "flex items-center gap-2 rounded-lg border border-border bg-card/80 text-xs shadow-sm",
+        compact ? "px-2 py-1.5" : "px-2.5 py-1.5",
         tone,
         className,
       )}
       title={title}
+      aria-label={label}
     >
       <Icon className="h-3.5 w-3.5" aria-hidden />
-      <span>{label}</span>
+      {!compact ? <span>{label}</span> : null}
     </div>
   );
 }

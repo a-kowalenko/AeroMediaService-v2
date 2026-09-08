@@ -32,6 +32,28 @@ export function formatHistoryDate(raw: string): string {
   return raw.slice(0, 19).replace("T", " ");
 }
 
+/** Compact list date: `08.09. 13:45` (no year / seconds). */
+export function formatHistoryDateShort(raw: string): string {
+  if (!raw) return "";
+  if (raw.includes("T")) {
+    try {
+      const [dPart, tPart = ""] = raw.split("T");
+      const [, m, d] = dPart.split("-");
+      if (m && d) {
+        const hm = tPart.slice(0, 5);
+        return hm ? `${d}.${m}. ${hm}` : `${d}.${m}.`;
+      }
+    } catch {
+      /* fall through */
+    }
+  }
+  const full = formatHistoryDate(raw);
+  // `dd.mm.yyyy HH:MM:SS` → `dd.mm. HH:MM`
+  const match = /^(\d{2}\.\d{2})\.\d{4}\s+(\d{2}:\d{2})/.exec(full);
+  if (match) return `${match[1]}. ${match[2]}`;
+  return full.slice(0, 14);
+}
+
 export function historyDisplayName(item: {
   first_name?: string;
   last_name?: string;
