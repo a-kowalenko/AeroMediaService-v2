@@ -19,6 +19,11 @@ Patch ohne Unreleased-Text: Notes der Vorgängerversion werden übernommen.
 - Einstellungen: Reiter **Crew** — Tandemmaster, Videospringer und Aliases für die Ordnernamen-Vorhersage
 - Zuweisung mit IDs: Medien in die richtigen Unterordner sortieren, Ordner umbenennen und Fertig-Übergabe setzen
 - Bei unsicherer Crew-Erkennung: Dialog **Crew & Ordnername prüfen** mit Live-Vorschau (auch bei Stapel-Zuweisung)
+- **Auto-Nachreichen**: neuer Ordner mit gleicher Kunden- und Buchungs-ID landet im bestehenden Cloud-Ordner — gleicher Kundenlink; bei Namenskollision `Datei (1).ext`
+- **SMB-Sessions** (Windows): Diagnose im Clients-Dialog; Warnung am Clients-Chip bei zu vielen Server-Sessions
+- Einstellungen unter Allgemein: SMB-**Warnschwelle**, Idle-Minimum und optional **Auto-Close** sicherer Idle-Sessions (standardmäßig aus)
+- Bei fehlenden Rechten: SMB-Sessions **mit Admin-Rechten laden/schließen**, ohne AMS neu zu starten
+- Schmale Fenster: Upload-Panel aufklappbar; kompakte **Upload-Leiste** mit Fortschritt
 
 ### Verbessert
 
@@ -38,6 +43,10 @@ Patch ohne Unreleased-Text: Notes der Vorgängerversion werden übernommen.
 - Bridge-Client-Übersicht und Aktivitätsliste: Aktualisieren ohne leeres Flackern
 - Ordnerauswahl bei der Zuweisung: Hintergrund-Aktualisierung ohne sichtbares Neu-Laden
 - Monitoring an/aus bleibt nach Neustart erhalten
+- Historie am Parent: **Auto-Nachgereicht** mit Quellordner; Statuszeile bei Auto-Route
+- Nach **Auto-Nachreichen** erneut Benachrichtigung mit demselben Kundenlink (explizites Nachreichen weiter ohne Notify)
+- SMB Safe-Close nur bei Idle und ohne offene Dateien; Fokus auf Monitor-/aktuell-Share
+- Clients-Dialog: Hinweis, wenn eine SMB-Session zu einem bekannten Schnittplatz passt
 
 ### Behoben
 
@@ -54,10 +63,13 @@ Patch ohne Unreleased-Text: Notes der Vorgängerversion werden übernommen.
 - Timeout-Meldung bei sichtbarem Ordner nicht mehr fälschlich als „Ordner nicht sichtbar“
 - Abgelehnte Übergabe verschwindet aus der Ansicht, sobald der Upload den Ordner übernommen hat
 - Dialog **Medien nachreichen**: Abdunkelung liegt wieder korrekt hinter dem Fenster
+- Externe Hilfsprozesse starten wieder ohne störendes Konsolenfenster (Windows)
 
 ### Hinweis
 
 - Ohne Kunden-/Buchungs-ID bleibt die bisherige Kontakt-Zuweisung unverändert
+- **Auto-Nachreichen** nur bei beiden IDs und erfolgreichem Vorgänger in der Historie; ohne Treffer wie bisher Erst-Upload
+- SMB Auto-Close ist ein Notnagel — OS-Idle-Timeout und Server-Limits sind nachhaltiger; Standard aus
 
 
 
