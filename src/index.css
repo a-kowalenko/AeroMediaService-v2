@@ -189,6 +189,27 @@
   animation: ams-rail-indeterminate-dash 0.9s linear infinite;
 }
 
+/* Stability wait on collapsed upload rail — short arc rotates (not progress fill). */
+@keyframes ams-rail-waiting-rotate {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes ams-rail-waiting-pulse {
+  0%,
+  100% {
+    opacity: 0.4;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+.ams-rail-waiting-spin {
+  animation: ams-rail-waiting-rotate 1.1s linear infinite;
+}
+
 /* react-hot-toast wrapper — keep default chrome invisible for custom cards */
 .ams-hot-toast {
   background: transparent !important;
@@ -264,6 +285,9 @@
   .ams-chip-success-flash,
   .ams-rail-indeterminate-circle {
     animation: none;
+  }
+  .ams-rail-waiting-spin {
+    animation: ams-rail-waiting-pulse 1.6s ease-in-out infinite;
   }
   .ams-slot-collapse,
   .ams-upload-slot,

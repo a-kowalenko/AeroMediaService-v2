@@ -37,9 +37,15 @@ const IDLE_CONTROL: UploadControlState = {
 const RING_SIZE = 30;
 const RING_STROKE = 2;
 const RING_RADIUS = (RING_SIZE - RING_STROKE) / 2;
+const RING_CX = RING_SIZE / 2;
+const RING_CY = RING_SIZE / 2;
 const RING_CIRCUMFERENCE = 2 * Math.PI * RING_RADIUS;
+/** Upload-active indeterminate (unchanged visual). */
 const INDETERMINATE_DASH = RING_CIRCUMFERENCE * 0.22;
 const INDETERMINATE_GAP = RING_CIRCUMFERENCE - INDETERMINATE_DASH;
+/** Stability wait: shorter arc so it reads as busy, not ~25% progress. */
+const WAITING_DASH = RING_CIRCUMFERENCE * 0.14;
+const WAITING_GAP = RING_CIRCUMFERENCE - WAITING_DASH;
 
 type Props = {
   onOpen: () => void;
@@ -106,12 +112,13 @@ export function UploadRailStatus({ onOpen, className }: Props) {
   const percent = Math.max(0, Math.min(100, total.percent));
   const hasMeasurableProgress =
     uploadJobActive && (percent > 0 || total.current > 0 || total.total > 0);
-  const spinning =
-    !paused &&
-    ((uploadJobActive && !hasMeasurableProgress) ||
-      (!uploadJobActive && pendingCount > 0));
   const waiting = !uploadJobActive && pendingCount > 0;
-  const showArc = hasMeasurableProgress || spinning || paused;
+  /** Upload without bytes — keep existing indeterminate dash animation. */
+  const uploadSpinning = !paused && uploadJobActive && !hasMeasurableProgress;
+  /** Stability pending — dedicated short rotating arc (not progress). */
+  const waitingSpin = !paused && waiting;
+  const showArc =
+    hasMeasurableProgress || uploadSpinning || waitingSpin || paused;
 
   const filesLabel =
     slots.files_total > 0
@@ -168,8 +175,8 @@ export function UploadRailStatus({ onOpen, className }: Props) {
         aria-hidden
       >
         <circle
-          cx={RING_SIZE / 2}
-          cy={RING_SIZE / 2}
+          cx={RING_CX}
+          cy={RING_CY}
           r={RING_RADIUS}
           fill="none"
           className={cn(
@@ -178,34 +185,58 @@ export function UploadRailStatus({ onOpen, className }: Props) {
           strokeWidth={RING_STROKE}
         />
         {showArc ? (
-          <circle
-            cx={RING_SIZE / 2}
-            cy={RING_SIZE / 2}
-            r={RING_RADIUS}
-            fill="none"
-            className={cn(
-              "stroke-current",
-              spinning && "ams-rail-indeterminate-circle",
-            )}
-            strokeWidth={RING_STROKE}
-            strokeLinecap="round"
-            strokeDasharray={
-              spinning
-                ? `${INDETERMINATE_DASH} ${INDETERMINATE_GAP}`
-                : RING_CIRCUMFERENCE
-            }
-            strokeDashoffset={spinning ? 0 : ringOffset}
-            transform={`rotate(-90 ${RING_SIZE / 2} ${RING_SIZE / 2})`}
-            style={
-              spinning
-                ? ({
-                    ["--ams-rail-circ" as string]: String(RING_CIRCUMFERENCE),
-                  } as CSSProperties)
-                : hasMeasurableProgress
-                  ? { transition: "stroke-dashoffset 200ms ease-out" }
-                  : undefined
-            }
-          />
+          waitingSpin ? (
+            <g
+              className="ams-rail-waiting-spin"
+              style={
+                {
+                  transformOrigin: `${RING_CX}px ${RING_CY}px`,
+                  transformBox: "view-box",
+                } as CSSProperties
+              }
+            >
+              <circle
+                cx={RING_CX}
+                cy={RING_CY}
+                r={RING_RADIUS}
+                fill="none"
+                className="stroke-current"
+                strokeWidth={RING_STROKE}
+                strokeLinecap="round"
+                strokeDasharray={`${WAITING_DASH} ${WAITING_GAP}`}
+                transform={`rotate(-90 ${RING_CX} ${RING_CY})`}
+              />
+            </g>
+          ) : (
+            <circle
+              cx={RING_CX}
+              cy={RING_CY}
+              r={RING_RADIUS}
+              fill="none"
+              className={cn(
+                "stroke-current",
+                uploadSpinning && "ams-rail-indeterminate-circle",
+              )}
+              strokeWidth={RING_STROKE}
+              strokeLinecap="round"
+              strokeDasharray={
+                uploadSpinning
+                  ? `${INDETERMINATE_DASH} ${INDETERMINATE_GAP}`
+                  : RING_CIRCUMFERENCE
+              }
+              strokeDashoffset={uploadSpinning ? 0 : ringOffset}
+              transform={`rotate(-90 ${RING_CX} ${RING_CY})`}
+              style={
+                uploadSpinning
+                  ? ({
+                      ["--ams-rail-circ" as string]: String(RING_CIRCUMFERENCE),
+                    } as CSSProperties)
+                  : hasMeasurableProgress
+                    ? { transition: "stroke-dashoffset 200ms ease-out" }
+                    : undefined
+              }
+            />
+          )
         ) : null}
       </svg>
 
