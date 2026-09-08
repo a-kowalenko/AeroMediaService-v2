@@ -31,6 +31,8 @@ pub const CODE_CUSTOMER_LOOKUP_FAILED: &str = "customer_lookup_failed";
 pub const CODE_CANCELLED: &str = "cancelled";
 pub const CODE_APPEND_PARENT_MISSING: &str = "append_parent_missing";
 pub const CODE_APPEND_PARENT_NOT_READY: &str = "append_parent_not_ready";
+/// ID-match auto-append: matching customer+booking exists but is not ready (Phase 21b).
+pub const CODE_ID_APPEND_PARENT_NOT_READY: &str = "id_append_parent_not_ready";
 pub const CODE_HANDOFF_TIMEOUT: &str = "handoff_timeout";
 pub const CODE_HANDOFF_NO_FERTIG: &str = "handoff_no_fertig";
 pub const CODE_HANDOFF_NO_MEDIA: &str = "handoff_no_media";

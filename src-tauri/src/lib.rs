@@ -14,6 +14,11 @@ mod util;
 
 use std::sync::Arc;
 
+/// Entry for `ams-smb-helper` binary (Phase 20d elevated List/Close).
+pub fn run_smb_helper(args: Vec<String>) -> i32 {
+    util::smb_helper::run(args)
+}
+
 use bridge::BridgeState;
 use cloud::CloudState;
 use commands::{
@@ -26,7 +31,10 @@ use commands::{
     get_ats_hosts_summary, get_ats_jobs_by_host, get_bridge_status, get_brochure_status,
     get_cloud_connection_status, get_dropbox_account_info, get_history, get_history_entry,
     get_manual_status_warnings, get_monitoring_status, get_path_hints_status, get_recent_logs, get_sandbox_warnings,
-    get_secret, get_setting, get_sms_balance, get_stability_pending, get_upload_control_state,
+    auto_close_safe_idle_smb_sessions, close_safe_idle_smb_sessions,
+    close_safe_idle_smb_sessions_elevated, close_smb_session, close_smb_session_elevated,
+    get_secret, get_setting, get_smb_session_snapshot, get_smb_session_snapshot_elevated,
+    get_sms_balance, get_stability_pending, get_upload_control_state,
     get_upload_queue, import_brochure, list_customers, list_dropbox_accounts, list_local_share_candidates_cmd,
     list_media_folders_cmd, lookup_customer_intake, lookup_share_link, migrate_legacy_settings, open_brochure,
     open_external_path, open_external_url, pause_upload, preview_id_assign, propose_customer_assignments,
@@ -140,6 +148,13 @@ pub fn run() {
             get_ats_host_activity,
             remove_ats_host,
             remove_inactive_long_ats_hosts,
+            get_smb_session_snapshot,
+            get_smb_session_snapshot_elevated,
+            close_smb_session,
+            close_smb_session_elevated,
+            close_safe_idle_smb_sessions,
+            close_safe_idle_smb_sessions_elevated,
+            auto_close_safe_idle_smb_sessions,
             pause_upload,
             resume_upload,
             cancel_upload,

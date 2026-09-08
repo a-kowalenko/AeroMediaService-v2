@@ -1278,6 +1278,23 @@ impl CloudClient for DropboxClient {
 
         let mut files = collect_upload_files(local_dir_path, remote_base_path);
         let is_append = self.is_append_upload();
+        let raw_ck_early = load_checkpoint(local_dir_path);
+        let mut append_rel_overrides = std::collections::HashMap::new();
+        let mut append_overrides_for_ck: Option<std::collections::HashMap<String, String>> = None;
+        if is_append {
+            if append_names_resolved_from_checkpoint(raw_ck_early.as_ref()) {
+                if let Some(overrides) =
+                    append_rel_overrides_from_checkpoint(raw_ck_early.as_ref())
+                {
+                    apply_append_rel_overrides(&mut files, remote_base_path, &overrides);
+                    append_rel_overrides = overrides;
+                }
+            } else {
+                append_rel_overrides =
+                    resolve_append_remote_collisions(self, &mut files, remote_base_path).await;
+            }
+            append_overrides_for_ck = Some(append_rel_overrides);
+        }
         if !is_append {
             let settings = crate::upload::brochure::brochure_settings_from_runtime();
             let remote_exists = if settings.enabled {
@@ -1309,9 +1326,8 @@ impl CloudClient for DropboxClient {
             .map(|f| json!({"name": f.rel_norm, "size": f.size}))
             .collect();
         let manifest_fp = manifest_fingerprint(&manifest);
-        let raw_ck = load_checkpoint(local_dir_path);
         let mut resume_ck = None;
-        if let Some(raw) = raw_ck {
+        if let Some(raw) = raw_ck_early {
             if raw.get("kind").and_then(Value::as_str) == Some("dropbox_native")
                 && raw.get("manifest_fp").and_then(Value::as_str) == Some(manifest_fp.as_str())
                 && raw.get("remote_base_path").and_then(Value::as_str) == Some(remote_base_path)
@@ -1367,18 +1383,17 @@ impl CloudClient for DropboxClient {
         };
 
         if resume_ck.is_none() {
-            let _ = save_checkpoint(
-                local_dir_path,
-                &self.checkpoint_payload(json!({
-                    "kind": "dropbox_native",
-                    "manifest_fp": manifest_fp,
-                    "remote_base_path": remote_base_path,
-                    "total_size": total_size,
-                    "phase": "uploading",
-                    "next_file_index": 0,
-                    "db_active": Value::Null,
-                })),
-            );
+            let mut payload = json!({
+                "kind": "dropbox_native",
+                "manifest_fp": manifest_fp,
+                "remote_base_path": remote_base_path,
+                "total_size": total_size,
+                "phase": "uploading",
+                "next_file_index": 0,
+                "db_active": Value::Null,
+            });
+            insert_append_rel_overrides(&mut payload, append_overrides_for_ck.as_ref());
+            let _ = save_checkpoint(local_dir_path, &self.checkpoint_payload(payload));
         }
 
         self.reset_write_limiter();
@@ -1392,6 +1407,7 @@ impl CloudClient for DropboxClient {
         let ams = self.profile_ams_id();
         let pool = self.profile_pool();
         let files_for_ck = files.clone();
+        let overrides_for_ck = append_overrides_for_ck.clone();
         let ck_saver = std::sync::Mutex::new(ThrottledCheckpointSaver::new(
             CK_MIN_INTERVAL_SECS,
             CHUNK_SIZE as u64,
@@ -1437,6 +1453,7 @@ impl CloudClient for DropboxClient {
                         "db_active": Value::Null,
                     })
                 };
+                insert_append_rel_overrides(&mut payload, overrides_for_ck.as_ref());
                 if let Some(obj) = payload.as_object_mut() {
                     merge_checkpoint_binding(obj, ams.as_deref(), Some(pool));
                 }
@@ -1457,6 +1474,7 @@ impl CloudClient for DropboxClient {
                     "next_file_index": next_idx,
                     "db_active": Value::Null,
                 });
+                insert_append_rel_overrides(&mut payload, overrides_for_ck.as_ref());
                 if let Some(obj) = payload.as_object_mut() {
                     merge_checkpoint_binding(obj, ams.as_deref(), Some(pool));
                 }
@@ -1668,6 +1686,164 @@ pub fn collect_upload_files(local_dir_path: &Path, remote_base_path: &str) -> Ve
     walk_collect(local_dir_path, local_dir_path, remote_base_path, &mut files);
     files.sort_by(|a, b| a.rel_norm.cmp(&b.rel_norm));
     files
+}
+
+/// Checkpoint key: original `rel_norm` → remapped name after append collision resolve (Phase 21c).
+pub const APPEND_REL_OVERRIDES_KEY: &str = "append_rel_overrides";
+/// Checkpoint flag: append destination names already resolved (skip remote re-probe on resume).
+pub const APPEND_NAMES_RESOLVED_KEY: &str = "append_names_resolved";
+
+pub fn append_names_resolved_from_checkpoint(ck: Option<&Value>) -> bool {
+    ck.and_then(|v| v.get(APPEND_NAMES_RESOLVED_KEY))
+        .and_then(Value::as_bool)
+        == Some(true)
+}
+pub fn append_rel_overrides_from_checkpoint(ck: Option<&Value>) -> Option<std::collections::HashMap<String, String>> {
+    let obj = ck?
+        .get(APPEND_REL_OVERRIDES_KEY)?
+        .as_object()?;
+    if obj.is_empty() {
+        return None;
+    }
+    let mut map = std::collections::HashMap::new();
+    for (k, v) in obj {
+        if let Some(to) = v.as_str().map(str::trim).filter(|s| !s.is_empty()) {
+            map.insert(k.clone(), to.to_string());
+        }
+    }
+    if map.is_empty() {
+        None
+    } else {
+        Some(map)
+    }
+}
+
+/// Persist append name-resolution state into a checkpoint payload (no-op when `None`).
+pub(crate) fn insert_append_rel_overrides(
+    payload: &mut Value,
+    overrides: Option<&std::collections::HashMap<String, String>>,
+) {
+    let Some(overrides) = overrides else {
+        return;
+    };
+    if let Some(obj) = payload.as_object_mut() {
+        obj.insert(APPEND_NAMES_RESOLVED_KEY.into(), Value::Bool(true));
+        if !overrides.is_empty() {
+            obj.insert(
+                APPEND_REL_OVERRIDES_KEY.into(),
+                append_rel_overrides_to_value(overrides),
+            );
+        }
+    }
+}
+
+pub fn append_rel_overrides_to_value(
+    overrides: &std::collections::HashMap<String, String>,
+) -> Value {
+    let mut obj = serde_json::Map::new();
+    for (from, to) in overrides {
+        obj.insert(from.clone(), Value::String(to.clone()));
+    }
+    Value::Object(obj)
+}
+
+/// Apply persisted original→remapped `rel_norm` (resume-stable fingerprints).
+pub fn apply_append_rel_overrides(
+    files: &mut [UploadFile],
+    remote_base_path: &str,
+    overrides: &std::collections::HashMap<String, String>,
+) {
+    use crate::upload::append::remap_rel_path_filename;
+    for file in files.iter_mut() {
+        let Some(new_rel) = overrides.get(&file.rel_norm) else {
+            continue;
+        };
+        if new_rel == &file.rel_norm {
+            continue;
+        }
+        // Override values are full rel_norm paths (not bare filenames).
+        let remapped = if new_rel.contains('/') {
+            new_rel.clone()
+        } else {
+            remap_rel_path_filename(&file.rel_norm, new_rel)
+        };
+        file.rel_norm = remapped;
+        file.dropbox_path = join_dropbox_path(remote_base_path, &file.rel_norm);
+    }
+}
+
+/// Resolve collisions using a known set of occupied Dropbox paths (unit-testable core of Phase 21c).
+pub fn resolve_append_rel_collisions_against_taken(
+    files: &mut [UploadFile],
+    remote_base_path: &str,
+    taken_remote_paths: &HashSet<String>,
+) -> std::collections::HashMap<String, String> {
+    use crate::upload::append::{rel_path_filename, remap_rel_path_filename, unique_name_with_parens};
+
+    let mut overrides = std::collections::HashMap::new();
+    let mut claimed_paths: HashSet<String> = taken_remote_paths.clone();
+
+    for file in files.iter_mut() {
+        let original_rel = file.rel_norm.clone();
+        let original_name = rel_path_filename(&original_rel);
+        let name = unique_name_with_parens(&original_name, |cand| {
+            let rel = remap_rel_path_filename(&original_rel, cand);
+            claimed_paths.contains(&join_dropbox_path(remote_base_path, &rel))
+        });
+        let candidate_rel = remap_rel_path_filename(&original_rel, &name);
+        let candidate_path = join_dropbox_path(remote_base_path, &candidate_rel);
+        file.rel_norm = candidate_rel;
+        file.dropbox_path = candidate_path.clone();
+        claimed_paths.insert(candidate_path);
+
+        if file.rel_norm != original_rel {
+            overrides.insert(original_rel, file.rel_norm.clone());
+        }
+    }
+
+    overrides
+}
+
+/// Before append upload: avoid overwriting remote files; remap to `stem (n).ext`.
+/// Returns original `rel_norm` → new `rel_norm` for checkpoint persistence.
+pub async fn resolve_append_remote_collisions(
+    client: &DropboxClient,
+    files: &mut [UploadFile],
+    remote_base_path: &str,
+) -> std::collections::HashMap<String, String> {
+    let mut taken = HashSet::new();
+    // Probe each original path once; resolve_append_rel_collisions_against_taken walks (n) locally.
+    // Also probe a reasonable (1)…(k) window so we do not overwrite existing numbered copies.
+    for file in files.iter() {
+        use crate::upload::append::{rel_path_filename, remap_rel_path_filename};
+        let original_rel = &file.rel_norm;
+        let original_name = rel_path_filename(original_rel);
+        for n in 0..=64u32 {
+            let name = if n == 0 {
+                original_name.clone()
+            } else {
+                let (stem, ext) = match original_name.rsplit_once('.') {
+                    Some((s, e)) if !s.is_empty() => (s.to_string(), format!(".{e}")),
+                    _ => (original_name.clone(), String::new()),
+                };
+                format!("{stem} ({n}){ext}")
+            };
+            let rel = remap_rel_path_filename(original_rel, &name);
+            let path = join_dropbox_path(remote_base_path, &rel);
+            if client.remote_path_is_file(&path).await {
+                taken.insert(path);
+            }
+        }
+    }
+
+    let overrides =
+        resolve_append_rel_collisions_against_taken(files, remote_base_path, &taken);
+    for (from, to) in &overrides {
+        logging::log_info(&format!(
+            "Append-Namenskollision: '{from}' → '{to}' (kein Overwrite)"
+        ));
+    }
+    overrides
 }
 
 fn walk_collect(root: &Path, current: &Path, remote_base: &str, out: &mut Vec<UploadFile>) {
@@ -2049,6 +2225,54 @@ mod tests {
         assert_eq!(effective_resume_index(&files, 0, &done), 2);
         assert_eq!(bytes_for_done_files(&files, &done), 3);
         assert_eq!(files_done_count(&files, &done), 2);
+    }
+
+    #[test]
+    fn append_rel_collision_renames_and_updates_manifest_paths() {
+        let mut files = vec![UploadFile {
+            local_path: PathBuf::from("photo.jpg"),
+            dropbox_path: "/Parent/Outside_Foto/photo.jpg".into(),
+            size: 10,
+            rel_norm: "Outside_Foto/photo.jpg".into(),
+        }];
+        let mut taken = HashSet::new();
+        taken.insert("/Parent/Outside_Foto/photo.jpg".into());
+        taken.insert("/Parent/Outside_Foto/photo (1).jpg".into());
+
+        let overrides =
+            resolve_append_rel_collisions_against_taken(&mut files, "/Parent", &taken);
+        assert_eq!(
+            overrides.get("Outside_Foto/photo.jpg").map(String::as_str),
+            Some("Outside_Foto/photo (2).jpg")
+        );
+        assert_eq!(files[0].rel_norm, "Outside_Foto/photo (2).jpg");
+        assert_eq!(
+            files[0].dropbox_path,
+            "/Parent/Outside_Foto/photo (2).jpg"
+        );
+
+        // Resume: apply overrides to freshly collected (original) paths.
+        let mut resumed = vec![UploadFile {
+            local_path: PathBuf::from("photo.jpg"),
+            dropbox_path: "/Parent/Outside_Foto/photo.jpg".into(),
+            size: 10,
+            rel_norm: "Outside_Foto/photo.jpg".into(),
+        }];
+        apply_append_rel_overrides(&mut resumed, "/Parent", &overrides);
+        assert_eq!(resumed[0].rel_norm, "Outside_Foto/photo (2).jpg");
+        assert_eq!(
+            resumed[0].dropbox_path,
+            "/Parent/Outside_Foto/photo (2).jpg"
+        );
+
+        let ck = json!({
+            APPEND_REL_OVERRIDES_KEY: append_rel_overrides_to_value(&overrides),
+        });
+        let parsed = append_rel_overrides_from_checkpoint(Some(&ck)).unwrap();
+        assert_eq!(
+            parsed.get("Outside_Foto/photo.jpg").map(String::as_str),
+            Some("Outside_Foto/photo (2).jpg")
+        );
     }
 
     #[test]

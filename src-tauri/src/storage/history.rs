@@ -233,6 +233,25 @@ fn is_hidden_append_shadow(entry: &HistoryEntry) -> bool {
         && entry.archived_path.trim().is_empty()
 }
 
+/// Type filter for ID-match: applied only when both sides are non-empty.
+fn customer_types_compatible(query_type: Option<&str>, entry_type: &str) -> bool {
+    let query = query_type.map(str::trim).filter(|s| !s.is_empty());
+    let entry = entry_type.trim();
+    match (query, entry.is_empty()) {
+        (None, _) | (_, true) => true,
+        (Some(q), false) => normalize_match_customer_type(q) == normalize_match_customer_type(entry),
+    }
+}
+
+fn normalize_match_customer_type(raw: &str) -> String {
+    let value = raw.trim().to_ascii_lowercase();
+    if value == "handycam" || value == "handcam" {
+        "handcam".into()
+    } else {
+        value
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct HistoryPage {
     pub items: Vec<HistoryEntry>,
@@ -530,6 +549,94 @@ impl HistoryStore {
             entry.refresh_computed();
         }
         Ok(entry)
+    }
+
+    /// Newest successful history row with the same customer+booking IDs and a non-empty
+    /// `remote_path` (Phase 21a ID-match parent). When both query and entry have a
+    /// customer type, types must match (normalized); otherwise only IDs are compared.
+    pub fn find_successful_by_customer_booking(
+        &self,
+        customer_number: &str,
+        booking_number: &str,
+        customer_type: Option<&str>,
+    ) -> Result<Option<HistoryEntry>, HistoryError> {
+        let customer = customer_number.trim();
+        let booking = booking_number.trim();
+        if customer.is_empty() || booking.is_empty() {
+            return Ok(None);
+        }
+
+        let conn = self.connect()?;
+        let mut stmt = conn.prepare(
+            "SELECT * FROM history
+             WHERE status = ?1
+               AND TRIM(customer_number) = ?2
+               AND TRIM(booking_number) = ?3
+               AND TRIM(remote_path) != ''
+             ORDER BY last_updated DESC, created_at DESC, id DESC",
+        )?;
+        let rows = stmt.query_map(
+            params!["Erfolgreich", customer, booking],
+            row_to_entry,
+        )?;
+        Self::pick_newest_id_match(rows, customer_type, customer, booking, true)
+    }
+
+    /// Newest history row with the same customer+booking IDs (any status).
+    /// Used by Phase 21b when a parent exists but is not append-ready.
+    pub fn find_latest_by_customer_booking(
+        &self,
+        customer_number: &str,
+        booking_number: &str,
+        customer_type: Option<&str>,
+    ) -> Result<Option<HistoryEntry>, HistoryError> {
+        let customer = customer_number.trim();
+        let booking = booking_number.trim();
+        if customer.is_empty() || booking.is_empty() {
+            return Ok(None);
+        }
+
+        let conn = self.connect()?;
+        let mut stmt = conn.prepare(
+            "SELECT * FROM history
+             WHERE TRIM(customer_number) = ?1
+               AND TRIM(booking_number) = ?2
+             ORDER BY last_updated DESC, created_at DESC, id DESC",
+        )?;
+        let rows = stmt.query_map(params![customer, booking], row_to_entry)?;
+        Self::pick_newest_id_match(rows, customer_type, customer, booking, false)
+    }
+
+    fn pick_newest_id_match(
+        rows: impl IntoIterator<Item = Result<HistoryEntry, rusqlite::Error>>,
+        customer_type: Option<&str>,
+        customer: &str,
+        booking: &str,
+        warn_on_multi_success: bool,
+    ) -> Result<Option<HistoryEntry>, HistoryError> {
+        let mut matches = Vec::new();
+        for row in rows {
+            let mut entry = row?;
+            entry.refresh_computed();
+            if !customer_types_compatible(customer_type, &entry.customer_type) {
+                continue;
+            }
+            matches.push(entry);
+        }
+
+        if matches.is_empty() {
+            return Ok(None);
+        }
+        if warn_on_multi_success && matches.len() > 1 {
+            crate::storage::logging::log_warn(&format!(
+                "ID-Match Auto-Append: {} erfolgreiche Treffer für customer={} booking={} — nehme neuesten '{}'.",
+                matches.len(),
+                customer,
+                booking,
+                matches[0].dir_name
+            ));
+        }
+        Ok(Some(matches.remove(0)))
     }
 
     pub fn get_filtered_page(
@@ -909,6 +1016,171 @@ mod tests {
         let found = store.find_by_dir_name("Flug_dir").unwrap().unwrap();
         assert_eq!(found.dir_name, "Flug_dir");
         assert!(store.find_by_dir_name("missing").unwrap().is_none());
+    }
+
+    #[test]
+    fn find_successful_by_customer_booking_matches_newest() {
+        let (_dir, mut store) = open_tmp();
+        store
+            .add_or_update(&json!({
+                "dir_name": "Flug_old",
+                "status": "Erfolgreich",
+                "customer_number": "C1",
+                "booking_number": "B2",
+                "remote_path": "/Flug_old",
+                "created_at": "2026-01-01T10:00:00",
+                "last_updated": "2026-01-01T10:00:00",
+            }))
+            .unwrap();
+        store
+            .add_or_update(&json!({
+                "dir_name": "Flug_new",
+                "status": "Erfolgreich",
+                "customer_number": " C1 ",
+                "booking_number": "B2",
+                "remote_path": "/Flug_new",
+                "created_at": "2026-02-01T10:00:00",
+                "last_updated": "2026-02-01T12:00:00",
+            }))
+            .unwrap();
+        store
+            .add_or_update(&json!({
+                "dir_name": "Flug_fail",
+                "status": "Fehler",
+                "customer_number": "C1",
+                "booking_number": "B2",
+                "remote_path": "/Flug_fail",
+                "last_updated": "2026-03-01T10:00:00",
+            }))
+            .unwrap();
+
+        let found = store
+            .find_successful_by_customer_booking("C1", "B2", None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(found.dir_name, "Flug_new");
+        assert_eq!(found.remote_path, "/Flug_new");
+    }
+
+    #[test]
+    fn find_successful_by_customer_booking_type_filter() {
+        let (_dir, mut store) = open_tmp();
+        store
+            .add_or_update(&json!({
+                "dir_name": "Outside_job",
+                "status": "Erfolgreich",
+                "customer_number": "10",
+                "booking_number": "20",
+                "type": "Outside",
+                "remote_path": "/Outside_job",
+                "last_updated": "2026-02-01T10:00:00",
+            }))
+            .unwrap();
+        store
+            .add_or_update(&json!({
+                "dir_name": "Handcam_job",
+                "status": "Erfolgreich",
+                "customer_number": "10",
+                "booking_number": "20",
+                "type": "Handycam",
+                "remote_path": "/Handcam_job",
+                "last_updated": "2026-01-01T10:00:00",
+            }))
+            .unwrap();
+
+        let handcam = store
+            .find_successful_by_customer_booking("10", "20", Some("handcam"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(handcam.dir_name, "Handcam_job");
+
+        let outside = store
+            .find_successful_by_customer_booking("10", "20", Some("Outside"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(outside.dir_name, "Outside_job");
+
+        // Entry without type still matches when query type is set (IDs only).
+        store
+            .add_or_update(&json!({
+                "dir_name": "NoType_job",
+                "status": "Erfolgreich",
+                "customer_number": "10",
+                "booking_number": "20",
+                "type": "",
+                "remote_path": "/NoType_job",
+                "last_updated": "2026-03-01T10:00:00",
+            }))
+            .unwrap();
+        let with_empty_entry_type = store
+            .find_successful_by_customer_booking("10", "20", Some("Outside"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(with_empty_entry_type.dir_name, "NoType_job");
+    }
+
+    #[test]
+    fn find_successful_by_customer_booking_rejects_empty_ids_and_missing_remote() {
+        let (_dir, mut store) = open_tmp();
+        store
+            .add_or_update(&json!({
+                "dir_name": "NoRemote",
+                "status": "Erfolgreich",
+                "customer_number": "C9",
+                "booking_number": "B9",
+                "remote_path": "  ",
+            }))
+            .unwrap();
+
+        assert!(store
+            .find_successful_by_customer_booking("", "B9", None)
+            .unwrap()
+            .is_none());
+        assert!(store
+            .find_successful_by_customer_booking("C9", "  ", None)
+            .unwrap()
+            .is_none());
+        assert!(store
+            .find_successful_by_customer_booking("C9", "B9", None)
+            .unwrap()
+            .is_none());
+        assert!(store
+            .find_successful_by_customer_booking("missing", "B9", None)
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn find_latest_by_customer_booking_finds_non_successful() {
+        let (_dir, mut store) = open_tmp();
+        store
+            .add_or_update(&json!({
+                "dir_name": "InProgress",
+                "status": "In Bearbeitung",
+                "customer_number": "C7",
+                "booking_number": "B7",
+                "remote_path": "",
+            }))
+            .unwrap();
+
+        let found = store
+            .find_latest_by_customer_booking("C7", "B7", None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(found.dir_name, "InProgress");
+        assert_eq!(found.status, "In Bearbeitung");
+        assert!(store
+            .find_successful_by_customer_booking("C7", "B7", None)
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn customer_types_compatible_only_when_both_set() {
+        assert!(customer_types_compatible(None, "Outside"));
+        assert!(customer_types_compatible(Some("Outside"), ""));
+        assert!(customer_types_compatible(Some("Handycam"), "handcam"));
+        assert!(!customer_types_compatible(Some("Outside"), "Handcam"));
     }
 
     #[test]

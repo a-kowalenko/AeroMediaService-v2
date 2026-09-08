@@ -8,6 +8,7 @@ import {
   countActiveAtsHosts,
   countConnectedAtsHosts,
 } from "@/components/AtsHostListSections";
+import {SmbSessionsSection} from "@/components/SmbSessionsSection";
 import {
   Dialog,
   DialogContent,
@@ -34,6 +35,7 @@ import {
   removeAtsHost,
   removeInactiveLongAtsHosts,
   type AtsHostDetails,
+  type SmbSessionSnapshot,
 } from "@/lib/tauri";
 import {eventTypeLabel} from "@/lib/atsActivityDisplay";
 import {useUiStore} from "@/store/uiStore";
@@ -66,9 +68,17 @@ type Props = {
   open: boolean;
   onClose: () => void;
   onHostsChanged?: () => void;
+  smbSnapshot?: SmbSessionSnapshot | null;
+  onRefreshSmb?: () => void | Promise<void>;
 };
 
-export function AtsClientsDialog({open, onClose, onHostsChanged}: Props) {
+export function AtsClientsDialog({
+  open,
+  onClose,
+  onHostsChanged,
+  smbSnapshot = null,
+  onRefreshSmb,
+}: Props) {
   const confirm = useUiStore((s) => s.confirm);
   const [hosts, setHosts] = useState<Awaited<ReturnType<typeof getAtsHostsSummary>>>([]);
   const [hostsLoading, setHostsLoading] = useState(false);
@@ -146,9 +156,13 @@ export function AtsClientsDialog({open, onClose, onHostsChanged}: Props) {
   useEffect(() => {
     if (!open) return;
     void loadHosts();
-    const id = window.setInterval(() => void loadHosts(), 30000);
+    onRefreshSmb?.();
+    const id = window.setInterval(() => {
+      void loadHosts();
+      onRefreshSmb?.();
+    }, 30000);
     return () => window.clearInterval(id);
-  }, [open, loadHosts]);
+  }, [open, loadHosts, onRefreshSmb]);
 
   useEffect(() => {
     if (!open || !selectedHostId) return;
@@ -250,7 +264,10 @@ export function AtsClientsDialog({open, onClose, onHostsChanged}: Props) {
               size="icon"
               className={cn("h-8 w-8", hostsLoading && "disabled:opacity-100")}
               disabled={hostsLoading}
-              onClick={() => void loadHosts()}
+              onClick={() => {
+                void loadHosts();
+                onRefreshSmb?.();
+              }}
               title="Aktualisieren"
               aria-label="Aktualisieren"
               aria-busy={hostsLoading}
@@ -261,6 +278,12 @@ export function AtsClientsDialog({open, onClose, onHostsChanged}: Props) {
         </div>
 
         {hostsError ? <p className="text-xs text-destructive">{hostsError}</p> : null}
+
+        <SmbSessionsSection
+          snapshot={smbSnapshot}
+          active={open}
+          onChanged={onRefreshSmb}
+        />
 
         <div className="grid min-h-0 flex-1 gap-3 xl:grid-cols-[minmax(0,0.92fr)_minmax(0,1.28fr)]">
           <div className="min-h-0 overflow-y-auto pr-1 [scrollbar-gutter:stable]">

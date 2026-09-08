@@ -72,10 +72,12 @@
 | Multi-Dropbox-Konten (Native + Custom-API) | ✅ Phase 16 — 16a ✅ · 16b ✅ · 16c ✅ · 16d ✅ |
 | Infobroschüre PDF (Erst-Upload) | ✅ Phase 17 |
 | Release-Kanäle (Beta / Stable / Auto-Latest) | ✅ Phase 18 |
-| Kundenaufnahme ID-Flow + Ordner-Normalisierung | ✅ Phase 19 — Spec unten · **19a** ✅ · **19b** ✅ · **19c** ✅ · **19d** ✅ |
+| Kundenaufnahme ID-Flow + Ordner-Normalisierung | ✅ Phase 19 — Spec unten · **19a** ✅ · **19b** ✅ · **19c** ✅ · **19d** ✅ · **19e** ✅ |
+| SMB-Session-Diagnose & Idle-Cleanup (Windows) | ✅ Phase 20 — Spec unten · **20a–20d** ✅ |
+| Auto-Nachreichen bei gleicher Kunden-/Booking-ID | ✅ Phase 21 — Spec unten · **21a–21d** ✅ |
 
-**Nächste Phase (AMS):** Phase 19 abgeschlossen — nächste Priorität nach Backlog / ATS-P6b  
-**Parallel (ATS):** Phase 13 / **P6b** — Bridge Path Hints; Spec: [`HANDOFF.md`](./HANDOFF.md) §9.3 · ATS = Phase 35
+**Nächste Phase (AMS):** offen (Phase 21 abgeschlossen)  
+**Parallel (ATS):** Phase 13 / **P6b** — Bridge Path Hints; Spec: [`HANDOFF.md`](./HANDOFF.md) §9.3 · ATS = Phase 35; optional Phase-21-Hinweis dokumentiert in 21d
 
 ---
 
@@ -677,6 +679,10 @@ Danach cargo test.
 | `bridge_bind` | Bind-Adresse (LAN, z. B. `0.0.0.0:8787`) | `"0.0.0.0:8787"` |
 | `ats_primary_smb_url` | Client-Hint Primär-Share für ATS (P6; bevorzugt `smb://`) | `""` |
 | `ats_backup_smb_url` | Client-Hint Backup-Share für ATS (P6; nur Profil, kein Failover) | `""` |
+| `smb_session_warn_threshold` | Warnung ab N SMB-Server-Sessions (Phase 20; Windows) | `"8"` |
+| `smb_session_idle_min_seconds` | Min. Idle für Safe-Close (Phase 20) | `"600"` |
+| `smb_session_auto_close_enabled` | Auto-Close Idle-Sessions (Phase 20c; default aus) | `"false"` |
+| `smb_session_poll_seconds` | Poll-Intervall Session-Diagnose (Phase 20) | `"30"` |
 | `selected_cloud_service` | `dropbox` \| `custom_api` | `dropbox` |
 | `active_dropbox_account_id` | Aktives Native-Dropbox-Profil (Phase 16) | `""` (nach Migration gesetzt) |
 | `active_custom_dropbox_account_id` | Aktives Custom-API-Dropbox-Profil (Phase 16) | `""` (nach Migration gesetzt) |
@@ -1168,6 +1174,354 @@ Danach cargo test && npm run tauri dev.
 
 ---
 
+### Phase 20 — SMB-Session-Diagnose & Idle-Cleanup (Windows)
+
+**Status:** ✅ 20a–20d  
+**Betriebsannahme:** AMS läuft immer auf dem Rechner, der den Share (`aktuell` / `monitor_path`) exportiert → AMS = SMB-**Server**-Host.  
+**Ziel:** Zu viele / hängende SMB-Server-Sessions erkennen, im Header warnen und gezielt nur sichere Idle-Sessions trennen — ohne Handoff-/Upload-Pipeline zu blockieren.  
+**20d:** Uneleviertes AMS + on-demand `ams-smb-helper` (UAC/`runas`) für List/Close.
+
+**Plattform:** Windows-first (Win32 `NetSessionEnum` / Felder analog CIM `MSFT_SmbSession`). macOS/Linux: Stub „nicht unterstützt“ (kein Samba-/smbd-Kill in dieser Phase).
+
+**Produktregeln (verbindlich):**
+
+1. **Diagnose vor Aktion:** Sessions auflisten und Schwellen-Warnung; kein blindes Kill aller Sessions.
+2. **Clients-Chip = Warnungsfläche, nicht SMB-Zähler:** Header-Badge-Zahl bleibt **ATS-Bridge-Clients**. Bei SMB-Überlast (`ok` + Count ≥ Schwelle): Warning-Ton am Chip + Tooltip (z. B. „12 SMB-Sessions (Schwelle 8)“). `permission_denied` / Abfragefehler: **kein** Chip-Warn (nur Dialog-Text + Elevate-CTA). Klick öffnet weiterhin `AtsClientsDialog`, erweitert um SMB-Sektion.
+3. **Safe-Close nur:** `SecondsIdle ≥ smb_session_idle_min_seconds` **und** `NumOpens == 0`. Nie Sessions mit offenen Handles hart schließen.
+4. **Kein Pipeline-Gate:** Monitor/Claim/Upload hängen nicht von SMB-Cleanup ab. Feature = Betriebs-Hilfe.
+5. **Elevation:** Lesen/Schließen braucht oft Admin. Klare UI („Admin nötig“); **20d:** optional elevierter Helper nur für List/Close — AMS nicht dauerhaft und nicht erneut als Admin starten.
+6. **Technik:** Win32 NetAPI (`NetSessionEnum` / Close via `NetSessionDel`) aus Rust — **kein** `powershell.exe`-Spawn (Console-Flash, Fragilität). Felder spiegeln CIM-Diagnose (`Client`, `User`, `Idle`, `Exists`, `NumOpens`).
+7. **Audit:** Jeden Close loggen (SessionId, Client, Idle, NumOpens, manuell/auto, Ergebnis).
+8. **Defaults konservativ:** Warn-Schwelle ~8, Idle-Min ~10 min, Auto-Close **aus**, Poll ~30 s.
+9. **Soft-Policy:** Kurz dokumentieren / Settings-Hinweis: OS-Idle-Timeout und Server-Limits sind nachhaltiger als App-Kill (App = Notnagel).
+10. **Share-Fokus (20c):** Priorität Sessions/OpenFiles am Monitor-/`aktuell`-Share — nicht blind alle Freigaben des Rechners, soweit API es hergibt.
+11. **Bridge-Korrelation (20c):** Hinweis, wenn Client-IP zu bekanntem ATS-Host passt (Diagnose); kein Hard-Gate / kein Auto-Kill nur wegen Presence.
+
+**Referenz (bestehend, nur lesen/erweitern):**
+
+```
+src/App.tsx                          (Clients-Chip im Header)
+src/components/AtsClientsDialog.tsx  (Dialog-Einstieg)
+src/components/SmbSessionsSection.tsx
+src/lib/smbSessions.ts
+src-tauri/src/util/smb_sessions.rs   (Diagnose / Snapshot)
+src-tauri/src/util/smb_export.rs     (lokale Share-Exports)
+src-tauri/src/util/local_shares.rs   (Share-Kandidaten)
+src-tauri/src/util/process.rs        (kein Console-Flash)
+docs/HANDOFF.md                      (SMB Data Plane aktuell)
+```
+
+**Slices (eine pro Session):** 20a → 20b → 20c → **20d**
+
+#### 20a — Diagnose + Clients-Chip-Warning
+
+- [x] Modul `smb_sessions` (Windows): Sessions listen via NetAPI (`session_id` composite, ClientComputerName/User, `SecondsIdle`, `SecondsExists`, `NumOpens`); Elevation-/Permission-Fehler als Status
+- [x] Nicht-Windows: leere Liste + `unsupported` / klare Meldung
+- [x] Config: `smb_session_warn_threshold`, `smb_session_poll_seconds` (Defaults s. Schema)
+- [x] Tauri-Commands: Status/Snapshot abfragen (Polling vom UI oder leichtgewichtiger Backend-Tick)
+- [x] Header-Clients-Chip: Warning-State wenn `session_count ≥ threshold` **oder** Permission-Fehler relevant; Badge-**Zahl** = ATS-Clients unverändert; Tooltip mit SMB-Info
+- [x] `AtsClientsDialog`: Sektion „SMB-Sessions“ (Windows) — Tabelle read-only, Schwellen-Hinweis, Admin-Hinweis
+- [x] Unit-Tests: Schwellen-Logik / Snapshot-Normalisierung (Mocks oder Fixture-Structs); UI-Töne analog bestehender Warning-Chips
+
+**Nicht in 20a:** Close/Kill; Auto-Close; Share-Filter; Bridge-IP-Match.
+
+**DoD 20a:** Chip warnt bei Überlast; Dialog zeigt Sessions; Pipeline unberührt; `cargo test` + `npm run tauri dev` (Windows). ✅
+
+**Agent-Prompt:**
+
+```
+Implementiere Phase 20 Teilphase 20a aus @docs/IMPLEMENTATION_PLAN.md
+Regeln: @AGENTS.md
+Nur 20a (Diagnose + Clients-Chip-Warning + Dialog read-only).
+Kein Close/Kill. Windows-first; andere OS = unsupported Stub.
+Danach cargo test && npm run tauri dev.
+```
+
+#### 20b — Manueller Safe-Close + Audit + Elevation
+
+- [x] Config: `smb_session_idle_min_seconds`
+- [x] Command: einzelne oder „alle sicheren Idle“ schließen — Filter strikt Idle ≥ Min **und** `NumOpens == 0`
+- [x] Confirm-Dialog im UI (Anzahl, Kriterien kurz erklärt); Abbruch ohne Side-Effect
+- [x] Elevation: bei fehlenden Rechten verständliche Meldung; Close nicht still fehlschlagen
+- [x] Audit-Log über bestehendes Logging (jeder Close-Versuch + Ergebnis)
+- [x] Dialog: Aktionen „Idle schließen…“; keine Auto-Schleife
+- [x] Tests: Filter-Prädikat (Idle/NumOpens); Ablehnung unsicherer Sessions
+
+**Nicht in 20b:** Auto-Close; Share-scoped Filter; Soft-Policy-Doku außer kurzer UI-Hinweiszeile.
+
+**DoD 20b:** Operator kann sichere Idle-Sessions schließen; aktive/`NumOpens>0` bleiben; Log vorhanden. ✅
+
+**Agent-Prompt:**
+
+```
+Implementiere Phase 20 Teilphase 20b aus @docs/IMPLEMENTATION_PLAN.md
+Regeln: @AGENTS.md
+Nur 20b (manueller Safe-Close + Audit + Elevation-UX).
+Kein Auto-Close. Kein Share-Filter (→ 20c).
+Danach cargo test && npm run tauri dev.
+```
+
+#### 20c — Härtung: Share-Filter, Bridge-Hinweis, optional Auto-Close, Soft-Policy
+
+- [x] Share-Fokus: wo möglich OpenFiles/Sessions am `monitor_path` / Share `aktuell` priorisieren oder kennzeichnen; andere Shares nicht pauschal killen
+- [x] Bridge-Korrelation: Client-IP ↔ bekannte ATS-Hosts (Presence) als Hinweis in der Liste (Hostname/„ATS?“); **kein** Kill nur wegen Presence
+- [x] Config: `smb_session_auto_close_enabled` (default `false`); wenn an: periodisch nur Safe-Close-Kandidaten; weiter loggen
+- [x] Settings: Schwellen, Idle-Min, Auto-Close-Toggle, Poll; kurzer Hinweis Soft-Policy (OS-Idle-Timeout / Server-Limits)
+- [x] Kurz-Doku in Plan/Release-Notiz oder Settings-Hilfetext: App-Kill = Notnagel
+- [x] Tests: Auto-Close nur Safe-Kandidaten; Toggle-default-aus; Share-Kennzeichnung soweit testbar
+
+**Nicht in 20c:** macOS/Linux-Kill; NAS-Remote-Admin; Pipeline-Blocking; ATS-Repo-Änderungen.
+
+**DoD (Phase 20 gesamt)**
+
+- [x] Windows: Diagnose + Chip-Warning + manueller Safe-Close
+- [x] Badge-Zahl = ATS; Warning-State = SMB-Druck
+- [x] Safe-Close-Regeln eingehalten; Audit vorhanden
+- [x] Auto-Close optional, default aus
+- [x] Kein Monitor/Upload-Gate
+- [x] Elevierter Helper (20d): List/Close on-demand via UAC; AMS uneleviert; kein Auto-UAC
+- [x] `cargo test` + manuelle Abnahme Windows (Sessions sehen → Idle schließen → ATS-Write ungestört)
+
+**Abhängigkeiten:** Phase 13 P5+ (Clients-Dialog/Presence), bestehende Share-Utils.  
+**Nicht-Ziele:** Cross-Platform-Kill; aggressives Auto-Kill; Share auf anderem Host verwalten; PowerShell-UI-Automation.
+
+**Agent-Prompt:**
+
+```
+Implementiere Phase 20 Teilphase 20c aus @docs/IMPLEMENTATION_PLAN.md
+Regeln: @AGENTS.md
+Nur 20c (Share-Filter, Bridge-Hinweis, optional Auto-Close default aus, Soft-Policy).
+Danach cargo test && npm run tauri dev.
+```
+
+#### 20d — Elevierter SMB-Helper (AMS bleibt uneleviert)
+
+**Status:** ✅  
+**Technik (gewählt):** Option **A** — eigenes Binary `ams-smb-helper` im Bundle (`externalBin`); Launch via `ShellExecuteEx` Verb `runas`; JSON-IPC unter `%TEMP%` (kein stdout bei Elevation).  
+**Problem:** `NetSessionEnum` / `NetSessionDel` brauchen auf dem SMB-Server typischerweise Admin. AMS soll **dauerhaft normal** laufen; AMS schließen und „Als Administrator“ neu starten ist **keine** Betriebsoption.  
+**Ziel:** Bei Bedarf nur den SMB-List/Close-Pfad elevieren (UAC einmalig), Ergebnis zurück an den laufenden AMS-Hauptprozess; Safe-Close-/Share-Fokus-/Audit-Regeln aus 20a–20c bleiben verbindlich.
+
+**Produktregeln (verbindlich):**
+
+1. **AMS-Hauptprozess bleibt uneleviert** — kein dauerhaftes Run-as-Admin, kein Neustart der App nur für SMB.
+2. **On-Demand Elevation:** List und/oder Close starten einen kurzen elevierten Helper; UAC-Consent durch den Operator.
+3. **Helper-Scope eng:** Nur SMB-Session-Diagnose + Safe-Close (+ Share-Fokus wie 20c). Kein allgemeiner Admin-Shell, kein PowerShell-Spawn, kein Pipeline-/Config-Zugriff außer übergebene Parameter.
+4. **Gleiche Semantik wie In-Process:** Snapshot-/Close-JSON kompatibel zu bestehenden Types; Safe-Close nur Idle ≥ Min und `NumOpens == 0`; Bulk/Auto nur Fokus-Share wenn bekannt; ATS-Hinweis bleibt Diagnose (kein Kill-Gate).
+5. **Auto-Close uneleviert:** Wenn Permission Denied und Auto-Close an → **nicht** still UAC spammen. Auto-Close nur in-process; Default: überspringen + Chip/Status „Admin nötig“.
+6. **UAC-Abbruch:** Cancel ohne Side-Effect; UI klar („Abgebrochen“ vs. „Zugriff verweigert“).
+7. **Kein Console-Flash:** Helper als `windows_subsystem` Binary; Spawn mit `SW_HIDE`; UAC-Dialog selbst ist erlaubt/nötig.
+8. **Audit:** Close weiterhin über AMS-Logging (Mode `manual` / `auto` / `elevated-helper`); Helper-Exit und Fehlercode mitloggen.
+9. **Plattform:** Windows-only. macOS/Linux: unverändert Stub / Button ausgeblendet oder disabled mit Hinweis.
+10. **Security:** Helper nur neben AMS-Exe / Bundle-`externalBin`; Argumente strikt whitelisten (`list` | `close-id` | `close-safe-idle`); keine Shell-Metazeichen; `--out` nur unter `%TEMP%`.
+
+**Umsetzung:**
+
+- [x] Binary `ams-smb-helper` (`src-tauri/src/bin/ams_smb_helper.rs`) + CLI `util/smb_helper.rs`
+- [x] Parent-Spawn `util/smb_elevate.rs` (`runas`, Timeout 60s, JSON temp file)
+- [x] Commands: `get_smb_session_snapshot_elevated`, `close_smb_session_elevated`, `close_safe_idle_smb_sessions_elevated`
+- [x] UI: CTA „Mit Admin-Rechten laden/schließen…“; Dialog-lokaler Elevated-Snapshot (kein Auto-Re-Elevate alle 30s)
+- [x] Bundle: `externalBin` + `scripts/prepare-smb-helper.mjs`; Placeholder in `build.rs` für Dev/Test
+- [x] Unit-Tests: Arg-Whitelist, Quote/Params, UAC-Cancel-Meldung (kein echter UAC in CI)
+
+**DoD 20d**
+
+- [x] AMS läuft uneleviert; Operator kann ohne App-Neustart Sessions listen (nach UAC)
+- [x] Safe-Close (einzeln + Idle-Bulk) über denselben Helper; unsichere Sessions bleiben
+- [x] UAC-Cancel und Helper-Fehler verständlich; kein stiller Fehlschlag
+- [x] Auto-Close spammt keine UAC-Prompts
+- [x] Audit vorhanden; Pipeline unberührt
+- [x] `cargo test` + manuelle Abnahme Windows (uneleviertes AMS → UAC → Liste → Idle schließen)
+
+**Nicht in 20d:** Dauerhaft elevierter Hintergrunddienst; Scheduled Task als Admin ohne Consent; macOS/Linux-Kill; NAS-Remote-Admin; PowerShell-UI-Automation; ATS-Repo.
+
+**Abhängigkeiten:** 20a–20c (Snapshot/Close/Share-Fokus/Settings).  
+**Risiken:** Code-Signing/SmartScreen für Helper; Tauri-Bundle-Pfad in Dev vs. installiert; Antivirus auf `runas`.
+
+**Agent-Prompt:**
+
+```
+Implementiere Phase 20 Teilphase 20d aus @docs/IMPLEMENTATION_PLAN.md
+Regeln: @AGENTS.md
+Nur 20d (elevierter SMB-Helper: List/Close on-demand, AMS bleibt uneleviert).
+Kein Dauer-Admin, kein Auto-UAC-Spam, kein PowerShell-Spawn.
+Danach cargo test && npm run tauri dev (Windows).
+```
+
+---
+
+### Phase 21 — Auto-Nachreichen bei gleicher Kunden-/Booking-ID
+
+**Status:** ✅ **21a** ✅ · **21b** ✅ · **21c** ✅ · **21d** ✅  
+**Ziel:** Ein erneuter Upload (neuer lokaler/ATS-Ordner) mit **gleicher** `customer_number`/`kunden_id` + `booking_number`/`booking_id` gilt als **Nachreichen** an den ersten erfolgreichen Cloud-Vorgang: gleicher Dropbox-Root, gleiche Cloud-Order, gleicher Kundenlink — auch wenn der Ordnername anders heißt. Falsche Dateien löscht der Operator manuell in Dropbox/Cloud.
+
+**Betriebsannahme (abgestimmt):**
+
+1. Gleiche IDs = **derselbe fachliche Vorgang** (nicht neue Auslieferung).
+2. Zweiter Upload → Inhalt landet im **Parent-`remote_path`** des ersten Erfolgs.
+3. Neue Dateien **daneben**; Namenskollision → umbenennen (`(1)`, `(2)`, …), **nicht überschreiben**.
+4. Kundenlink (`final_url` / History-`share_link`) bleibt der des Parents; nach Erfolg **Notify mit demselben Link** (im Gegensatz zu Phase-15-Append ohne Mail).
+5. Explizites Manifest `kind=append` (Phase 15) bleibt unverändert und hat Vorrang vor ID-Match.
+
+**Problem heute:** AMS lädt in `/{neuer_dir_name}` hoch; Cloud liefert oft dieselbe `final_url` zur Booking-ID → Link zeigt auf den **alten** Ordner, neue Dateien sind dort nicht sichtbar.
+
+**Referenz (nur lesen / erweitern):**
+
+```
+docs/HANDOFF.md §6.1                          (explizites Append)
+src-tauri/src/upload/append.rs                (AppendTarget, Parent-Resolve, unique_filename lokal)
+src-tauri/src/monitor/service.rs              (Claim → resolve_claimed_append_target)
+src-tauri/src/upload/worker.rs                (process_append_job vs. run_single_job)
+src-tauri/src/storage/history.rs              (customer_number, booking_number, remote_path, order_id)
+src-tauri/src/cloud/custom_api/upload.rs      (manifest, existing_order_id, root_share_link)
+src-tauri/src/cloud/dropbox.rs                (Upload: autorename derzeit false)
+src-tauri/src/cloud/manifest.rs               (build_manifest_v11)
+ATS: video/append_job.rs, handoff_manifest.rs (explizites Nachreichen — optional parallel)
+```
+
+**Produktregeln (verbindlich):**
+
+| # | Regel |
+|---|--------|
+| 1 | Parent nur wenn Historie **Erfolgreich** und `remote_path` nicht leer; bevorzugt mit `order_id` / `share_link`. |
+| 2 | Match-Schlüssel: trim `customer_number` + `booking_number`; zusätzlich `customer_type` wenn beide Seiten gesetzt (sonst nur IDs). Beide IDs müssen nicht-leer sein. |
+| 3 | Mehrere erfolgreiche Treffer → **neuesten** erfolgreichen Parent (nach `finished_at` / id); Log-Warnung. |
+| 4 | Bereits `kind=append` / `_nachreichung_`-Ordner → bestehende Phase-15-Pipeline (kein zweites ID-Match). |
+| 5 | Ohne Parent-Treffer → normaler Erst-Upload (wie heute). |
+| 6 | Dropbox-Binding vom Parent (Phase 16), nicht vom Soft-Active — wie Append. |
+| 7 | Remote-Kollision: vor/während Upload prüfen; Zielname `name (1).ext` (bzw. `(2)`…); lokal gestagte Append-Namen analog. |
+| 8 | Custom API: Manifest mit `existing_order_id` + Root = Parent-`remote_path`; `final_url` = Parent-Link. |
+| 9 | **Notify an** nach Auto-ID-Append (gleicher Link). Phase-15-explizit: Notify weiter **aus**. |
+| 10 | History: Ereignis am Parent (`append_events` / append_count); Quell-Ordner archivieren wie Append-Job. |
+| 11 | Infobroschüre: wie Append **nie** injizieren. |
+| 12 | Pure-Contact ohne beide IDs: kein Auto-Match. |
+
+**Slices (eine pro Session):** 21a → 21b → 21c → 21d
+
+#### 21a — History-Lookup + AppendTarget aus ID-Match
+
+- [x] `HistoryStore`: `find_successful_by_customer_booking(customer, booking, type?)` → neuester Erfolg mit `remote_path`
+- [x] Hilfsfunktion `append_target_from_id_match(kunde) -> Option<AppendTarget>` (oder über History-Entry + bestehendes `append_target_from_parent_entry`)
+- [x] Klare Fehler/None-Fälle: IDs leer, kein Treffer, Parent ohne `remote_path`
+- [x] Unit-Tests: Match, Type-Filter, Newest-Wins, leere IDs, fehlender remote_path
+
+**Nicht in 21a:** Monitor-Claim-Umbau; Dropbox-Rename; Notify; UI; Cloud/ATS-Repos.
+
+**DoD 21a:** Lookup + AppendTarget rein testbar; Pipeline unverändert. ✅  
+**Agent-Prompt:**
+
+```
+Implementiere Phase 21 Teilphase 21a aus @docs/IMPLEMENTATION_PLAN.md
+Regeln: @AGENTS.md
+Nur 21a (History-Lookup + AppendTarget aus Kunden-/Booking-ID).
+Kein Claim-Routing, kein Remote-Rename, kein Notify.
+Danach cargo test && npm run tauri dev.
+```
+
+#### 21b — Claim/Enqueue: Auto-Route in Append-Pipeline
+
+- [x] In `try_claim_and_enqueue` (nach Marker/Kunde, vor normalem Enqueue): wenn kein explizites Append → ID-Match → Job mit `append: Some(AppendTarget)`
+- [x] Status/Log: „Auto-Nachreichen an \<parent_dir\> (gleiche Kunden-/Booking-ID)“
+- [x] Outbox/History-Updates wie Append (Parent-Events); Binding vom Parent
+- [x] Gate: Parent nicht bereit → **nicht** Claim als Erst-Upload missbrauchen; klarer Status/Code (z. B. `id_append_parent_not_ready`) oder Fallback nur wenn spezifiziert — **Default: kein Claim**, Ordner liegen lassen / Fehler sichtbar (kein stiller Zweit-Ordner)
+  - *Abweichung nur wenn bewusst dokumentiert:* fehlender Parent = Erst-Upload. **Entscheidung:** fehlender Erfolg → normaler Erst-Upload; Parent existiert aber nicht `Erfolgreich` → kein Claim / reject (wie Append-Gate).
+- [x] Unit-/Integration-nahe Tests: Claim baut AppendTarget; explizites `kind=append` hat Vorrang; ohne IDs kein Match
+
+**Nicht in 21b:** Remote-`(1)`-Rename (→ 21c); Notify-Unterschied (→ 21c); ATS-Repo.
+
+**DoD 21b:** Zweiter Job mit gleichen IDs enqueued als Append auf Parent-`remote_path`. ✅  
+**Agent-Prompt:**
+
+```
+Implementiere Phase 21 Teilphase 21b aus @docs/IMPLEMENTATION_PLAN.md
+Regeln: @AGENTS.md
+Nur 21b (Claim/Enqueue Auto-Route auf Append-Pipeline).
+Kein Remote-Rename, kein Notify-Umbau.
+Danach cargo test && npm run tauri dev.
+```
+
+#### 21c — Remote-Namenskollision + Notify für Auto-ID-Append
+
+- [x] Dropbox/Custom-Direct: vor Upload Dateiname remote prüfen; bei Konflikt `stem (n).ext` wählen (n=1…); Logging
+- [x] Session-/Pfad-Upload: gleiche Semantik (kein `autorename: true` als alleinige Lösung, wenn Manifest-`rel_path` mitziehen muss — Manifest-Pfade nach Rename aktualisieren)
+- [x] `process_append_job` / Worker: Flag oder Erkennung **Auto-ID-Append** vs. Phase-15-Append
+  - Auto-ID: nach Erfolg `notify_after_upload` mit Parent-`share_link` (wie Erst-Upload)
+  - Phase 15 / manuelles History-Nachreichen: Notify weiter aus
+- [x] Optional History-Feld/Extra: `append_reason: "id_match" | "manifest" | "operator"` für UI/Debug
+- [x] Tests: Kollisionsnamen; Notify-Zweig nur bei id_match; Manifest-rel_path nach Rename
+
+**Nicht in 21c:** Cloud-Server-Code; ATS-Export-Hinweis (→ 21d).
+
+**DoD 21c:** Keine stillen Dropbox-Overwrite; Auto-ID sendet gleichen Link erneut. ✅  
+**Agent-Prompt:**
+
+```
+Implementiere Phase 21 Teilphase 21c aus @docs/IMPLEMENTATION_PLAN.md
+Regeln: @AGENTS.md
+Nur 21c (Remote-Kollision (1)/(2) + Notify nur für Auto-ID-Append).
+Kein ATS-Repo, kein Cloud-Deploy.
+Danach cargo test && npm run tauri dev.
+```
+
+#### 21d — UX/Docs + Cloud-Vertrag + optionales ATS
+
+**AMS UI/Docs**
+
+- [x] History: am Parent sichtbar „Auto-Nachgereicht …“; Quellordner-Name in `append_events`
+- [x] Kurzer Status in App-Shell bei Auto-Route (`Auto-Nachreichen: …` / `Auto-Nachgereicht: …`)
+- [x] [`HANDOFF.md`](./HANDOFF.md): §6.1b (ID-Match-Auto-Append; Verweis Phase 21; Notify vs. explizitem Append)
+- [x] Plan/AGENTS: Slice-Referenzen; manuelle Abnahme-Checkliste
+
+**Cloud (Partner-Repo — Checklist, nicht AMS-Code):**
+
+Dokumentiert für Cloud-Team / Partner-Repo (kein Deploy in diesem Repo):
+
+- [ ] `orders/create` mit `existing_order_id`: Dateien an bestehende Order; **`final_url` unverändert**
+- [ ] Gleiche customer+booking ohne `existing_order_id`: bestehende Order wiederverwenden **oder** klarer Fehler (kein stilles „Portal = Alt, Dropbox = Neu“)
+- [ ] Neue `rel_path`s unter bestehendem Root akzeptieren; kein erzwungenes Überschreiben gleichnamiger Dateien serverseitig
+- [ ] Optional: Lookup-Endpoint „aktive Order zu customer+booking“ für Diagnose
+
+**ATS (optional, ATS-Repo / eigene Session — kein Pflicht-Feature in 21d):**
+
+Dokumentiert; AMS 21a–c funktioniert ohne ATS-Änderung:
+
+- [ ] Beim Export mit beiden IDs: Hinweis oder Soft-Warnung „AMS hängt an bestehenden Vorgang an, wenn dort schon Erfolg existiert“
+- [ ] Optional: wenn Parent-`correlation_id` bekannt → weiter explizites `kind=append` (Phase 15) statt nur ID-Match — robuster, Outbox klarer
+- [x] Kein Zwang: AMS-21a–c muss auch ohne ATS-Änderung funktionieren (Legacy-Marker / neuer Vorgang-Ordner)
+
+**Manuelle Abnahme (Phase 21)**
+
+1. Erst-Upload mit Kunden- + Booking-ID → Erfolg, Share-Link notieren.
+2. Zweiten Ordner (anderer Name) mit **gleichen** IDs ablegen → Monitor claimt als Auto-Nachreichen.
+3. App-Shell: Status „Auto-Nachreichen: Parent …“ / danach „Auto-Nachgereicht: …“.
+4. History am Parent: Detail „Nachgereicht … · Auto-Nachgereicht“; Timeline „Auto-Nachgereicht: Quellordner“.
+5. Dropbox/Cloud: Dateien unter dem **ersten** Root; bei Namenskollision `(1)` / `(2)`.
+6. Kunde erhält Notify erneut mit **gleichem** Link (Auto-ID); bei explizitem `kind=append` **keine** Notify.
+7. Binding/Broschüre/Pause-Cancel verhalten sich wie Append.
+
+**DoD (Phase 21 gesamt)**
+
+- [x] Zweiter Upload gleiche IDs → Parent-Ordner + gleicher Link; `(1)` bei Namenskollision
+- [x] Explizites Append unverändert (keine Notify)
+- [x] Auto-ID-Append: Notify mit Parent-Link
+- [x] Binding/Broschüre/Pause-Cancel wie Append
+- [x] HANDOFF + Plan aktualisiert; Cloud-Checklist dokumentiert
+- [x] `cargo test` + manuelle Abnahme-Checkliste (siehe oben)
+
+**Abhängigkeiten:** Phase 14/15 (Append), 5 (Custom API Manifest), 16 (Binding), 8 (Notify/Resend).  
+**Nicht-Ziele:** Automatisches Löschen falscher Dateien; neuer Kundenlink bei gleichen IDs; Überschreiben gleichnamiger Remote-Dateien; Erzwingen von ATS-`kind=append`; Cloud-Code in diesem Repo deployen.
+
+**Agent-Prompt:**
+
+```
+Implementiere Phase 21 Teilphase 21d aus @docs/IMPLEMENTATION_PLAN.md
+Regeln: @AGENTS.md
+Nur 21d (History/UX-Hinweise, HANDOFF §6.1b, Cloud-Checklist im Plan).
+Optional ATS nur dokumentieren oder Minimal-Hinweis — kein Pflicht-ATS-Feature in dieser Session.
+Danach cargo test.
+```
+
+---
+
 ## 10. Teststrategie
 
 - Rust Unit-Tests für Marker, Status, Payload-Builder, Checkpoint-Logik
@@ -1175,6 +1529,8 @@ Danach cargo test && npm run tauri dev.
 - Ab Phase 17: Broschüre-Injektion (Erst-Upload only, Append skip, Idempotenz, 5 MB-Limit)
 - Ab Phase 18: SemVer/Prerelease-Ordering, Changelog Beta-Snapshot, `resolve_best_update`
 - Ab Phase 19: Crew/Alias-Match, Ordnername-Predictor (Gold-Set), ID-Marker-JSON, Medien-Layout-Move, Manifest nach AMS-Assign; ab **19e** Gast-Exclude (Post-`TA`-Zone + Kundennamen)
+- Ab Phase 20: SMB-Session-Snapshot/Schwelle, Safe-Close-Filter (`Idle` + `NumOpens==0`); Close nur hinter Feature-Flag/Manual in Tests mocken; ab **20d** elevierter Helper (Spawn/`runas`, JSON-IPC) mocken — kein echter UAC in CI
+- Ab Phase 21: ID-Match Parent-Lookup; Claim→Append-Route; Remote-Kollision `(1)`; Notify nur Auto-ID (nicht Phase-15-Append)
 - Legacy `_test_*.py` als Spezifikation, nicht ausführen
 - Manuelle Abnahme: Monitor → Upload → Notify → Archiv
 - Ab Phase 10: CI auf Win/Mac/Linux
@@ -1214,3 +1570,5 @@ Updater-Endpoint und Signing: siehe [`docs/RELEASE.md`](./RELEASE.md) (analog Ae
 | 17 | Infobroschüre PDF (Erst-Upload) | ✅ |
 | 18 | Release-Kanäle (Beta / Stable / Auto-Latest) | ✅ |
 | 19 | Kundenaufnahme ID-Flow + Job-Ordner-Normalisierung | ✅ 19a–19e |
+| 20 | SMB-Session-Diagnose & Idle-Cleanup (Windows) | ✅ 20a–20d |
+| 21 | Auto-Nachreichen bei gleicher Kunden-/Booking-ID | ✅ 21a–21d |

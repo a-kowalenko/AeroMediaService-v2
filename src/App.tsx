@@ -24,8 +24,11 @@ import {
   UPDATE_INSTALL_PROGRESS,
   UPLOAD_JOB_ACTIVE,
 } from "@/lib/events";
+import { smbSessionChipTitle } from "@/lib/smbSessions";
 import { showAppToast } from "@/lib/toast";
+import { cn } from "@/lib/utils";
 import {
+  autoCloseSafeIdleSmbSessions,
   autoConnectCloud,
   cancelUpdateInstall,
   checkForUpdates,
@@ -36,6 +39,7 @@ import {
   getPathHintsStatus,
   getSecret,
   getSetting,
+  getSmbSessionSnapshot,
   getUpdaterInstallHint,
   installSpecificVersion,
   installUpdate,
@@ -43,6 +47,7 @@ import {
   startMonitoring,
   stopMonitoring,
   type AvailableRelease,
+  type SmbSessionSnapshot,
   type UpdateInstallProgress,
 } from "@/lib/tauri";
 import { compareVersionParts, isVersionPrerelease } from "@/lib/versionCompare";
@@ -88,6 +93,8 @@ function App() {
     null,
   );
   const [atsClientCount, setAtsClientCount] = useState(0);
+  const [smbSnapshot, setSmbSnapshot] = useState<SmbSessionSnapshot | null>(null);
+  const [smbPollSeconds, setSmbPollSeconds] = useState(30);
   const [pathHintsWarning, setPathHintsWarning] = useState<string | null>(null);
 
   const monitoring = useAppStore((s) => s.monitoring);
@@ -125,6 +132,28 @@ function App() {
       setAtsClientCount(countConnectedAtsHosts(hosts));
     } catch {
       setAtsClientCount(0);
+    }
+  }, []);
+
+  const refreshSmbSnapshot = useCallback(async () => {
+    try {
+      let snap = await getSmbSessionSnapshot();
+      if (snap.auto_close_enabled && snap.status === "ok") {
+        try {
+          const report = await autoCloseSafeIdleSmbSessions();
+          if (report && report.closed > 0) {
+            snap = await getSmbSessionSnapshot();
+          }
+        } catch {
+          // Auto-Close is best-effort; keep the last snapshot.
+        }
+      }
+      setSmbSnapshot(snap);
+      setSmbPollSeconds((prev) =>
+        prev === snap.poll_seconds ? prev : snap.poll_seconds,
+      );
+    } catch {
+      setSmbSnapshot(null);
     }
   }, []);
 
@@ -317,6 +346,16 @@ function App() {
   ]);
 
   useEffect(() => {
+    void refreshSmbSnapshot();
+    const smbTimer = window.setInterval(() => {
+      void refreshSmbSnapshot();
+    }, Math.max(5000, smbPollSeconds * 1000));
+    return () => {
+      window.clearInterval(smbTimer);
+    };
+  }, [refreshSmbSnapshot, smbPollSeconds]);
+
+  useEffect(() => {
     const unlisteners: Array<() => void> = [];
     listen<boolean>(MONITORING_STATUS_CHANGED, (event) => {
       setMonitoring(Boolean(event.payload));
@@ -481,11 +520,25 @@ function App() {
               variant="secondary"
               size="sm"
               onClick={() => setAtsClientsOpen(true)}
-              title="ATS-Clients anzeigen"
+              title={smbSessionChipTitle(smbSnapshot, atsClientCount)}
+              className={cn(
+                smbSnapshot?.warn &&
+                  "border-warning/45 bg-warning/10 text-warning hover:bg-warning/15 hover:text-warning",
+              )}
             >
               <Users className="h-3.5 w-3.5" />
               <span className="hidden sm:inline">Clients</span>
-              <span className="rounded-full bg-primary-soft px-1.5 text-[10px] font-semibold leading-4 text-primary">
+              {smbSnapshot?.warn ? (
+                <AlertTriangle className="h-3.5 w-3.5 text-warning" aria-hidden />
+              ) : null}
+              <span
+                className={cn(
+                  "rounded-full px-1.5 text-[10px] font-semibold leading-4",
+                  smbSnapshot?.warn
+                    ? "bg-warning/20 text-warning"
+                    : "bg-primary-soft text-primary",
+                )}
+              >
                 {atsClientCount}
               </span>
             </Button>
@@ -659,6 +712,8 @@ function App() {
         open={atsClientsOpen}
         onClose={() => setAtsClientsOpen(false)}
         onHostsChanged={() => void refreshAtsClientCount()}
+        smbSnapshot={smbSnapshot}
+        onRefreshSmb={refreshSmbSnapshot}
       />
 
       <SetupWizard

@@ -27,3 +27,4 @@ dist-ssr
 src-tauri/keys/*.key
 !src-tauri/keys/*.key.pub
 src-tauri/target/
+src-tauri/binaries/

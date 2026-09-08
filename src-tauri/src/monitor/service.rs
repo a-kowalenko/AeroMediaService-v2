@@ -39,7 +39,8 @@ use crate::storage::dropbox_accounts::DropboxAccountStore;
 use crate::storage::history::HistoryStore;
 use crate::storage::logging;
 use crate::upload::append::{
-    build_append_parent_history_update, resolve_claimed_append_target, APPEND_EVENT_QUEUED,
+    build_append_parent_history_update, resolve_claimed_append_target,
+    try_resolve_id_match_append_for_claim, APPEND_EVENT_QUEUED,
 };
 use crate::upload::registry::{AppendTarget, UploadJob, UploadQueueRegistry};
 use crate::util::archive::{self, handle_customer_lookup_failure, is_marker_format_failure};
@@ -945,6 +946,42 @@ pub async fn try_claim_and_enqueue(folder: &Path, ctx: &EnqueueContext<'_>) -> C
         }
     };
 
+    // Phase 21b: no explicit kind=append → auto-route by customer+booking ID.
+    if append_target.is_none() {
+        match try_resolve_id_match_append_for_claim(folder, &kunde) {
+            Ok(Some(target)) => {
+                logging::log_info(&format!(
+                    "Auto-Nachreichen an {} (gleiche Kunden-/Booking-ID)",
+                    target.parent_dir_name
+                ));
+                events::emit_status(format!(
+                    "Auto-Nachreichen an {} (gleiche Kunden-/Booking-ID)",
+                    target.parent_dir_name
+                ));
+                append_target = Some(target);
+            }
+            Ok(None) => {}
+            Err((code, message)) => {
+                ctx.registry.unregister(Some(folder));
+                logging::log_warn(&format!(
+                    "'{dir_name}': Auto-Nachreichen abgelehnt ({code}): {message}"
+                ));
+                events::emit_status(format!("Auto-Nachreichen abgelehnt: {message}"));
+                write_job_outbox(
+                    folder,
+                    handoff_cid.as_deref(),
+                    OutboxState::Rejected,
+                    Some(OutboxError {
+                        code: code.clone(),
+                        message: message.clone(),
+                    }),
+                    None,
+                );
+                return ClaimResult::ManifestRejected { code, message };
+            }
+        }
+    }
+
     let use_dropbox =
         should_use_dropbox_client_for_marker(ctx.selected_cloud, &marker_raw).unwrap_or(false);
     if use_dropbox {
@@ -1107,7 +1144,7 @@ async fn recover_stalled_folders(scan_path: &Path, ctx: &EnqueueContext<'_>) -> 
             }
         };
 
-        let append = match resolve_claimed_append_target(&full_dir_path) {
+        let mut append = match resolve_claimed_append_target(&full_dir_path) {
             Ok(t) => t,
             Err((code, msg)) => {
                 logging::log_error(&format!(
@@ -1132,6 +1169,40 @@ async fn recover_stalled_folders(scan_path: &Path, ctx: &EnqueueContext<'_>) -> 
                 continue;
             }
         };
+        if append.is_none() {
+            match try_resolve_id_match_append_for_claim(&full_dir_path, &kunde) {
+                Ok(Some(target)) => {
+                    logging::log_info(&format!(
+                        "Recovery: Auto-Nachreichen an {} (gleiche Kunden-/Booking-ID)",
+                        target.parent_dir_name
+                    ));
+                    append = Some(target);
+                }
+                Ok(None) => {}
+                Err((code, msg)) => {
+                    logging::log_error(&format!(
+                        "Recovery: Auto-Nachreichen '{dir_name}' abgelehnt ({code}): {msg}"
+                    ));
+                    write_job_outbox(
+                        &full_dir_path,
+                        peek_correlation_id(&full_dir_path).as_deref(),
+                        OutboxState::Failed,
+                        Some(OutboxError {
+                            code,
+                            message: msg.clone(),
+                        }),
+                        Some(archive::ARCHIVE_ERROR),
+                    );
+                    archive::handle_marker_failure(
+                        ctx.archive_path,
+                        &full_dir_path,
+                        &msg,
+                        Some(&marker_raw),
+                    );
+                    continue;
+                }
+            }
+        }
         let use_dropbox =
             should_use_dropbox_client_for_marker(ctx.selected_cloud, &marker_raw).unwrap_or(false);
         logging::log_info(&format!(
@@ -1577,6 +1648,30 @@ mod tests {
         })
     }
 
+    fn mock_lookup_21b_ready(_query: &ApiMarkerQuery, _mode: LookupMode) -> Result<Kunde, String> {
+        Ok(Kunde {
+            first_name: Some("API".into()),
+            last_name: Some("Kunde".into()),
+            email: Some("api@example.de".into()),
+            customer_number: Some("ams21b-ready-cust".into()),
+            booking_number: Some("ams21b-ready-book".into()),
+            customer_type: Some("Outside".into()),
+            ..Kunde::default()
+        })
+    }
+
+    fn mock_lookup_21b_busy(_query: &ApiMarkerQuery, _mode: LookupMode) -> Result<Kunde, String> {
+        Ok(Kunde {
+            first_name: Some("API".into()),
+            last_name: Some("Kunde".into()),
+            email: Some("api@example.de".into()),
+            customer_number: Some("ams21b-busy-cust".into()),
+            booking_number: Some("ams21b-busy-book".into()),
+            customer_type: Some("Outside".into()),
+            ..Kunde::default()
+        })
+    }
+
     fn failing_lookup(_query: &ApiMarkerQuery, _mode: LookupMode) -> Result<Kunde, String> {
         Err("Customer-Lookup fehlgeschlagen: HTTP 404 - missing".into())
     }
@@ -1811,6 +1906,110 @@ mod tests {
             serde_json::to_string_pretty(&m).unwrap(),
         )
         .unwrap();
+    }
+
+    #[tokio::test]
+    async fn claim_id_match_enqueues_as_append() {
+        use crate::storage::history::HistoryStore;
+        use serde_json::json;
+
+        let unique = format!("21b-{}", uuid::Uuid::new_v4());
+        let parent_name = format!("Parent_{unique}");
+        let mut store = HistoryStore::open_default().unwrap();
+        let parent = store
+            .add_or_update(&json!({
+                "dir_name": parent_name,
+                "status": "Erfolgreich",
+                "customer_number": "ams21b-ready-cust",
+                "booking_number": "ams21b-ready-book",
+                "type": "Outside",
+                "remote_path": format!("/{parent_name}"),
+                "share_link": "https://example/21b-share",
+                "order_id": "ord-21b",
+            }))
+            .unwrap()
+            .unwrap();
+        let parent_id = parent.id.clone();
+
+        let dir = tempdir().unwrap();
+        write_media(dir.path());
+        write_fertig_marker(dir.path(), api_marker()).unwrap();
+        let registry = UploadQueueRegistry::new();
+        let (tx, mut rx) = unbounded_channel();
+        let mut context = ctx(&registry, &tx, "dropbox", "");
+        context.customer_lookup = Some(mock_lookup_21b_ready);
+
+        let result = try_claim_and_enqueue(dir.path(), &context).await;
+        let _ = store.delete_items(&[parent_id]);
+        assert_eq!(result, ClaimResult::Queued);
+        let job = rx.try_recv().unwrap();
+        let append = job.append.expect("id-match append target");
+        assert_eq!(append.parent_dir_name, parent_name);
+        assert_eq!(append.remote_path, format!("/{parent_name}"));
+        assert_eq!(append.order_id.as_deref(), Some("ord-21b"));
+        assert_eq!(
+            append.reason,
+            crate::upload::registry::AppendReason::IdMatch
+        );
+    }
+
+    #[tokio::test]
+    async fn claim_id_match_rejects_when_parent_not_ready() {
+        use crate::model::handoff::CODE_ID_APPEND_PARENT_NOT_READY;
+        use crate::storage::history::HistoryStore;
+        use serde_json::json;
+
+        let unique = format!("21b-busy-{}", uuid::Uuid::new_v4());
+        let parent_name = format!("Busy_{unique}");
+        let mut store = HistoryStore::open_default().unwrap();
+        let parent = store
+            .add_or_update(&json!({
+                "dir_name": parent_name,
+                "status": "In Bearbeitung",
+                "customer_number": "ams21b-busy-cust",
+                "booking_number": "ams21b-busy-book",
+                "type": "Outside",
+            }))
+            .unwrap()
+            .unwrap();
+        let parent_id = parent.id.clone();
+
+        let dir = tempdir().unwrap();
+        write_media(dir.path());
+        write_fertig_marker(dir.path(), api_marker()).unwrap();
+        let registry = UploadQueueRegistry::new();
+        let (tx, mut rx) = unbounded_channel();
+        let mut context = ctx(&registry, &tx, "dropbox", "");
+        context.customer_lookup = Some(mock_lookup_21b_busy);
+
+        let result = try_claim_and_enqueue(dir.path(), &context).await;
+        let _ = store.delete_items(&[parent_id]);
+        match result {
+            ClaimResult::ManifestRejected { code, .. } => {
+                assert_eq!(code, CODE_ID_APPEND_PARENT_NOT_READY);
+            }
+            other => panic!("expected ManifestRejected, got {other:?}"),
+        }
+        assert!(dir.path().join(crate::model::marker::MARKER_FERTIG).is_file());
+        assert!(rx.try_recv().is_err());
+        assert!(!registry.is_registered(dir.path()));
+    }
+
+    #[tokio::test]
+    async fn claim_without_ids_skips_id_match() {
+        let dir = tempdir().unwrap();
+        write_media(dir.path());
+        write_fertig_marker(dir.path(), contact_marker()).unwrap();
+        let registry = UploadQueueRegistry::new();
+        let (tx, mut rx) = unbounded_channel();
+        let context = ctx(&registry, &tx, "dropbox", "");
+        assert_eq!(
+            try_claim_and_enqueue(dir.path(), &context).await,
+            ClaimResult::Queued
+        );
+        let job = rx.try_recv().unwrap();
+        assert!(job.append.is_none());
+        assert!(job.kunde.customer_number.is_none());
     }
 
     #[tokio::test]

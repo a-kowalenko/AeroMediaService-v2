@@ -4,6 +4,7 @@ version = "0.2.0-beta.3"
 description = "Aero Media Service — folder monitor, cloud upload, customer notifications"
 authors = ["AKSoftware"]
 edition = "2021"
+default-run = "aero-media-service"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -13,6 +14,11 @@ edition = "2021"
 # This is only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
 name = "aero_media_service_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
+
+# Phase 20d: short-lived elevated SMB List/Close helper (Windows UAC via runas).
+[[bin]]
+name = "ams-smb-helper"
+path = "src/bin/ams_smb_helper.rs"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -53,6 +59,14 @@ tauri-plugin-process = "2"
 url = "2"
 
 [target.'cfg(windows)'.dependencies]
+windows = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_NetworkManagement_NetManagement",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Threading",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+] }
 winreg = "0.55"
 
 [target.'cfg(target_os = "macos")'.dependencies]

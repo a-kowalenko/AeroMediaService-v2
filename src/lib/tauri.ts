@@ -194,6 +194,98 @@ export function getPathHintsStatus(): Promise<PathHintsStatus> {
     return invoke<PathHintsStatus>("get_path_hints_status");
 }
 
+export type SmbSessionQueryStatus =
+    | "ok"
+    | "unsupported"
+    | "permission_denied"
+    | "error";
+
+export type SmbSessionCloseOutcome =
+    | "closed"
+    | "skipped_unsafe"
+    | "skipped_off_focus"
+    | "not_found"
+    | "permission_denied"
+    | "unsupported"
+    | "error";
+
+export type SmbSessionRow = {
+    session_id: string;
+    client_computer_name: string;
+    client_user_name: string;
+    seconds_idle: number;
+    seconds_exists: number;
+    num_opens: number;
+    on_focus_share: boolean;
+    ats_hint: string | null;
+};
+
+export type SmbSessionSnapshot = {
+    status: SmbSessionQueryStatus;
+    message: string;
+    session_count: number;
+    warn_threshold: number;
+    poll_seconds: number;
+    idle_min_seconds: number;
+    auto_close_enabled: boolean;
+    focus_share_name: string | null;
+    focus_session_count: number;
+    warn: boolean;
+    sessions: SmbSessionRow[];
+    platform: string;
+};
+
+export type SmbSessionCloseDetail = {
+    session_id: string;
+    client_computer_name: string;
+    client_user_name: string;
+    seconds_idle: number;
+    num_opens: number;
+    outcome: SmbSessionCloseOutcome;
+    message: string;
+};
+
+export type SmbSessionCloseReport = {
+    closed: number;
+    skipped: number;
+    failed: number;
+    permission_denied: boolean;
+    message: string;
+    details: SmbSessionCloseDetail[];
+};
+
+export function getSmbSessionSnapshot(): Promise<SmbSessionSnapshot> {
+    return invoke<SmbSessionSnapshot>("get_smb_session_snapshot");
+}
+
+/** Elevated List via UAC helper (Phase 20d). AMS stays unelevated. */
+export function getSmbSessionSnapshotElevated(): Promise<SmbSessionSnapshot> {
+    return invoke<SmbSessionSnapshot>("get_smb_session_snapshot_elevated");
+}
+
+export function closeSmbSession(sessionId: string): Promise<SmbSessionCloseReport> {
+    return invoke<SmbSessionCloseReport>("close_smb_session", {sessionId});
+}
+
+/** Elevated Safe-Close one session (UAC). */
+export function closeSmbSessionElevated(sessionId: string): Promise<SmbSessionCloseReport> {
+    return invoke<SmbSessionCloseReport>("close_smb_session_elevated", {sessionId});
+}
+
+export function closeSafeIdleSmbSessions(): Promise<SmbSessionCloseReport> {
+    return invoke<SmbSessionCloseReport>("close_safe_idle_smb_sessions");
+}
+
+/** Elevated bulk Safe-Close (UAC). */
+export function closeSafeIdleSmbSessionsElevated(): Promise<SmbSessionCloseReport> {
+    return invoke<SmbSessionCloseReport>("close_safe_idle_smb_sessions_elevated");
+}
+
+/** Auto-Close tick; returns null when disabled in settings. Never elevates (no UAC spam). */
+export function autoCloseSafeIdleSmbSessions(): Promise<SmbSessionCloseReport | null> {
+    return invoke<SmbSessionCloseReport | null>("auto_close_safe_idle_smb_sessions");
+}
+
 export type LocalShareKind =
     | "monitor"
     | "mapped_drive"
@@ -476,6 +568,8 @@ export type HistoryAppendEvent = {
     correlation_id?: string;
     remote_path?: string;
     marker_raw?: string;
+    /** `id_match` | `manifest` | `operator` (Phase 21). */
+    append_reason?: string;
 };
 
 export type HistoryPage = {

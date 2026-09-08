@@ -152,6 +152,10 @@ type SettingsFormSnapshot = {
         scan_interval: string;
         folder_stability_enabled: boolean;
         folder_stability_seconds: string;
+        smb_session_warn_threshold: string;
+        smb_session_idle_min_seconds: string;
+        smb_session_poll_seconds: string;
+        smb_session_auto_close_enabled: boolean;
         bridge_enabled: boolean;
         bridge_bind: string;
         bridge_display_name: string;
@@ -378,6 +382,10 @@ export function SettingsDialog({
         scan_interval: "10",
         folder_stability_enabled: true,
         folder_stability_seconds: "15",
+        smb_session_warn_threshold: "8",
+        smb_session_idle_min_seconds: "600",
+        smb_session_poll_seconds: "30",
+        smb_session_auto_close_enabled: false,
         bridge_enabled: false,
         bridge_bind: "0.0.0.0:8787",
         bridge_display_name: "",
@@ -726,6 +734,10 @@ export function SettingsDialog({
                 bridge_display_name,
                 ats_primary_smb_url,
                 ats_backup_smb_url,
+                smb_session_warn_threshold,
+                smb_session_idle_min_seconds,
+                smb_session_poll_seconds,
+                smb_session_auto_close_enabled,
                 selected_cloud_service,
                 custom_api_upload_endpoint,
                 custom_api_share_endpoint,
@@ -763,6 +775,10 @@ export function SettingsDialog({
                 getSetting("bridge_display_name", ""),
                 getSetting("ats_primary_smb_url", ""),
                 getSetting("ats_backup_smb_url", ""),
+                getSetting("smb_session_warn_threshold", "8"),
+                getSetting("smb_session_idle_min_seconds", "600"),
+                getSetting("smb_session_poll_seconds", "30"),
+                getSetting("smb_session_auto_close_enabled", "false"),
                 getSetting("selected_cloud_service", "dropbox"),
                 getSetting("custom_api_upload_endpoint", "/upload"),
                 getSetting("custom_api_share_endpoint", "/share"),
@@ -797,6 +813,12 @@ export function SettingsDialog({
                 scan_interval,
                 folder_stability_enabled: boolFromSetting(stability_enabled, true),
                 folder_stability_seconds,
+                smb_session_warn_threshold: smb_session_warn_threshold || "8",
+                smb_session_idle_min_seconds: smb_session_idle_min_seconds || "600",
+                smb_session_poll_seconds: smb_session_poll_seconds || "30",
+                smb_session_auto_close_enabled: boolFromSetting(
+                    smb_session_auto_close_enabled,
+                ),
                 bridge_enabled: boolFromSetting(bridge_enabled),
                 bridge_bind: bridge_bind || "0.0.0.0:8787",
                 bridge_display_name: bridge_display_name ?? "",
@@ -980,6 +1002,12 @@ export function SettingsDialog({
                             scan_interval,
                             folder_stability_enabled: boolFromSetting(stability_enabled, true),
                             folder_stability_seconds,
+                            smb_session_warn_threshold: smb_session_warn_threshold || "8",
+                            smb_session_idle_min_seconds: smb_session_idle_min_seconds || "600",
+                            smb_session_poll_seconds: smb_session_poll_seconds || "30",
+                            smb_session_auto_close_enabled: boolFromSetting(
+                                smb_session_auto_close_enabled,
+                            ),
                             bridge_enabled: boolFromSetting(bridge_enabled),
                             bridge_bind: bridge_bind || "0.0.0.0:8787",
                             bridge_display_name: bridge_display_name ?? "",
@@ -1161,6 +1189,25 @@ export function SettingsDialog({
                 general.folder_stability_enabled ? "true" : "false",
             );
             await saveSetting("folder_stability_seconds", stability);
+            const warnTh = Number.parseInt(general.smb_session_warn_threshold, 10);
+            const smbWarn = Number.isFinite(warnTh)
+                ? String(Math.min(10_000, Math.max(1, warnTh)))
+                : "8";
+            const idleMinRaw = Number.parseInt(general.smb_session_idle_min_seconds, 10);
+            const smbIdle = Number.isFinite(idleMinRaw)
+                ? String(Math.min(86_400, Math.max(60, idleMinRaw)))
+                : "600";
+            const pollRaw = Number.parseInt(general.smb_session_poll_seconds, 10);
+            const smbPoll = Number.isFinite(pollRaw)
+                ? String(Math.min(300, Math.max(5, pollRaw)))
+                : "30";
+            await saveSetting("smb_session_warn_threshold", smbWarn);
+            await saveSetting("smb_session_idle_min_seconds", smbIdle);
+            await saveSetting("smb_session_poll_seconds", smbPoll);
+            await saveSetting(
+                "smb_session_auto_close_enabled",
+                general.smb_session_auto_close_enabled ? "true" : "false",
+            );
             await saveSetting(
                 "bridge_enabled",
                 general.bridge_enabled ? "true" : "false",
@@ -1269,6 +1316,9 @@ export function SettingsDialog({
                 ...general,
                 scan_interval: scan,
                 folder_stability_seconds: stability,
+                smb_session_warn_threshold: smbWarn,
+                smb_session_idle_min_seconds: smbIdle,
+                smb_session_poll_seconds: smbPoll,
             };
             setGeneral(savedGeneral);
             setSavedSnapshot(
@@ -1527,6 +1577,75 @@ export function SettingsDialog({
                                                 }
                                             />
                                         </Field>
+                                    </div>
+                                </SettingsSection>
+
+                                <SettingsSection
+                                    title="SMB-Sessions (Windows)"
+                                    description="Diagnose und optionaler Idle-Cleanup für SMB-Server-Sessions auf diesem Host. Soft-Policy: OS-Idle-Timeout und Server-Limits sind nachhaltiger als App-Kill — Auto-Close ist ein Notnagel und standardmäßig aus."
+                                >
+                                    <div className="space-y-3">
+                                        <Field label="Warnschwelle (Anzahl Sessions)">
+                                            <Input
+                                                type="number"
+                                                min={1}
+                                                max={10000}
+                                                value={general.smb_session_warn_threshold}
+                                                onChange={(e) =>
+                                                    setGeneral((p) => ({
+                                                        ...p,
+                                                        smb_session_warn_threshold: e.target.value,
+                                                    }))
+                                                }
+                                            />
+                                        </Field>
+                                        <Field label="Idle-Minimum für Safe-Close (Sekunden)">
+                                            <Input
+                                                type="number"
+                                                min={60}
+                                                max={86400}
+                                                value={general.smb_session_idle_min_seconds}
+                                                onChange={(e) =>
+                                                    setGeneral((p) => ({
+                                                        ...p,
+                                                        smb_session_idle_min_seconds: e.target.value,
+                                                    }))
+                                                }
+                                            />
+                                        </Field>
+                                        <Field label="Poll-Intervall (Sekunden)">
+                                            <Input
+                                                type="number"
+                                                min={5}
+                                                max={300}
+                                                value={general.smb_session_poll_seconds}
+                                                onChange={(e) =>
+                                                    setGeneral((p) => ({
+                                                        ...p,
+                                                        smb_session_poll_seconds: e.target.value,
+                                                    }))
+                                                }
+                                            />
+                                        </Field>
+                                        <label className="flex items-start gap-2 text-sm">
+                                            <Checkbox
+                                                className="mt-0.5"
+                                                checked={general.smb_session_auto_close_enabled}
+                                                onCheckedChange={(v) =>
+                                                    setGeneral((p) => ({
+                                                        ...p,
+                                                        smb_session_auto_close_enabled: v === true,
+                                                    }))
+                                                }
+                                            />
+                                            <span>
+                                                Auto-Close sicherer Idle-Sessions
+                                                <span className="mt-0.5 block text-xs text-muted">
+                                                    Nur Idle ≥ Minimum, Opens = 0 und Fokus-Freigabe
+                                                    (Monitor/aktuell). Default aus.
+                                                </span>
+                                            </span>
+                                        </label>
                                     </div>
                                 </SettingsSection>
 

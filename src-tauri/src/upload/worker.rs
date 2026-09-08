@@ -24,7 +24,7 @@ use crate::upload::append::{
     APPEND_EVENT_FAILED, APPEND_EVENT_UPLOADING,
 };
 use crate::upload::control::{UploadCancelled, UploadControl};
-use crate::upload::registry::{UploadJob, UploadQueueRegistry};
+use crate::upload::registry::{AppendReason, UploadJob, UploadQueueRegistry};
 use crate::util::archive::{self, ARCHIVE_CANCELLED, ARCHIVE_ERROR, ARCHIVE_SUCCESS};
 
 fn job_retry_delays() -> [u64; 2] {
@@ -331,8 +331,14 @@ async fn process_append_job(
     let kunde = &job.kunde;
     let parent = &append.parent_dir_name;
 
+    let auto_id = append.reason == AppendReason::IdMatch;
     logging::log_info(&format!(
-        "Beginne Nachreichung '{dir_name}' → {parent} ({})",
+        "Beginne {} '{dir_name}' → {parent} ({})",
+        if auto_id {
+            "Auto-Nachreichen"
+        } else {
+            "Nachreichung"
+        },
         append.remote_path
     ));
     write_job_outbox(
@@ -343,7 +349,11 @@ async fn process_append_job(
         None,
     );
     events::emit_job_active(true);
-    events::emit_status(format!("Nachreichen: {parent}"));
+    events::emit_status(if auto_id {
+        format!("Auto-Nachreichen: {parent} (gleiche Kunden-/Booking-ID)")
+    } else {
+        format!("Nachreichen: {parent}")
+    });
     events::emit(
         events::UPLOAD_HISTORY_UPDATE,
         build_append_parent_history_update(
@@ -389,8 +399,27 @@ async fn process_append_job(
             share_link,
         } => {
             logging::log_info(&format!(
-                "Nachreichung '{dir_name}' in {parent} abgeschlossen."
+                "{} '{dir_name}' in {parent} abgeschlossen.",
+                if auto_id {
+                    "Auto-Nachreichen"
+                } else {
+                    "Nachreichung"
+                }
             ));
+            let notify_link = share_link
+                .as_deref()
+                .or(append.share_link.as_deref());
+            if append.reason.notify_after_success() {
+                logging::log_info(&format!(
+                    "Auto-ID-Append: Benachrichtigung mit Parent-Link für '{dir_name}'"
+                ));
+                let _notify = crate::notify::notify_after_upload(
+                    dir_name,
+                    notify_link,
+                    Some(kunde),
+                )
+                .await;
+            }
             crate::model::marker::remove_upload_markers(local_dir_path);
             write_job_outbox(
                 local_dir_path,
@@ -415,7 +444,11 @@ async fn process_append_job(
                     client.last_order_id().as_deref(),
                 ),
             );
-            events::emit_status(format!("Nachgereicht: {remote_path}"));
+            events::emit_status(if auto_id {
+                format!("Auto-Nachgereicht: {remote_path}")
+            } else {
+                format!("Nachgereicht: {remote_path}")
+            });
             events::emit_finished(dir_name.to_string());
         }
         JobOutcome::Cancelled => {
@@ -699,7 +732,7 @@ mod tests {
     use super::*;
     use crate::model::kunde::Kunde;
     use crate::model::marker::{write_processing_marker, MARKER_PROCESSING};
-    use crate::upload::registry::{AppendTarget, UploadQueueRegistry};
+    use crate::upload::registry::{AppendReason, AppendTarget, UploadQueueRegistry};
     use async_trait::async_trait;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -893,8 +926,19 @@ mod tests {
             dropbox_account_pool: None,
             dropbox_account_id: None,
             dropbox_account_email: None,
+            reason: AppendReason::Manifest,
         });
         job
+    }
+
+    #[test]
+    fn append_notify_only_for_id_match_reason() {
+        assert!(AppendReason::IdMatch.notify_after_success());
+        assert!(!AppendReason::Manifest.notify_after_success());
+        assert!(!AppendReason::Operator.notify_after_success());
+        assert_eq!(AppendReason::IdMatch.as_str(), "id_match");
+        assert_eq!(AppendReason::Manifest.as_str(), "manifest");
+        assert_eq!(AppendReason::Operator.as_str(), "operator");
     }
 
     #[tokio::test]

@@ -29,6 +29,32 @@ pub struct UploadJob {
     pub dropbox_binding: Option<DropboxAccountBinding>,
 }
 
+/// Why a job was routed into the append pipeline (Phase 21c Notify / History).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AppendReason {
+    /// Same customer+booking as a prior success (Phase 21) — notify with parent link.
+    IdMatch,
+    /// Explicit ATS `kind=append` handoff (Phase 15) — no customer notify.
+    Manifest,
+    /// Operator history Nachreichen — no customer notify.
+    Operator,
+}
+
+impl AppendReason {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            AppendReason::IdMatch => "id_match",
+            AppendReason::Manifest => "manifest",
+            AppendReason::Operator => "operator",
+        }
+    }
+
+    /// Auto-ID append re-sends the parent share link; Phase-15 / operator stay silent.
+    pub fn notify_after_success(self) -> bool {
+        matches!(self, AppendReason::IdMatch)
+    }
+}
+
 /// Existing successful upload that an ATS Nachreichung should merge into.
 #[derive(Debug, Clone)]
 pub struct AppendTarget {
@@ -41,6 +67,8 @@ pub struct AppendTarget {
     pub dropbox_account_pool: Option<String>,
     pub dropbox_account_id: Option<String>,
     pub dropbox_account_email: Option<String>,
+    /// How this append was selected (affects notify + history `append_reason`).
+    pub reason: AppendReason,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

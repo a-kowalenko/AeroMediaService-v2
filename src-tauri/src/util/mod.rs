@@ -5,5 +5,8 @@ pub mod link_shortener;
 pub mod local_ips;
 pub mod local_shares;
 pub mod process;
+pub mod smb_elevate;
 pub mod smb_export;
+pub mod smb_helper;
+pub mod smb_sessions;
 pub mod window_fit;

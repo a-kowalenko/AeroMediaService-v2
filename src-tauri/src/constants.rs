@@ -56,6 +56,10 @@ pub fn setting_default(key: &str) -> Option<&'static str> {
         "bridge_instance_id" => Some(""),
         "ats_primary_smb_url" => Some(""),
         "ats_backup_smb_url" => Some(""),
+        "smb_session_warn_threshold" => Some("8"),
+        "smb_session_idle_min_seconds" => Some("600"),
+        "smb_session_auto_close_enabled" => Some("false"),
+        "smb_session_poll_seconds" => Some("30"),
         "selected_cloud_service" => Some("dropbox"),
         "active_dropbox_account_id" => Some(""),
         "active_custom_dropbox_account_id" => Some(""),
@@ -200,6 +204,10 @@ mod tests {
         assert_eq!(setting_default("bridge_bind"), Some("0.0.0.0:8787"));
         assert_eq!(setting_default("ats_primary_smb_url"), Some(""));
         assert_eq!(setting_default("ats_backup_smb_url"), Some(""));
+        assert_eq!(setting_default("smb_session_warn_threshold"), Some("8"));
+        assert_eq!(setting_default("smb_session_idle_min_seconds"), Some("600"));
+        assert_eq!(setting_default("smb_session_auto_close_enabled"), Some("false"));
+        assert_eq!(setting_default("smb_session_poll_seconds"), Some("30"));
         assert_eq!(setting_default("selected_cloud_service"), Some("dropbox"));
         assert_eq!(setting_default("active_dropbox_account_id"), Some(""));
         assert_eq!(setting_default("active_custom_dropbox_account_id"), Some(""));

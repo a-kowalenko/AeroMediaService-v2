@@ -21,7 +21,7 @@ use crate::constants::is_direct_dropbox_upload_mode;
 use crate::events;
 use crate::model::handoff::{
     is_append_manifest, load_and_validate_manifest, parent_correlation_id,
-    CODE_APPEND_PARENT_MISSING, CODE_APPEND_PARENT_NOT_READY,
+    CODE_APPEND_PARENT_MISSING, CODE_APPEND_PARENT_NOT_READY, CODE_ID_APPEND_PARENT_NOT_READY,
 };
 use crate::model::marker::merge_kunde_media_flags;
 use crate::model::kunde::Kunde;
@@ -32,7 +32,7 @@ use crate::storage::config::runtime_setting;
 use crate::storage::history::{HistoryEntry, HistoryStore};
 use crate::storage::logging;
 use crate::upload::preview_watermark::write_preview_media;
-use crate::upload::registry::AppendTarget;
+use crate::upload::registry::{AppendReason, AppendTarget};
 use crate::upload::retry::resolve_kunde_from_history_entry;
 use crate::upload::UploadControl;
 use crate::upload::UploadQueueRegistry;
@@ -290,28 +290,51 @@ fn write_watermarked_preview(
 }
 
 fn unique_filename(dir: &Path, original: &str, used: &mut HashSet<String>) -> String {
-    let claimed = |name: &str, used: &mut HashSet<String>| {
-        if used.contains(name) || dir.join(name).exists() {
-            false
-        } else {
-            used.insert(name.to_string());
-            true
-        }
-    };
-    if claimed(original, used) {
+    let is_taken = |name: &str| used.contains(name) || dir.join(name).exists();
+    let name = unique_name_with_parens(original, is_taken);
+    used.insert(name.clone());
+    name
+}
+
+/// Next free basename: `name.ext` → `name (1).ext` → `name (2).ext` … (Phase 21c).
+pub fn unique_name_with_parens(original: &str, is_taken: impl Fn(&str) -> bool) -> String {
+    if !is_taken(original) {
         return original.to_string();
     }
-    let (stem, ext) = match original.rsplit_once('.') {
-        Some((s, e)) => (s.to_string(), format!(".{e}")),
-        None => (original.to_string(), String::new()),
-    };
+    let (stem, ext) = split_stem_ext(original);
     for n in 1..=9999 {
-        let candidate = format!("{stem}_{n:03}{ext}");
-        if claimed(&candidate, used) {
+        let candidate = format!("{stem} ({n}){ext}");
+        if !is_taken(&candidate) {
             return candidate;
         }
     }
-    format!("{stem}_{}{ext}", Uuid::new_v4().simple())
+    format!("{stem} ({}){ext}", Uuid::new_v4().simple())
+}
+
+fn split_stem_ext(name: &str) -> (String, String) {
+    match name.rsplit_once('.') {
+        Some((s, e)) if !s.is_empty() => (s.to_string(), format!(".{e}")),
+        _ => (name.to_string(), String::new()),
+    }
+}
+
+/// Remap only the file component of a normalized relative path (`Cat/a.jpg` → `Cat/a (1).jpg`).
+pub fn remap_rel_path_filename(rel_norm: &str, new_filename: &str) -> String {
+    let rel = rel_norm.replace('\\', "/");
+    match rel.rsplit_once('/') {
+        Some((dir, _)) => format!("{dir}/{new_filename}"),
+        None => new_filename.to_string(),
+    }
+}
+
+/// Filename of a normalized relative path.
+pub fn rel_path_filename(rel_norm: &str) -> String {
+    rel_norm
+        .replace('\\', "/")
+        .rsplit('/')
+        .next()
+        .unwrap_or(rel_norm)
+        .to_string()
 }
 
 pub fn expand_append_media_paths(paths: &[String]) -> Result<Vec<String>, String> {
@@ -479,7 +502,124 @@ pub fn append_target_from_parent_entry(entry: &HistoryEntry) -> Result<AppendTar
         } else {
             Some(email.to_string())
         },
+        reason: AppendReason::Operator,
     })
+}
+
+/// Build an [`AppendTarget`] from a prior successful history entry with the same
+/// customer + booking IDs (Phase 21a). Returns `Ok(None)` when IDs are missing,
+/// no eligible parent exists, or the parent has no usable `remote_path`.
+pub fn append_target_from_id_match(
+    store: &HistoryStore,
+    kunde: &Kunde,
+) -> Result<Option<AppendTarget>, String> {
+    let customer = kunde
+        .customer_number
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let booking = kunde
+        .booking_number
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let (Some(customer), Some(booking)) = (customer, booking) else {
+        return Ok(None);
+    };
+    let customer_type = kunde
+        .customer_type
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+
+    let Some(parent) = store
+        .find_successful_by_customer_booking(customer, booking, customer_type)
+        .map_err(|e| e.to_string())?
+    else {
+        return Ok(None);
+    };
+    // Lookup already requires non-empty remote_path; map clear errors if status drifts.
+    match append_target_from_parent_entry(&parent) {
+        Ok(mut target) => {
+            target.reason = AppendReason::IdMatch;
+            Ok(Some(target))
+        }
+        Err(_) if parent.remote_path.trim().is_empty() => Ok(None),
+        Err(message) => Err(message),
+    }
+}
+
+/// Claim/enqueue auto-route (Phase 21b): ID-match → AppendTarget, or reject when a
+/// matching parent exists but is not append-ready. `Ok(None)` = normal first upload
+/// (missing IDs or no history row for those IDs).
+///
+/// Call only when explicit `kind=append` did not already resolve a target.
+pub fn resolve_id_match_append_for_claim(
+    store: &HistoryStore,
+    kunde: &Kunde,
+) -> Result<Option<AppendTarget>, (String, String)> {
+    let customer = kunde
+        .customer_number
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let booking = kunde
+        .booking_number
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let (Some(customer), Some(booking)) = (customer, booking) else {
+        return Ok(None);
+    };
+    let customer_type = kunde
+        .customer_type
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+
+    match append_target_from_id_match(store, kunde) {
+        Ok(Some(target)) => Ok(Some(target)),
+        Ok(None) => {
+            let Some(pending) = store
+                .find_latest_by_customer_booking(customer, booking, customer_type)
+                .map_err(|e| {
+                    (
+                        CODE_ID_APPEND_PARENT_NOT_READY.into(),
+                        format!("Historie nicht lesbar: {e}"),
+                    )
+                })?
+            else {
+                return Ok(None);
+            };
+            Err((
+                CODE_ID_APPEND_PARENT_NOT_READY.into(),
+                format!(
+                    "Vorgang mit gleicher Kunden-/Booking-ID existiert, ist aber nicht bereit zum Nachreichen (Status „{}“, Ordner '{}').",
+                    pending.status.trim(),
+                    pending.dir_name
+                ),
+            ))
+        }
+        Err(message) => Err((CODE_ID_APPEND_PARENT_NOT_READY.into(), message)),
+    }
+}
+
+/// Open default history and resolve ID-match append for claim/recovery.
+pub fn try_resolve_id_match_append_for_claim(
+    folder: &Path,
+    kunde: &Kunde,
+) -> Result<Option<AppendTarget>, (String, String)> {
+    // Explicit Phase-15 staging folders stay on the manifest/parent-name path.
+    if parent_dir_name_from_append_folder(folder).is_some() {
+        return Ok(None);
+    }
+    let store = HistoryStore::open_default().map_err(|e| {
+        (
+            CODE_ID_APPEND_PARENT_NOT_READY.into(),
+            format!("Historie nicht lesbar: {e}"),
+        )
+    })?;
+    resolve_id_match_append_for_claim(&store, kunde)
 }
 
 /// Derive parent job folder name from an append staging folder (`…_nachreichung_01`).
@@ -622,6 +762,8 @@ pub fn build_append_parent_history_update(
     event["updated_at"] = Value::String(now.clone());
     event["parent_dir_name"] = Value::String(append.parent_dir_name.clone());
     event["remote_path"] = Value::String(append.remote_path.clone());
+    event["append_reason"] = Value::String(append.reason.as_str().into());
+    history["last_append_reason"] = Value::String(append.reason.as_str().into());
     if let Some(cid) = correlation_id.map(str::trim).filter(|s| !s.is_empty()) {
         event["correlation_id"] = Value::String(cid.to_string());
     }
@@ -724,9 +866,12 @@ pub fn resolve_claimed_append_target(
         )
     })?;
     let parent = resolve_parent_history_entry(&store, &parent_cid, folder)?;
-    append_target_from_parent_entry(&parent).map(Some).map_err(|message| {
-        (CODE_APPEND_PARENT_NOT_READY.into(), message)
-    })
+    append_target_from_parent_entry(&parent)
+        .map(|mut target| {
+            target.reason = AppendReason::Manifest;
+            Some(target)
+        })
+        .map_err(|message| (CODE_APPEND_PARENT_NOT_READY.into(), message))
 }
 
 /// Upload files from `local_dir` into the history entry's existing remote folder.
@@ -914,6 +1059,19 @@ async fn append_via_custom_api(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+
+    #[test]
+    fn unique_name_with_parens_skips_taken() {
+        let taken = |n: &str| n == "clip.mp4" || n == "clip (1).mp4";
+        assert_eq!(unique_name_with_parens("clip.mp4", taken), "clip (2).mp4");
+        assert_eq!(unique_name_with_parens("free.jpg", taken), "free.jpg");
+        assert_eq!(
+            remap_rel_path_filename("Outside_Foto/a.jpg", "a (1).jpg"),
+            "Outside_Foto/a (1).jpg"
+        );
+        assert_eq!(rel_path_filename("Outside_Foto/a.jpg"), "a.jpg");
+    }
 
     #[test]
     fn only_successful_jobs_can_append() {
@@ -951,9 +1109,175 @@ mod tests {
         assert_eq!(target.dropbox_account_ams_id.as_deref(), Some("ams-parent"));
         assert_eq!(target.dropbox_account_pool.as_deref(), Some("native"));
         assert_eq!(target.dropbox_account_email.as_deref(), Some("p@x.de"));
+        assert_eq!(target.reason, AppendReason::Operator);
 
         entry.status = "Fehler".into();
         assert!(append_target_from_parent_entry(&entry).is_err());
+    }
+
+    #[test]
+    fn append_target_from_id_match_builds_parent_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = HistoryStore::open_at(dir.path().join("h.db")).unwrap();
+        store
+            .add_or_update(&json!({
+                "dir_name": "Parent_Flug",
+                "status": "Erfolgreich",
+                "customer_number": "77",
+                "booking_number": "88",
+                "type": "Outside",
+                "remote_path": "/Parent_Flug",
+                "share_link": "https://example/share",
+                "order_id": "ord-parent",
+                "dropbox_account_ams_id": "ams-1",
+                "dropbox_account_pool": "native",
+            }))
+            .unwrap();
+
+        let kunde = Kunde {
+            customer_number: Some("77".into()),
+            booking_number: Some("88".into()),
+            customer_type: Some("Outside".into()),
+            ..Kunde::default()
+        };
+        let target = append_target_from_id_match(&store, &kunde)
+            .unwrap()
+            .expect("id match parent");
+        assert_eq!(target.parent_dir_name, "Parent_Flug");
+        assert_eq!(target.remote_path, "/Parent_Flug");
+        assert_eq!(target.order_id.as_deref(), Some("ord-parent"));
+        assert_eq!(target.share_link.as_deref(), Some("https://example/share"));
+        assert_eq!(target.reason, AppendReason::IdMatch);
+        assert_eq!(target.dropbox_account_ams_id.as_deref(), Some("ams-1"));
+    }
+
+    #[test]
+    fn append_target_from_id_match_none_when_ids_or_parent_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = HistoryStore::open_at(dir.path().join("h.db")).unwrap();
+        store
+            .add_or_update(&json!({
+                "dir_name": "NoRemote",
+                "status": "Erfolgreich",
+                "customer_number": "1",
+                "booking_number": "2",
+                "remote_path": "",
+            }))
+            .unwrap();
+
+        let empty_ids = Kunde {
+            customer_number: Some(" ".into()),
+            booking_number: Some("2".into()),
+            ..Kunde::default()
+        };
+        assert!(append_target_from_id_match(&store, &empty_ids)
+            .unwrap()
+            .is_none());
+
+        let no_booking = Kunde {
+            customer_number: Some("1".into()),
+            booking_number: None,
+            ..Kunde::default()
+        };
+        assert!(append_target_from_id_match(&store, &no_booking)
+            .unwrap()
+            .is_none());
+
+        let with_ids = Kunde {
+            customer_number: Some("1".into()),
+            booking_number: Some("2".into()),
+            ..Kunde::default()
+        };
+        assert!(append_target_from_id_match(&store, &with_ids)
+            .unwrap()
+            .is_none());
+
+        let unknown = Kunde {
+            customer_number: Some("999".into()),
+            booking_number: Some("888".into()),
+            ..Kunde::default()
+        };
+        assert!(append_target_from_id_match(&store, &unknown)
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn resolve_id_match_append_for_claim_routes_and_rejects() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = HistoryStore::open_at(dir.path().join("h.db")).unwrap();
+        store
+            .add_or_update(&json!({
+                "dir_name": "Parent_Ok",
+                "status": "Erfolgreich",
+                "customer_number": "11",
+                "booking_number": "22",
+                "remote_path": "/Parent_Ok",
+                "share_link": "https://example/p",
+            }))
+            .unwrap();
+        store
+            .add_or_update(&json!({
+                "dir_name": "Parent_Busy",
+                "status": "In Bearbeitung",
+                "customer_number": "33",
+                "booking_number": "44",
+            }))
+            .unwrap();
+
+        let ready = Kunde {
+            customer_number: Some("11".into()),
+            booking_number: Some("22".into()),
+            ..Kunde::default()
+        };
+        let target = resolve_id_match_append_for_claim(&store, &ready)
+            .unwrap()
+            .expect("auto append");
+        assert_eq!(target.parent_dir_name, "Parent_Ok");
+        assert_eq!(target.remote_path, "/Parent_Ok");
+
+        let no_ids = Kunde::default();
+        assert!(resolve_id_match_append_for_claim(&store, &no_ids)
+            .unwrap()
+            .is_none());
+
+        let unknown = Kunde {
+            customer_number: Some("99".into()),
+            booking_number: Some("88".into()),
+            ..Kunde::default()
+        };
+        assert!(resolve_id_match_append_for_claim(&store, &unknown)
+            .unwrap()
+            .is_none());
+
+        let busy = Kunde {
+            customer_number: Some("33".into()),
+            booking_number: Some("44".into()),
+            ..Kunde::default()
+        };
+        match resolve_id_match_append_for_claim(&store, &busy) {
+            Err((code, msg)) => {
+                assert_eq!(code, CODE_ID_APPEND_PARENT_NOT_READY);
+                assert!(msg.contains("Parent_Busy"));
+            }
+            other => panic!("expected not_ready, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn try_resolve_id_match_skips_nachreichung_folder_name() {
+        let root = tempfile::tempdir().unwrap();
+        let folder = root.path().join("Parent_Ok_nachreichung_01");
+        fs::create_dir_all(&folder).unwrap();
+        let kunde = Kunde {
+            customer_number: Some("11".into()),
+            booking_number: Some("22".into()),
+            ..Kunde::default()
+        };
+        // Even if default history might match, staging folders are Phase-15 only.
+        assert!(try_resolve_id_match_append_for_claim(&folder, &kunde)
+            .unwrap()
+            .is_none());
     }
 
     #[test]

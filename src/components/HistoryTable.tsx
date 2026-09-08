@@ -27,9 +27,11 @@ import {
   canAppendMedia,
   canResendNotifications,
   canRetryUpload,
+  appendEventReasonLabel,
+  appendEventTitle,
   cn,
   extraNumber,
-  extraString,
+  formatAppendHistorySummary,
   formatHistoryDate,
   formatHistoryDropboxAccount,
   historyAppendEvents,
@@ -93,15 +95,7 @@ function buildDetailRows(
         return n ? `${n}×` : "—";
       },
     ],
-    [
-      "Nachgereicht",
-      (i) => {
-        const n = extraNumber(i, "append_count");
-        if (!n) return "—";
-        const at = extraString(i, "last_append_at").replace("T", " ").slice(0, 16);
-        return at ? `${n}× (${at})` : `${n}×`;
-      },
-    ],
+    ["Nachgereicht", (i) => formatAppendHistorySummary(i)],
   ];
 }
 
@@ -861,6 +855,8 @@ export function HistoryTable() {
             const stamp = appendEventTimestamp(event);
             const archivedPath = event.archived_path?.trim() ?? "";
             const errorText = event.error_msg?.trim() ?? "";
+            const reasonLabel = appendEventReasonLabel(event.append_reason);
+            const sourceName = event.source_dir_name?.trim() ?? "";
             return (
               <div
                 key={`${event.correlation_id ?? event.source_dir_name ?? "append"}-${index}`}
@@ -868,12 +864,19 @@ export function HistoryTable() {
               >
                 <div className="flex min-w-0 items-start justify-between gap-2">
                   <div className="min-w-0 flex-1">
-                    <p className="truncate text-sm font-medium text-foreground">
-                      {event.source_dir_name?.trim() || "Nachreichung"}
+                    <p className="truncate text-sm font-medium text-foreground" title={appendEventTitle(event)}>
+                      {appendEventTitle(event)}
                     </p>
                     <p className="text-[11px] text-muted">
                       {stamp ? formatHistoryDate(stamp) : "Zeitpunkt unbekannt"}
+                      {reasonLabel ? ` · ${reasonLabel}` : ""}
                     </p>
+                    {sourceName &&
+                    (event.append_reason ?? "").trim() === "id_match" ? (
+                      <p className="truncate text-[11px] text-muted" title={sourceName}>
+                        Quellordner: {sourceName}
+                      </p>
+                    ) : null}
                   </div>
                   <StatusChip status={appendEventLabel(event)} compact className="shrink-0" />
                 </div>

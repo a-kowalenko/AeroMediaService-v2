@@ -161,6 +161,25 @@ Manifest bleibt Schema v1; Append-Metadaten liegen in `extensions` (kein Schema-
 
 Filesystem allein reicht: Bridge down → Monitor scannt den Append-Ordner.
 
+### 6.1b Auto-Nachreichen bei gleicher Kunden-/Booking-ID (Phase 21)
+
+Wenn AMS einen **neuen** Job (anderer Ordnername, ggf. ohne `extensions.kind=append`) claimt und in der Historie bereits ein **Erfolgreich**-Eintrag mit gleicher `customer_number` + `booking_number` (optional gleicher Typ) existiert:
+
+| Regel | Verhalten |
+|--------|-----------|
+| Upload-Ziel | Parent-`remote_path` / `existing_order_id` (wie Phase 14/15) |
+| Link | unverändert (Parent-`share_link` / Cloud-`final_url`) |
+| Namenskollision | remote umbenennen `(1)`, `(2)`, … — kein Überschreiben |
+| Notify | **ja** (gleicher Link erneut) — Unterschied zu explizitem Append (§6.1) |
+| Vorrang | Explizites `kind=append` (§6.1) vor ID-Match |
+| Falsche Dateien | Operator löscht manuell in Dropbox/Cloud |
+| History (Parent) | `append_events[]` mit `source_dir_name` + `append_reason: "id_match"`; UI „Auto-Nachgereicht: Quellordner“ |
+| App-Shell | Status „Auto-Nachreichen: …“ / „Auto-Nachgereicht: …“ |
+
+Vollständige Spec/Slices + Cloud-Partner-Checklist + manuelle Abnahme: [`IMPLEMENTATION_PLAN.md`](./IMPLEMENTATION_PLAN.md) Phase 21 (21a–21d ✅).
+
+**ATS (optional):** Export-Hinweis oder bewusstes `kind=append` mit Parent-`correlation_id` möglich — nicht erforderlich; AMS matcht auch nur über IDs (Legacy-Marker / neuer Vorgang-Ordner).
+
 ---
 
 ## 7. AMS-Gate (einzige Kernänderung an L1)
@@ -192,6 +211,7 @@ Upload-Worker, Queue, Cloud, Notify: **unberührt**.
 | `customer_lookup_failed` | wie bisher |
 | `append_parent_missing` | `kind=append` ohne `parent_correlation_id` |
 | `append_parent_not_ready` | Parent unbekannt oder nicht `Erfolgreich` |
+| `id_append_parent_not_ready` | ID-Match: Vorgang mit gleicher Kunden-/Booking-ID existiert, aber nicht append-bereit (Phase 21b) |
 
 ---
 
@@ -383,6 +403,7 @@ Windows: UNC (`\\host\aktuell`) und `smb://` sind beide gültige Operator-Eingab
 | **P5+ (alt)** | SHA-256, strict extras, Bridge-Presence/Host-Aktivität | nach Bedarf |
 | **P6** | Bridge Path Hints: AMS publiziert `ats_paths` + `paths-v1`; ATS übernimmt als Suggest/Profil (kein Failover) | AMS + ATS (ATS = Phase 35) |
 | **Phase 15** ✅ | Append/Nachreichen: `kind=append` + Parent-Gate + Worker-Route | AMS + ATS |
+| **Phase 21** ✅ | Auto-Nachreichen gleiche Kunden-/Booking-ID (§6.1b; 21a–21d) | AMS (ATS optional) |
 
 **P6-Slices (eine pro Session):** P6a ✅ AMS Settings+Health → P6b ATS DTO+Diff → P6c ATS UX+Credentials → P6d optional Drift-Warnung.
 

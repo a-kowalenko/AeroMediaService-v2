@@ -616,6 +616,27 @@ impl CustomApiClient {
     ) -> Result<bool, CloudError> {
         let mut files = dropbox::collect_upload_files(local_dir_path, remote_base_path);
         let is_append = self.is_append_upload();
+        let raw_ck_early = load_checkpoint(local_dir_path);
+        let mut append_rel_overrides = std::collections::HashMap::new();
+        let mut append_overrides_for_ck: Option<std::collections::HashMap<String, String>> = None;
+        if is_append {
+            if dropbox::append_names_resolved_from_checkpoint(raw_ck_early.as_ref()) {
+                if let Some(overrides) =
+                    dropbox::append_rel_overrides_from_checkpoint(raw_ck_early.as_ref())
+                {
+                    dropbox::apply_append_rel_overrides(&mut files, remote_base_path, &overrides);
+                    append_rel_overrides = overrides;
+                }
+            } else {
+                append_rel_overrides = dropbox::resolve_append_remote_collisions(
+                    self.dropbox_client().as_ref(),
+                    &mut files,
+                    remote_base_path,
+                )
+                .await;
+            }
+            append_overrides_for_ck = Some(append_rel_overrides);
+        }
         if !is_append {
             let settings = crate::upload::brochure::brochure_settings_from_runtime();
             let remote_exists = if settings.enabled {
@@ -662,9 +683,8 @@ impl CustomApiClient {
             .collect();
         let manifest_fp = manifest_fingerprint(&manifest_items);
 
-        let raw_ck = load_checkpoint(local_dir_path);
         let mut resume_ck = None;
-        if let Some(raw) = raw_ck {
+        if let Some(raw) = raw_ck_early {
             if raw.get("kind").and_then(Value::as_str) == Some("custom_api_direct_dropbox")
                 && raw.get("manifest_fp").and_then(Value::as_str) == Some(manifest_fp.as_str())
             {
@@ -733,6 +753,7 @@ impl CustomApiClient {
                 "dd_active": Value::Null,
                 "phase": "uploading",
             });
+            dropbox::insert_append_rel_overrides(&mut payload, append_overrides_for_ck.as_ref());
             if let Some(obj) = payload.as_object_mut() {
                 merge_checkpoint_binding(
                     obj,
@@ -812,6 +833,7 @@ impl CustomApiClient {
         let ams = db.profile_ams_id();
         let pool = db.profile_pool();
         let files_for_ck = files.clone();
+        let overrides_for_ck = append_overrides_for_ck.clone();
         let uploaded_files_cell = std::sync::Mutex::new(uploaded_files);
         let ck_saver = std::sync::Mutex::new(
             crate::upload::checkpoint::ThrottledCheckpointSaver::new(
@@ -852,6 +874,7 @@ impl CustomApiClient {
                     "dd_active": active,
                     "phase": "uploading",
                 });
+                dropbox::insert_append_rel_overrides(&mut payload, overrides_for_ck.as_ref());
                 if let Some(obj) = payload.as_object_mut() {
                     merge_checkpoint_binding(obj, ams.as_deref(), Some(pool));
                 }
@@ -884,6 +907,7 @@ impl CustomApiClient {
                     "dd_active": Value::Null,
                     "phase": "uploading",
                 });
+                dropbox::insert_append_rel_overrides(&mut payload, overrides_for_ck.as_ref());
                 if let Some(obj) = payload.as_object_mut() {
                     merge_checkpoint_binding(obj, ams.as_deref(), Some(pool));
                 }
@@ -921,6 +945,7 @@ impl CustomApiClient {
                     "dd_active": Value::Null,
                     "phase": "uploading",
                 });
+                dropbox::insert_append_rel_overrides(&mut payload, overrides_for_ck.as_ref());
                 if let Some(obj) = payload.as_object_mut() {
                     merge_checkpoint_binding(obj, ams.as_deref(), Some(pool));
                 }
@@ -961,6 +986,7 @@ impl CustomApiClient {
                         "dd_active": Value::Null,
                         "phase": "uploading",
                     });
+                    dropbox::insert_append_rel_overrides(&mut payload, overrides_for_ck.as_ref());
                     if let Some(obj) = payload.as_object_mut() {
                         merge_checkpoint_binding(obj, ams.as_deref(), Some(pool));
                     }

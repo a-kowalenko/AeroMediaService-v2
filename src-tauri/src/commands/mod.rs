@@ -7,6 +7,7 @@ pub mod monitor;
 pub mod opener;
 pub mod operator;
 pub mod settings;
+pub mod smb_sessions;
 pub mod upload;
 
 pub use bridge::{
@@ -44,6 +45,11 @@ pub use settings::{
     ensure_default_app_root_cmd, ensure_default_dir_cmd, get_app_version, get_recent_logs,
     get_secret, get_setting, migrate_legacy_settings, propose_default_dirs_cmd, reset_setup,
     save_secret, save_setting, ConfigState,
+};
+pub use smb_sessions::{
+    auto_close_safe_idle_smb_sessions, close_safe_idle_smb_sessions,
+    close_safe_idle_smb_sessions_elevated, close_smb_session, close_smb_session_elevated,
+    get_smb_session_snapshot, get_smb_session_snapshot_elevated,
 };
 pub use upload::{
     cancel_upload, get_upload_control_state, get_upload_queue, pause_upload, resume_upload,

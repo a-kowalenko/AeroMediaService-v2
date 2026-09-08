@@ -207,6 +207,43 @@ export function historyAppendEvents(entry: {
   return raw.filter((item): item is HistoryAppendEvent => Boolean(item && typeof item === "object"));
 }
 
+/** Parent history summary for append_count / last_append_* (Phase 21d). */
+export function formatAppendHistorySummary(entry: {
+  extra?: Record<string, unknown>;
+}): string {
+  const n = extraNumber(entry, "append_count");
+  if (!n) return "—";
+  const at = extraString(entry, "last_append_at").replace("T", " ").slice(0, 16);
+  const base = at ? `${n}× (${at})` : `${n}×`;
+  if (extraString(entry, "last_append_reason").trim() === "id_match") {
+    return `${base} · Auto-Nachgereicht`;
+  }
+  return base;
+}
+
+/** Short reason label for an append_events entry. */
+export function appendEventReasonLabel(reason?: string): string | null {
+  switch ((reason ?? "").trim()) {
+    case "id_match":
+      return "Auto (Kunden-/Booking-ID)";
+    case "manifest":
+      return "ATS-Append";
+    case "operator":
+      return "Manuell";
+    default:
+      return null;
+  }
+}
+
+/** Timeline title: Auto-ID shows „Auto-Nachgereicht: Quellordner“. */
+export function appendEventTitle(event: HistoryAppendEvent): string {
+  const source = event.source_dir_name?.trim() || "Nachreichung";
+  if ((event.append_reason ?? "").trim() === "id_match") {
+    return `Auto-Nachgereicht: ${source}`;
+  }
+  return source;
+}
+
 export function formatResendHistorySummary(entry: { extra?: Record<string, unknown> }): string {
   const emailCount = extraNumber(entry, "email_resend_count");
   const smsCount = extraNumber(entry, "sms_resend_count");
