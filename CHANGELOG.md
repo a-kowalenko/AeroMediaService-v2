@@ -47,6 +47,7 @@ Patch ohne Unreleased-Text: Notes der Vorgängerversion werden übernommen.
 - Nach **Auto-Nachreichen** erneut Benachrichtigung mit demselben Kundenlink (explizites Nachreichen weiter ohne Notify)
 - SMB Safe-Close nur bei Idle und ohne offene Dateien; Fokus auf Monitor-/aktuell-Share
 - Clients-Dialog: Hinweis, wenn eine SMB-Session zu einem bekannten Schnittplatz passt
+- Kompakte **Upload-Leiste**: eigener Warte-Ring beim Stabilitätscheck — wirkt nicht mehr wie Fortschritt
 
 ### Behoben
 
