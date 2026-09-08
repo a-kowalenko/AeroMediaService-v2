@@ -554,11 +554,14 @@ impl HistoryStore {
     /// Newest successful history row with the same customer+booking IDs and a non-empty
     /// `remote_path` (Phase 21a ID-match parent). When both query and entry have a
     /// customer type, types must match (normalized); otherwise only IDs are compared.
+    ///
+    /// `exclude_dir_name`: skip this folder (claiming job must not treat itself as parent).
     pub fn find_successful_by_customer_booking(
         &self,
         customer_number: &str,
         booking_number: &str,
         customer_type: Option<&str>,
+        exclude_dir_name: Option<&str>,
     ) -> Result<Option<HistoryEntry>, HistoryError> {
         let customer = customer_number.trim();
         let booking = booking_number.trim();
@@ -579,16 +582,26 @@ impl HistoryStore {
             params!["Erfolgreich", customer, booking],
             row_to_entry,
         )?;
-        Self::pick_newest_id_match(rows, customer_type, customer, booking, true)
+        Self::pick_newest_id_match(
+            rows,
+            customer_type,
+            customer,
+            booking,
+            true,
+            exclude_dir_name,
+        )
     }
 
     /// Newest history row with the same customer+booking IDs (any status).
     /// Used by Phase 21b when a parent exists but is not append-ready.
+    ///
+    /// `exclude_dir_name`: skip this folder (in-flight self-row must not block claim/recovery).
     pub fn find_latest_by_customer_booking(
         &self,
         customer_number: &str,
         booking_number: &str,
         customer_type: Option<&str>,
+        exclude_dir_name: Option<&str>,
     ) -> Result<Option<HistoryEntry>, HistoryError> {
         let customer = customer_number.trim();
         let booking = booking_number.trim();
@@ -604,7 +617,14 @@ impl HistoryStore {
              ORDER BY last_updated DESC, created_at DESC, id DESC",
         )?;
         let rows = stmt.query_map(params![customer, booking], row_to_entry)?;
-        Self::pick_newest_id_match(rows, customer_type, customer, booking, false)
+        Self::pick_newest_id_match(
+            rows,
+            customer_type,
+            customer,
+            booking,
+            false,
+            exclude_dir_name,
+        )
     }
 
     fn pick_newest_id_match(
@@ -613,11 +633,16 @@ impl HistoryStore {
         customer: &str,
         booking: &str,
         warn_on_multi_success: bool,
+        exclude_dir_name: Option<&str>,
     ) -> Result<Option<HistoryEntry>, HistoryError> {
+        let exclude = exclude_dir_name.map(str::trim).filter(|s| !s.is_empty());
         let mut matches = Vec::new();
         for row in rows {
             let mut entry = row?;
             entry.refresh_computed();
+            if exclude.is_some_and(|ex| entry.dir_name.trim() == ex) {
+                continue;
+            }
             if !customer_types_compatible(customer_type, &entry.customer_type) {
                 continue;
             }
@@ -1055,11 +1080,17 @@ mod tests {
             .unwrap();
 
         let found = store
-            .find_successful_by_customer_booking("C1", "B2", None)
+            .find_successful_by_customer_booking("C1", "B2", None, None)
             .unwrap()
             .unwrap();
         assert_eq!(found.dir_name, "Flug_new");
         assert_eq!(found.remote_path, "/Flug_new");
+
+        let excluded = store
+            .find_successful_by_customer_booking("C1", "B2", None, Some("Flug_new"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(excluded.dir_name, "Flug_old");
     }
 
     #[test]
@@ -1089,13 +1120,13 @@ mod tests {
             .unwrap();
 
         let handcam = store
-            .find_successful_by_customer_booking("10", "20", Some("handcam"))
+            .find_successful_by_customer_booking("10", "20", Some("handcam"), None)
             .unwrap()
             .unwrap();
         assert_eq!(handcam.dir_name, "Handcam_job");
 
         let outside = store
-            .find_successful_by_customer_booking("10", "20", Some("Outside"))
+            .find_successful_by_customer_booking("10", "20", Some("Outside"), None)
             .unwrap()
             .unwrap();
         assert_eq!(outside.dir_name, "Outside_job");
@@ -1113,7 +1144,7 @@ mod tests {
             }))
             .unwrap();
         let with_empty_entry_type = store
-            .find_successful_by_customer_booking("10", "20", Some("Outside"))
+            .find_successful_by_customer_booking("10", "20", Some("Outside"), None)
             .unwrap()
             .unwrap();
         assert_eq!(with_empty_entry_type.dir_name, "NoType_job");
@@ -1133,19 +1164,19 @@ mod tests {
             .unwrap();
 
         assert!(store
-            .find_successful_by_customer_booking("", "B9", None)
+            .find_successful_by_customer_booking("", "B9", None, None)
             .unwrap()
             .is_none());
         assert!(store
-            .find_successful_by_customer_booking("C9", "  ", None)
+            .find_successful_by_customer_booking("C9", "  ", None, None)
             .unwrap()
             .is_none());
         assert!(store
-            .find_successful_by_customer_booking("C9", "B9", None)
+            .find_successful_by_customer_booking("C9", "B9", None, None)
             .unwrap()
             .is_none());
         assert!(store
-            .find_successful_by_customer_booking("missing", "B9", None)
+            .find_successful_by_customer_booking("missing", "B9", None, None)
             .unwrap()
             .is_none());
     }
@@ -1164,13 +1195,17 @@ mod tests {
             .unwrap();
 
         let found = store
-            .find_latest_by_customer_booking("C7", "B7", None)
+            .find_latest_by_customer_booking("C7", "B7", None, None)
             .unwrap()
             .unwrap();
         assert_eq!(found.dir_name, "InProgress");
         assert_eq!(found.status, "In Bearbeitung");
         assert!(store
-            .find_successful_by_customer_booking("C7", "B7", None)
+            .find_latest_by_customer_booking("C7", "B7", None, Some("InProgress"))
+            .unwrap()
+            .is_none());
+        assert!(store
+            .find_successful_by_customer_booking("C7", "B7", None, None)
             .unwrap()
             .is_none());
     }

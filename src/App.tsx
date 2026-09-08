@@ -716,47 +716,46 @@ function App() {
             </aside>
           ) : null}
 
-          {showUploadPanel ? (
-            <>
-              {narrowLayout ? (
-                <button
-                  type="button"
-                  className="absolute inset-0 z-30 bg-black/25"
-                  aria-label="Upload-Panel schließen"
-                  onClick={() => setUploadDrawerOpen(false)}
-                />
-              ) : null}
-              <aside
-                id="ams-upload-sidebar"
-                className={cn(
-                  "ams-sidebar-bg flex flex-col border-r border-border backdrop-blur-md",
-                  narrowLayout
-                    ? "absolute inset-y-0 left-12 z-40 w-[min(100%-3rem,22rem)] max-w-md shadow-xl"
-                    : "w-[min(100%,22rem)] max-w-md shrink-0 xl:w-[380px]",
-                )}
-              >
-                <div className="flex shrink-0 items-center justify-end border-b border-border/70 px-2 py-1">
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon"
-                    className="h-8 w-8"
-                    onClick={toggleUploadSidebar}
-                    title="Upload-Panel einklappen"
-                    aria-label="Upload-Panel einklappen"
-                  >
-                    <PanelLeftClose className="h-4 w-4" />
-                  </Button>
-                </div>
-                <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-3.5 [scrollbar-gutter:stable]">
-                  <UploadPanel compact />
-                </div>
-                <div className="border-t border-border bg-gradient-to-t from-card/90 to-card/40 px-3.5 py-2.5 backdrop-blur-sm">
-                  <CloudConnectionChips refreshToken={cloudChipsRefreshToken} />
-                </div>
-              </aside>
-            </>
+          {narrowLayout && showUploadPanel ? (
+            <button
+              type="button"
+              className="absolute inset-0 z-30 bg-black/25"
+              aria-label="Upload-Panel schließen"
+              onClick={() => setUploadDrawerOpen(false)}
+            />
           ) : null}
+          <aside
+            id="ams-upload-sidebar"
+            className={cn(
+              "ams-sidebar-bg flex flex-col border-r border-border backdrop-blur-md",
+              narrowLayout
+                ? "absolute inset-y-0 left-12 z-40 w-[min(100%-3rem,22rem)] max-w-md shadow-xl"
+                : "w-[min(100%,22rem)] max-w-md shrink-0 xl:w-[380px]",
+              !showUploadPanel && "hidden",
+            )}
+            aria-hidden={!showUploadPanel}
+            inert={!showUploadPanel ? true : undefined}
+          >
+            <div className="flex shrink-0 items-center justify-end border-b border-border/70 px-2 py-1">
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                className="h-8 w-8"
+                onClick={toggleUploadSidebar}
+                title="Upload-Panel einklappen"
+                aria-label="Upload-Panel einklappen"
+              >
+                <PanelLeftClose className="h-4 w-4" />
+              </Button>
+            </div>
+            <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-3.5 [scrollbar-gutter:stable]">
+              <UploadPanel compact />
+            </div>
+            <div className="border-t border-border bg-gradient-to-t from-card/90 to-card/40 px-3.5 py-2.5 backdrop-blur-sm">
+              <CloudConnectionChips refreshToken={cloudChipsRefreshToken} />
+            </div>
+          </aside>
 
           <main className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
             <Tabs

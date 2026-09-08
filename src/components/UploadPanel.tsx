@@ -35,6 +35,7 @@ import {
 } from "@/lib/tauri";
 import { cn } from "@/lib/utils";
 import { showAppToast } from "@/lib/toast";
+import { useAppStore } from "@/store/appStore";
 import { useUiStore } from "@/store/uiStore";
 
 const EMPTY_PROGRESS: ByteProgress = { percent: 0, current: 0, total: 0 };
@@ -175,7 +176,8 @@ type Props = {
 };
 
 export function UploadPanel({ className, compact = false }: Props) {
-  const [active, setActive] = useState(false);
+  const uploadJobActive = useAppStore((s) => s.uploadJobActive);
+  const [active, setActive] = useState(() => useAppStore.getState().uploadJobActive);
   const [status, setStatus] = useState("Warte auf nächsten Auftrag…");
   const [activity, setActivity] = useState<UploadActivity | null>(null);
   const [file, setFile] = useState<ByteProgress>(EMPTY_PROGRESS);
@@ -194,7 +196,27 @@ export function UploadPanel({ className, compact = false }: Props) {
   const isPausedLike = pausePhase !== "running";
 
   useEffect(() => {
-    getUploadQueue().then(setQueue).catch(() => {});
+    setActive(uploadJobActive);
+    if (!uploadJobActive) {
+      setControl(IDLE_CONTROL);
+      setActivity(null);
+      setSlots(EMPTY_SLOTS);
+      setFile(EMPTY_PROGRESS);
+      setTotal(EMPTY_PROGRESS);
+      setSpeedBps(0);
+      speedSampleRef.current = null;
+    }
+  }, [uploadJobActive]);
+
+  useEffect(() => {
+    getUploadQueue()
+      .then((items) => {
+        setQueue(items);
+        if (items.some((item) => item.state === "active")) {
+          setActive(true);
+        }
+      })
+      .catch(() => {});
     getStabilityPending().then((items) => setPending(stampPending(items))).catch(() => {});
     getUploadControlState().then(setControl).catch(() => {});
   }, []);

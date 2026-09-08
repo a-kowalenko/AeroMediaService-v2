@@ -1081,6 +1081,13 @@ async fn recover_stalled_folders(scan_path: &Path, ctx: &EnqueueContext<'_>) -> 
         if is_handoff_scan_dir(&dir_name) {
             continue;
         }
+        // Active / queued uploads still have a processing marker — not stalled.
+        if ctx.registry.is_registered(&full_dir_path) {
+            logging::log_debug(&format!(
+                "Recovery: '{dir_name}' bereits in Upload-Queue, überspringe."
+            ));
+            continue;
+        }
         let (_, processing_path) = marker_paths(&full_dir_path);
         if !processing_path.is_file() {
             continue;
@@ -1180,24 +1187,21 @@ async fn recover_stalled_folders(scan_path: &Path, ctx: &EnqueueContext<'_>) -> 
                 }
                 Ok(None) => {}
                 Err((code, msg)) => {
-                    logging::log_error(&format!(
-                        "Recovery: Auto-Nachreichen '{dir_name}' abgelehnt ({code}): {msg}"
+                    // Same as claim ManifestRejected: leave folder for a later scan.
+                    // Do not archive — the ID gate can clear once the other job finishes
+                    // (or was a false self-match before exclude landed).
+                    logging::log_warn(&format!(
+                        "Recovery: Auto-Nachreichen '{dir_name}' abgelehnt ({code}): {msg} — Ordner bleibt liegen."
                     ));
                     write_job_outbox(
                         &full_dir_path,
                         peek_correlation_id(&full_dir_path).as_deref(),
-                        OutboxState::Failed,
+                        OutboxState::Rejected,
                         Some(OutboxError {
                             code,
-                            message: msg.clone(),
+                            message: msg,
                         }),
-                        Some(archive::ARCHIVE_ERROR),
-                    );
-                    archive::handle_marker_failure(
-                        ctx.archive_path,
-                        &full_dir_path,
-                        &msg,
-                        Some(&marker_raw),
+                        None,
                     );
                     continue;
                 }

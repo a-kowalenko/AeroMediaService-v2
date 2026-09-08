@@ -213,7 +213,6 @@ impl UploadQueueRegistry {
         }
     }
 
-    #[allow(dead_code)]
     pub fn is_registered(&self, dir_path: &Path) -> bool {
         let key = folder_key(dir_path);
         self.with_lock(|inner| inner.pending.contains(&key))

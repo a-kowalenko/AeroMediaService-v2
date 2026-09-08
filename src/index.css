@@ -179,14 +179,14 @@
   }
 }
 
-@keyframes ams-rail-spin {
+@keyframes ams-rail-indeterminate-dash {
   to {
-    transform: rotate(360deg);
+    stroke-dashoffset: calc(-1 * var(--ams-rail-circ, 88));
   }
 }
 
-.ams-rail-indeterminate {
-  animation: ams-rail-spin 1s linear infinite;
+.ams-rail-indeterminate-circle {
+  animation: ams-rail-indeterminate-dash 0.9s linear infinite;
 }
 
 /* react-hot-toast wrapper — keep default chrome invisible for custom cards */
@@ -262,7 +262,7 @@
 @media (prefers-reduced-motion: reduce) {
   .ams-chip-active,
   .ams-chip-success-flash,
-  .ams-rail-indeterminate {
+  .ams-rail-indeterminate-circle {
     animation: none;
   }
   .ams-slot-collapse,

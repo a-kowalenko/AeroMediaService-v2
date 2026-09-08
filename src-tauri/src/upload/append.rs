@@ -509,9 +509,12 @@ pub fn append_target_from_parent_entry(entry: &HistoryEntry) -> Result<AppendTar
 /// Build an [`AppendTarget`] from a prior successful history entry with the same
 /// customer + booking IDs (Phase 21a). Returns `Ok(None)` when IDs are missing,
 /// no eligible parent exists, or the parent has no usable `remote_path`.
+///
+/// `exclude_dir_name`: claiming folder — must not resolve itself as parent.
 pub fn append_target_from_id_match(
     store: &HistoryStore,
     kunde: &Kunde,
+    exclude_dir_name: Option<&str>,
 ) -> Result<Option<AppendTarget>, String> {
     let customer = kunde
         .customer_number
@@ -533,7 +536,7 @@ pub fn append_target_from_id_match(
         .filter(|s| !s.is_empty());
 
     let Some(parent) = store
-        .find_successful_by_customer_booking(customer, booking, customer_type)
+        .find_successful_by_customer_booking(customer, booking, customer_type, exclude_dir_name)
         .map_err(|e| e.to_string())?
     else {
         return Ok(None);
@@ -551,12 +554,14 @@ pub fn append_target_from_id_match(
 
 /// Claim/enqueue auto-route (Phase 21b): ID-match → AppendTarget, or reject when a
 /// matching parent exists but is not append-ready. `Ok(None)` = normal first upload
-/// (missing IDs or no history row for those IDs).
+/// (missing IDs or no history row for those IDs other than `exclude_dir_name`).
 ///
 /// Call only when explicit `kind=append` did not already resolve a target.
+/// `exclude_dir_name`: current job folder so its own „Gestartet“ row is ignored.
 pub fn resolve_id_match_append_for_claim(
     store: &HistoryStore,
     kunde: &Kunde,
+    exclude_dir_name: Option<&str>,
 ) -> Result<Option<AppendTarget>, (String, String)> {
     let customer = kunde
         .customer_number
@@ -577,11 +582,16 @@ pub fn resolve_id_match_append_for_claim(
         .map(str::trim)
         .filter(|s| !s.is_empty());
 
-    match append_target_from_id_match(store, kunde) {
+    match append_target_from_id_match(store, kunde, exclude_dir_name) {
         Ok(Some(target)) => Ok(Some(target)),
         Ok(None) => {
             let Some(pending) = store
-                .find_latest_by_customer_booking(customer, booking, customer_type)
+                .find_latest_by_customer_booking(
+                    customer,
+                    booking,
+                    customer_type,
+                    exclude_dir_name,
+                )
                 .map_err(|e| {
                     (
                         CODE_ID_APPEND_PARENT_NOT_READY.into(),
@@ -619,7 +629,12 @@ pub fn try_resolve_id_match_append_for_claim(
             format!("Historie nicht lesbar: {e}"),
         )
     })?;
-    resolve_id_match_append_for_claim(&store, kunde)
+    let exclude = folder
+        .file_name()
+        .and_then(|n| n.to_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    resolve_id_match_append_for_claim(&store, kunde, exclude)
 }
 
 /// Derive parent job folder name from an append staging folder (`…_nachreichung_01`).
@@ -1140,7 +1155,7 @@ mod tests {
             customer_type: Some("Outside".into()),
             ..Kunde::default()
         };
-        let target = append_target_from_id_match(&store, &kunde)
+        let target = append_target_from_id_match(&store, &kunde, None)
             .unwrap()
             .expect("id match parent");
         assert_eq!(target.parent_dir_name, "Parent_Flug");
@@ -1149,6 +1164,9 @@ mod tests {
         assert_eq!(target.share_link.as_deref(), Some("https://example/share"));
         assert_eq!(target.reason, AppendReason::IdMatch);
         assert_eq!(target.dropbox_account_ams_id.as_deref(), Some("ams-1"));
+        assert!(append_target_from_id_match(&store, &kunde, Some("Parent_Flug"))
+            .unwrap()
+            .is_none());
     }
 
     #[test]
@@ -1170,7 +1188,7 @@ mod tests {
             booking_number: Some("2".into()),
             ..Kunde::default()
         };
-        assert!(append_target_from_id_match(&store, &empty_ids)
+        assert!(append_target_from_id_match(&store, &empty_ids, None)
             .unwrap()
             .is_none());
 
@@ -1179,7 +1197,7 @@ mod tests {
             booking_number: None,
             ..Kunde::default()
         };
-        assert!(append_target_from_id_match(&store, &no_booking)
+        assert!(append_target_from_id_match(&store, &no_booking, None)
             .unwrap()
             .is_none());
 
@@ -1188,7 +1206,7 @@ mod tests {
             booking_number: Some("2".into()),
             ..Kunde::default()
         };
-        assert!(append_target_from_id_match(&store, &with_ids)
+        assert!(append_target_from_id_match(&store, &with_ids, None)
             .unwrap()
             .is_none());
 
@@ -1197,7 +1215,7 @@ mod tests {
             booking_number: Some("888".into()),
             ..Kunde::default()
         };
-        assert!(append_target_from_id_match(&store, &unknown)
+        assert!(append_target_from_id_match(&store, &unknown, None)
             .unwrap()
             .is_none());
     }
@@ -1230,14 +1248,14 @@ mod tests {
             booking_number: Some("22".into()),
             ..Kunde::default()
         };
-        let target = resolve_id_match_append_for_claim(&store, &ready)
+        let target = resolve_id_match_append_for_claim(&store, &ready, None)
             .unwrap()
             .expect("auto append");
         assert_eq!(target.parent_dir_name, "Parent_Ok");
         assert_eq!(target.remote_path, "/Parent_Ok");
 
         let no_ids = Kunde::default();
-        assert!(resolve_id_match_append_for_claim(&store, &no_ids)
+        assert!(resolve_id_match_append_for_claim(&store, &no_ids, None)
             .unwrap()
             .is_none());
 
@@ -1246,7 +1264,7 @@ mod tests {
             booking_number: Some("88".into()),
             ..Kunde::default()
         };
-        assert!(resolve_id_match_append_for_claim(&store, &unknown)
+        assert!(resolve_id_match_append_for_claim(&store, &unknown, None)
             .unwrap()
             .is_none());
 
@@ -1255,12 +1273,61 @@ mod tests {
             booking_number: Some("44".into()),
             ..Kunde::default()
         };
-        match resolve_id_match_append_for_claim(&store, &busy) {
+        match resolve_id_match_append_for_claim(&store, &busy, None) {
             Err((code, msg)) => {
                 assert_eq!(code, CODE_ID_APPEND_PARENT_NOT_READY);
                 assert!(msg.contains("Parent_Busy"));
             }
             other => panic!("expected not_ready, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resolve_id_match_ignores_own_gestartet_row() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = HistoryStore::open_at(dir.path().join("h.db")).unwrap();
+        store
+            .add_or_update(&json!({
+                "dir_name": "Self_Job",
+                "status": "Gestartet",
+                "customer_number": "55",
+                "booking_number": "66",
+            }))
+            .unwrap();
+
+        let kunde = Kunde {
+            customer_number: Some("55".into()),
+            booking_number: Some("66".into()),
+            ..Kunde::default()
+        };
+        // Without exclude: own Gestartet blocks as not-ready parent.
+        match resolve_id_match_append_for_claim(&store, &kunde, None) {
+            Err((code, msg)) => {
+                assert_eq!(code, CODE_ID_APPEND_PARENT_NOT_READY);
+                assert!(msg.contains("Self_Job"));
+            }
+            other => panic!("expected not_ready, got {other:?}"),
+        }
+        // With exclude: treat as first upload (recovery/claim of same folder).
+        assert!(resolve_id_match_append_for_claim(&store, &kunde, Some("Self_Job"))
+            .unwrap()
+            .is_none());
+
+        // Other busy folder still blocks even when excluding self.
+        store
+            .add_or_update(&json!({
+                "dir_name": "Other_Busy",
+                "status": "Gestartet",
+                "customer_number": "55",
+                "booking_number": "66",
+            }))
+            .unwrap();
+        match resolve_id_match_append_for_claim(&store, &kunde, Some("Self_Job")) {
+            Err((code, msg)) => {
+                assert_eq!(code, CODE_ID_APPEND_PARENT_NOT_READY);
+                assert!(msg.contains("Other_Busy"));
+            }
+            other => panic!("expected not_ready for other, got {other:?}"),
         }
     }
 

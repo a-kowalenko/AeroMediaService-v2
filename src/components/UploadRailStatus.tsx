@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type CSSProperties } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { CloudUpload, Pause } from "lucide-react";
 import {
@@ -33,10 +33,13 @@ const IDLE_CONTROL: UploadControlState = {
   cancelled: false,
 };
 
-const RING_SIZE = 36;
-const RING_STROKE = 2.5;
+/** Inner ring geometry (button is 36×36; ring sits inset). */
+const RING_SIZE = 30;
+const RING_STROKE = 2;
 const RING_RADIUS = (RING_SIZE - RING_STROKE) / 2;
 const RING_CIRCUMFERENCE = 2 * Math.PI * RING_RADIUS;
+const INDETERMINATE_DASH = RING_CIRCUMFERENCE * 0.22;
+const INDETERMINATE_GAP = RING_CIRCUMFERENCE - INDETERMINATE_DASH;
 
 type Props = {
   onOpen: () => void;
@@ -103,60 +106,54 @@ export function UploadRailStatus({ onOpen, className }: Props) {
   const percent = Math.max(0, Math.min(100, total.percent));
   const hasMeasurableProgress =
     uploadJobActive && (percent > 0 || total.current > 0 || total.total > 0);
-  const indeterminate =
-    uploadJobActive &&
+  const spinning =
     !paused &&
-    !hasMeasurableProgress &&
-    (activity?.phase === "uploading" ||
-      activity?.phase === "appending" ||
-      activity?.phase === "starting" ||
-      activity == null);
+    ((uploadJobActive && !hasMeasurableProgress) ||
+      (!uploadJobActive && pendingCount > 0));
   const waiting = !uploadJobActive && pendingCount > 0;
-  const activeVisual = uploadJobActive || waiting;
+  const showArc = hasMeasurableProgress || spinning || paused;
 
   const filesLabel =
     slots.files_total > 0
-      ? `${slots.files_done}/${slots.files_total} Dateien`
+      ? `${slots.files_done}/${slots.files_total}`
       : null;
-  const phaseLabel = paused
+  const statusLabel = paused
     ? control.holding || activity?.phase === "paused"
       ? "Pausiert"
       : "Wird pausiert…"
     : activity?.phase === "appending"
       ? "Nachreichen"
-      : activity?.message?.trim() ||
-        (uploadJobActive ? "Upload aktiv" : waiting ? "Wartet" : "Upload-Status");
+      : hasMeasurableProgress
+        ? `${Math.round(percent)}%`
+        : uploadJobActive
+          ? "Upload aktiv"
+          : waiting
+            ? "Wartet auf Stabilität"
+            : null;
 
-  const titleParts = [
-    phaseLabel,
-    hasMeasurableProgress ? `${Math.round(percent)}%` : null,
-    filesLabel,
-    "Panel öffnen",
-  ].filter(Boolean);
-  const title = titleParts.join(" · ");
+  const title = [statusLabel, filesLabel, "Panel öffnen"]
+    .filter(Boolean)
+    .join(" · ");
 
   const ringOffset = hasMeasurableProgress
     ? RING_CIRCUMFERENCE * (1 - percent / 100)
-    : RING_CIRCUMFERENCE;
-  const tone = paused
-    ? "warning"
-    : uploadJobActive
-      ? "primary"
-      : waiting
-        ? "warning"
-        : "muted";
+    : paused
+      ? RING_CIRCUMFERENCE * 0.75
+      : RING_CIRCUMFERENCE;
+  const tone = paused || waiting ? "warning" : uploadJobActive ? "primary" : "muted";
 
   return (
     <button
       type="button"
       className={cn(
-        "relative mt-2 flex h-9 w-9 items-center justify-center rounded-md transition-colors",
+        "relative mt-2 flex h-9 w-9 shrink-0 items-center justify-center rounded-full transition-colors",
+        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background",
         tone === "primary" &&
-          "bg-primary/10 text-primary hover:bg-primary/15",
+          "bg-primary/12 text-primary hover:bg-primary/18",
         tone === "warning" &&
-          "bg-warning/10 text-warning hover:bg-warning/15",
+          "bg-warning/12 text-warning hover:bg-warning/18",
         tone === "muted" &&
-          "border border-border bg-card/70 text-muted hover:bg-card hover:text-foreground",
+          "text-muted hover:bg-card/80 hover:text-foreground",
         className,
       )}
       onClick={onOpen}
@@ -164,7 +161,7 @@ export function UploadRailStatus({ onOpen, className }: Props) {
       aria-label={title}
     >
       <svg
-        className="pointer-events-none absolute inset-0"
+        className="pointer-events-none absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2"
         width={RING_SIZE}
         height={RING_SIZE}
         viewBox={`0 0 ${RING_SIZE} ${RING_SIZE}`}
@@ -176,55 +173,53 @@ export function UploadRailStatus({ onOpen, className }: Props) {
           r={RING_RADIUS}
           fill="none"
           className={cn(
-            tone === "muted" ? "stroke-border/70" : "stroke-current opacity-25",
+            tone === "muted" ? "stroke-border" : "stroke-current opacity-20",
           )}
           strokeWidth={RING_STROKE}
         />
-        {hasMeasurableProgress || indeterminate || paused ? (
-          <g
-            className={indeterminate ? "ams-rail-indeterminate" : undefined}
-            style={{ transformOrigin: `${RING_SIZE / 2}px ${RING_SIZE / 2}px` }}
-          >
-            <circle
-              cx={RING_SIZE / 2}
-              cy={RING_SIZE / 2}
-              r={RING_RADIUS}
-              fill="none"
-              className="stroke-current"
-              strokeWidth={RING_STROKE}
-              strokeLinecap="round"
-              strokeDasharray={
-                indeterminate
-                  ? `${RING_CIRCUMFERENCE * 0.28} ${RING_CIRCUMFERENCE * 0.72}`
-                  : RING_CIRCUMFERENCE
-              }
-              strokeDashoffset={indeterminate ? 0 : ringOffset}
-              transform={`rotate(-90 ${RING_SIZE / 2} ${RING_SIZE / 2})`}
-              style={
-                hasMeasurableProgress
+        {showArc ? (
+          <circle
+            cx={RING_SIZE / 2}
+            cy={RING_SIZE / 2}
+            r={RING_RADIUS}
+            fill="none"
+            className={cn(
+              "stroke-current",
+              spinning && "ams-rail-indeterminate-circle",
+            )}
+            strokeWidth={RING_STROKE}
+            strokeLinecap="round"
+            strokeDasharray={
+              spinning
+                ? `${INDETERMINATE_DASH} ${INDETERMINATE_GAP}`
+                : RING_CIRCUMFERENCE
+            }
+            strokeDashoffset={spinning ? 0 : ringOffset}
+            transform={`rotate(-90 ${RING_SIZE / 2} ${RING_SIZE / 2})`}
+            style={
+              spinning
+                ? ({
+                    ["--ams-rail-circ" as string]: String(RING_CIRCUMFERENCE),
+                  } as CSSProperties)
+                : hasMeasurableProgress
                   ? { transition: "stroke-dashoffset 200ms ease-out" }
                   : undefined
-              }
-            />
-          </g>
+            }
+          />
         ) : null}
       </svg>
 
-      {paused ? (
-        <Pause className="relative h-3.5 w-3.5" aria-hidden />
-      ) : hasMeasurableProgress ? (
-        <span className="relative text-[9px] font-semibold tabular-nums leading-none">
-          {Math.round(percent)}
-        </span>
-      ) : (
-        <CloudUpload
-          className={cn(
-            "relative h-4 w-4",
-            activeVisual && "ams-chip-active",
-          )}
-          aria-hidden
-        />
-      )}
+      <span className="relative flex h-4 w-4 items-center justify-center">
+        {paused ? (
+          <Pause className="h-3.5 w-3.5" strokeWidth={2.25} aria-hidden />
+        ) : hasMeasurableProgress ? (
+          <span className="text-[9px] font-semibold tabular-nums leading-none tracking-tight">
+            {Math.round(percent)}
+          </span>
+        ) : (
+          <CloudUpload className="h-3.5 w-3.5" strokeWidth={2.25} aria-hidden />
+        )}
+      </span>
     </button>
   );
 }
