@@ -2,7 +2,8 @@
 
 import type { CustomerDraft, IntakeLookupHit } from "./tauri";
 
-export const LOOKUP_MIN_ID_DIGITS = 4;
+/** IDs are sequential integers — ready as soon as any digit is present. */
+export const LOOKUP_MIN_ID_DIGITS = 1;
 /** Wait after last ID keystroke before calling Customer-API. */
 export const LOOKUP_DEBOUNCE_MS = 650;
 

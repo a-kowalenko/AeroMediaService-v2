@@ -7,7 +7,8 @@ use serde_json::{Map, Value};
 use crate::model::kunde::Kunde;
 use crate::model::marker::normalize_marker_type;
 
-pub const LOOKUP_MIN_ID_DIGITS: usize = 4;
+/// IDs are sequential integers (1, 2, …) — no zero-padding / min length floor.
+pub const LOOKUP_MIN_ID_DIGITS: usize = 1;
 
 pub const INTAKE_LOOKUP_TYPES: &[&str] = &["Handcam", "Outside"];
 
@@ -382,9 +383,10 @@ mod tests {
     }
 
     #[test]
-    fn lookup_id_ready_requires_four_digits() {
+    fn lookup_id_ready_accepts_any_digit_run() {
         assert!(!is_lookup_id_ready(""));
-        assert!(!is_lookup_id_ready("123"));
+        assert!(is_lookup_id_ready("1"));
+        assert!(is_lookup_id_ready("42"));
         assert!(!is_lookup_id_ready("12ab"));
         assert!(is_lookup_id_ready("1234"));
         assert!(is_lookup_id_ready("012345"));

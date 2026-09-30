@@ -168,7 +168,7 @@ pub async fn lookup_customer_intake(
     let booking_id = booking_id.trim().to_string();
     if !is_lookup_id_pair_ready(&kunden_id, &booking_id) {
         return Ok(IntakeLookupResult::Error {
-            message: "Kunden-ID und Buchungs-ID müssen jeweils mindestens 4 Ziffern haben.".into(),
+            message: "Kunden-ID und Buchungs-ID müssen gesetzt sein und aus Ziffern bestehen.".into(),
         });
     }
 
