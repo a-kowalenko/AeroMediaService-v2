@@ -27,6 +27,9 @@ Patch ohne Unreleased-Text: Notes der Vorgängerversion werden übernommen.
 
 ### Verbessert
 
+- Kundenaufnahme: Buchungssuche schon ab **einer Ziffer** in Kunden- und Buchungs-ID (nicht mehr erst ab vier)
+- Kundenliste: gebuchte Medienarten als Chips (**Handcam** / **Outside**, Foto und Video)
+- Dialog **ATS-Clients**: auf schmalen Fenstern eine Scrollfläche; Kacheln und Listen kompakter, Details darunter statt gequetscht
 - Bridge Share-Vorschläge: **Freigabe zum Monitor-Ordner** wird erkannt und als fertige `smb://`-Adresse angeboten (mit Rechner-IP oder Hostname)
 - Lokale SMB-Freigaben in der Auswahlliste — passende Freigabe als **(Monitor)** hervorgehoben (Windows, macOS, Linux)
 - Bridge Primär-/Backup-Share: **Auswahlliste** mit auf dem AMS-Rechner erkannten Freigaben (Netzlaufwerke, gemountete Shares, lokale Exporte)
