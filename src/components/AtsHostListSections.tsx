@@ -75,28 +75,38 @@ function HostRow({
       className={atsPresenceRowClass(host, selected)}
       onClick={onSelect}
     >
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="truncate font-medium text-foreground">{host.hostname}</span>
-            <PresenceChip
-              label={atsPresenceChipLabel(host)}
-              tone={atsPresenceChipTone(host)}
-            />
-          </div>
-          <p className="mt-1 truncate text-[11px] text-muted">
-            {host.ats_app || "ATS"} {host.ats_version || ""}
-          </p>
-          <p className="mt-1 truncate text-[11px] text-muted">{host.instance_id}</p>
+      <div className="min-w-0 space-y-1.5">
+        <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+          <span className="min-w-0 max-w-full truncate font-medium text-foreground">
+            {host.hostname}
+          </span>
+          <PresenceChip
+            label={atsPresenceChipLabel(host)}
+            tone={atsPresenceChipTone(host)}
+          />
         </div>
-        <div className="shrink-0 text-right text-[11px] text-muted">
-          <p>{eventTypeLabel(host.last_event_type)}</p>
-          <p>{formatTimestamp(host.last_seen_at)}</p>
+        <p className="truncate text-[11px] text-muted">
+          {host.ats_app || "ATS"} {host.ats_version || ""}
+        </p>
+        <p
+          className="truncate font-mono text-[10px] text-muted/80"
+          title={host.instance_id}
+        >
+          {host.instance_id}
+        </p>
+        <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-muted">
+          <span className="truncate">{eventTypeLabel(host.last_event_type)}</span>
+          <span className="text-border" aria-hidden>
+            ·
+          </span>
+          <span className="tabular-nums">{formatTimestamp(host.last_seen_at)}</span>
+          <span className="rounded bg-muted/50 px-1.5 py-0.5">
+            Events: {host.activity_count_ttl}
+          </span>
+          <span className="rounded bg-muted/50 px-1.5 py-0.5">
+            Jobs: {host.jobs_count_ttl}
+          </span>
         </div>
-      </div>
-      <div className="mt-3 flex flex-wrap gap-2 text-[11px] text-muted">
-        <span className="rounded bg-muted/50 px-2 py-1">Events: {host.activity_count_ttl}</span>
-        <span className="rounded bg-muted/50 px-2 py-1">Jobs: {host.jobs_count_ttl}</span>
       </div>
     </button>
   );
@@ -139,34 +149,34 @@ function HostSection({
 
   if (!collapsible) {
     return (
-      <div className="space-y-2">
-        <div className="flex flex-wrap items-center justify-between gap-2">
+      <div className="min-w-0 space-y-2">
+        <div className="flex min-w-0 flex-wrap items-center justify-between gap-2">
           <p className="text-[11px] font-semibold uppercase tracking-wide text-muted">
             {titleText}
           </p>
           {headerAction}
         </div>
-        {body}
+        <div className="min-w-0 space-y-2">{body}</div>
       </div>
     );
   }
 
   return (
-    <div className="space-y-2">
-      <div className="flex flex-wrap items-center justify-between gap-2">
+    <div className="min-w-0 space-y-2">
+      <div className="flex min-w-0 flex-wrap items-center justify-between gap-2">
         <button
           type="button"
-          className="flex min-w-0 flex-1 items-center justify-between text-left text-[11px] font-semibold uppercase tracking-wide text-muted"
+          className="flex min-w-0 flex-1 items-center gap-2 text-left text-[11px] font-semibold uppercase tracking-wide text-muted"
           onClick={() => setCollapsed((prev) => !prev)}
         >
-          {titleText}
+          <span className="min-w-0 truncate">{titleText}</span>
           <ChevronDown
             className={`h-4 w-4 shrink-0 transition-transform ${collapsed ? "-rotate-90" : ""}`}
           />
         </button>
-        {headerAction}
+        {headerAction ? <div className="shrink-0">{headerAction}</div> : null}
       </div>
-      {!collapsed ? body : null}
+      {!collapsed ? <div className="min-w-0 space-y-2">{body}</div> : null}
     </div>
   );
 }
@@ -217,7 +227,7 @@ export function AtsHostListSections({
     ) : null;
 
   return (
-    <div className="space-y-4">
+    <div className="min-w-0 space-y-3 sm:space-y-4">
       <HostSection
         title="Verbunden"
         hosts={groups.connected}

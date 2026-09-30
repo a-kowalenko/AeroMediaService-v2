@@ -226,43 +226,43 @@ export function AtsClientsDialog({
 
   return (
     <Dialog open={open} onOpenChange={(next) => !next && onClose()}>
-      <DialogContent className="flex h-[min(82vh,44rem)] max-w-5xl flex-col gap-4 overflow-hidden">
-        <DialogHeader className="shrink-0">
+      <DialogContent className="flex h-[min(90dvh,calc(100dvh-2rem))] max-h-[min(90dvh,calc(100dvh-2rem))] w-full max-w-5xl flex-col gap-3 overflow-hidden p-4 sm:h-[min(82vh,48rem)] sm:gap-4 sm:p-6">
+        <DialogHeader className="shrink-0 pr-8">
           <DialogTitle>ATS-Clients</DialogTitle>
-          <DialogDescription>
+          <DialogDescription className="text-xs sm:text-sm">
             Verbundene Clients (~2 Min.), nicht verbunden (letzte 30 Tage), länger inaktiv (&gt;30 Tage). Sortierung nach letztem Kontakt.
           </DialogDescription>
         </DialogHeader>
 
-        <div className="grid gap-3 sm:grid-cols-3">
-          <div className="rounded-lg border border-border/60 bg-muted/15 p-3">
-            <p className="text-[11px] font-semibold uppercase tracking-wide text-muted">
-              Verbundene Clients
+        <div className="grid shrink-0 grid-cols-3 gap-2 sm:gap-3">
+          <div className="min-w-0 rounded-lg border border-border/60 bg-muted/15 p-2 sm:p-3">
+            <p className="text-[10px] font-semibold uppercase tracking-wide text-muted sm:text-[11px]">
+              Verbunden
             </p>
-            <p className="mt-1 text-2xl font-semibold text-foreground">
+            <p className="mt-0.5 text-xl font-semibold text-foreground sm:mt-1 sm:text-2xl">
               {connectedHostsCount}
             </p>
           </div>
-          <div className="rounded-lg border border-border/60 bg-muted/15 p-3">
-            <p className="text-[11px] font-semibold uppercase tracking-wide text-muted">
+          <div className="min-w-0 rounded-lg border border-border/60 bg-muted/15 p-2 sm:p-3">
+            <p className="text-[10px] font-semibold uppercase tracking-wide text-muted sm:text-[11px]">
               Aktiv
             </p>
-            <p className="mt-1 text-2xl font-semibold text-foreground">
+            <p className="mt-0.5 text-xl font-semibold text-foreground sm:mt-1 sm:text-2xl">
               {activeHostsCount}
             </p>
           </div>
-          <div className="flex items-center justify-between rounded-lg border border-border/60 bg-muted/15 p-3">
-            <div>
-              <p className="text-[11px] font-semibold uppercase tracking-wide text-muted">
-                Aktualisierung
+          <div className="flex min-w-0 items-center justify-between gap-1 rounded-lg border border-border/60 bg-muted/15 p-2 sm:gap-2 sm:p-3">
+            <div className="min-w-0">
+              <p className="text-[10px] font-semibold uppercase tracking-wide text-muted sm:text-[11px]">
+                Refresh
               </p>
-              <p className="mt-1 text-sm text-muted">30s Auto-Refresh</p>
+              <p className="mt-0.5 truncate text-xs text-muted sm:mt-1 sm:text-sm">30s Auto</p>
             </div>
             <Button
               type="button"
               variant="secondary"
               size="icon"
-              className={cn("h-8 w-8", hostsLoading && "disabled:opacity-100")}
+              className={cn("h-7 w-7 shrink-0 sm:h-8 sm:w-8", hostsLoading && "disabled:opacity-100")}
               disabled={hostsLoading}
               onClick={() => {
                 void loadHosts();
@@ -277,111 +277,119 @@ export function AtsClientsDialog({
           </div>
         </div>
 
-        {hostsError ? <p className="text-xs text-destructive">{hostsError}</p> : null}
+        {hostsError ? <p className="shrink-0 text-xs text-destructive">{hostsError}</p> : null}
 
-        <SmbSessionsSection
-          snapshot={smbSnapshot}
-          active={open}
-          onChanged={onRefreshSmb}
-        />
-
-        <div className="grid min-h-0 flex-1 gap-3 xl:grid-cols-[minmax(0,0.92fr)_minmax(0,1.28fr)]">
-          <div className="min-h-0 overflow-y-auto pr-1 [scrollbar-gutter:stable]">
-            <AtsHostListSections
-              hosts={hosts}
-              selectedHostId={selectedHostId}
-              onSelectHost={setSelectedHostId}
-              onPurgeInactiveLong={() => void onPurgeInactiveLong()}
-              purgeInactiveLongBusy={removalBusy}
+        {/*
+          Narrow: one scroll (SMB + Verbunden-Kacheln + Details) so tiles keep natural height.
+          lg+: SMB fixed above; list/detail split with independent scroll.
+        */}
+        <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto lg:overflow-hidden">
+          <div className="shrink-0">
+            <SmbSessionsSection
+              snapshot={smbSnapshot}
+              active={open}
+              onChanged={onRefreshSmb}
             />
           </div>
 
-          <div className="min-h-0 overflow-y-auto rounded-lg border border-border/60 bg-muted/10 p-4 [scrollbar-gutter:stable]">
-            {!selectedHost ? (
-              <div className="text-sm text-muted">Client auswählen, um letzte Events und Vorgänge zu sehen.</div>
-            ) : detailsLoading ? (
-              <div className="flex items-center gap-2 text-sm text-muted">
-                <Spinner size={14} className="border-[1.5px]" />
-                Details werden geladen...
-              </div>
-            ) : !details ? (
-              <div className="text-sm text-muted">Für diesen Client sind derzeit keine Details verfügbar.</div>
-            ) : (
-              <div className="space-y-4">
-                <div className="space-y-3">
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <div className="flex min-w-0 flex-wrap items-center gap-2">
-                      <span className="text-base font-semibold text-foreground">{details.host.hostname}</span>
-                      {detailsChipHost ? (
-                        <PresenceChip
-                          label={atsPresenceChipLabel(detailsChipHost)}
-                          tone={atsPresenceChipTone(detailsChipHost)}
-                        />
+          <div className="grid min-h-0 gap-3 lg:min-h-0 lg:flex-1 lg:grid-cols-[minmax(0,0.92fr)_minmax(0,1.28fr)] lg:overflow-hidden">
+            <div className="min-w-0 lg:min-h-0 lg:overflow-y-auto lg:pr-1 lg:[scrollbar-gutter:stable]">
+              <AtsHostListSections
+                hosts={hosts}
+                selectedHostId={selectedHostId}
+                onSelectHost={setSelectedHostId}
+                onPurgeInactiveLong={() => void onPurgeInactiveLong()}
+                purgeInactiveLongBusy={removalBusy}
+              />
+            </div>
+
+            <div className="min-w-0 rounded-lg border border-border/60 bg-muted/10 p-3 sm:p-4 lg:min-h-0 lg:overflow-y-auto lg:[scrollbar-gutter:stable]">
+              {!selectedHost ? (
+                <div className="text-sm text-muted">Client auswählen, um letzte Events und Vorgänge zu sehen.</div>
+              ) : detailsLoading ? (
+                <div className="flex items-center gap-2 text-sm text-muted">
+                  <Spinner size={14} className="border-[1.5px]" />
+                  Details werden geladen...
+                </div>
+              ) : !details ? (
+                <div className="text-sm text-muted">Für diesen Client sind derzeit keine Details verfügbar.</div>
+              ) : (
+                <div className="space-y-4">
+                  <div className="space-y-3">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="flex min-w-0 flex-wrap items-center gap-2">
+                        <span className="text-base font-semibold text-foreground">{details.host.hostname}</span>
+                        {detailsChipHost ? (
+                          <PresenceChip
+                            label={atsPresenceChipLabel(detailsChipHost)}
+                            tone={atsPresenceChipTone(detailsChipHost)}
+                          />
+                        ) : null}
+                      </div>
+                      {canForgetSelected ? (
+                        <Button
+                          type="button"
+                          variant="destructive"
+                          size="sm"
+                          disabled={removalBusy}
+                          onClick={() => void onForgetSelected()}
+                        >
+                          Entfernen
+                        </Button>
                       ) : null}
                     </div>
-                    {canForgetSelected ? (
-                      <Button
-                        type="button"
-                        variant="destructive"
-                        size="sm"
-                        disabled={removalBusy}
-                        onClick={() => void onForgetSelected()}
-                      >
-                        Entfernen
-                      </Button>
-                    ) : null}
-                  </div>
-                  <div className="grid gap-2 sm:grid-cols-2">
-                    <div className="rounded-md border border-border/50 bg-background/80 p-3 text-xs text-muted">
-                      <p className="font-medium text-foreground">Client</p>
-                      <p className="mt-1">{details.host.ats_app || "-"} {details.host.ats_version || ""}</p>
-                      <p className="mt-1 truncate">{details.host.instance_id}</p>
+                    <div className="grid gap-2 sm:grid-cols-2">
+                      <div className="rounded-md border border-border/50 bg-background/80 p-3 text-xs text-muted">
+                        <p className="font-medium text-foreground">Client</p>
+                        <p className="mt-1">{details.host.ats_app || "-"} {details.host.ats_version || ""}</p>
+                        <p className="mt-1 truncate">{details.host.instance_id}</p>
+                      </div>
+                      <div className="rounded-md border border-border/50 bg-background/80 p-3 text-xs text-muted">
+                        <p className="font-medium text-foreground">Sichtbarkeit</p>
+                        <p className="mt-1">First seen: {formatAtsHostSeenAt(details.host.first_seen_at)}</p>
+                        <p className="mt-1">Last seen: {formatAtsHostSeenAt(details.host.last_seen_at)}</p>
+                      </div>
                     </div>
                     <div className="rounded-md border border-border/50 bg-background/80 p-3 text-xs text-muted">
-                      <p className="font-medium text-foreground">Sichtbarkeit</p>
-                      <p className="mt-1">First seen: {formatAtsHostSeenAt(details.host.first_seen_at)}</p>
-                      <p className="mt-1">Last seen: {formatAtsHostSeenAt(details.host.last_seen_at)}</p>
+                      Letztes Event: {eventTypeLabel(details.host.last_event_type)} um {formatAtsHostSeenAt(details.host.last_event_at)}
                     </div>
                   </div>
-                  <div className="rounded-md border border-border/50 bg-background/80 p-3 text-xs text-muted">
-                    Letztes Event: {eventTypeLabel(details.host.last_event_type)} um {formatAtsHostSeenAt(details.host.last_event_at)}
+
+                  <AtsHostActivitySection
+                    instanceId={details.host.instance_id}
+                    refreshToken={activityRefreshToken}
+                  />
+
+                  <div className="space-y-2">
+                    <p className="text-xs font-semibold uppercase tracking-wide text-muted">Letzte Vorgänge</p>
+                    {details.recent_jobs.length === 0 ? (
+                      <p className="text-sm text-muted">Keine korrelierten Vorgänge im Zeitraum.</p>
+                    ) : (
+                      <div className="space-y-2">
+                        {details.recent_jobs.slice(0, 8).map((job) => (
+                          <div
+                            key={job.correlation_id}
+                            className="rounded-md border border-border/50 bg-background/80 p-3 text-xs"
+                          >
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <span className="truncate font-medium text-foreground">
+                                {job.folder_name || "Ohne Ordnername"}
+                              </span>
+                              <StatusChip status={job.ams_status_label} channel="overall" compact />
+                            </div>
+                            <div className="mt-2 space-y-0.5 text-muted">
+                              <p>Correlation ID: {job.correlation_id}</p>
+                              <p>Quelle: {eventTypeLabel(job.source_event_type)}</p>
+                              <p>Last seen: {formatAtsHostSeenAt(job.last_seen_at)}</p>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 </div>
-
-                <AtsHostActivitySection
-                  instanceId={details.host.instance_id}
-                  refreshToken={activityRefreshToken}
-                />
-
-                <div className="space-y-2">
-                  <p className="text-xs font-semibold uppercase tracking-wide text-muted">Letzte Vorgänge</p>
-                  {details.recent_jobs.length === 0 ? (
-                    <p className="text-sm text-muted">Keine korrelierten Vorgänge im Zeitraum.</p>
-                  ) : (
-                    <div className="space-y-2">
-                      {details.recent_jobs.slice(0, 8).map((job) => (
-                        <div
-                          key={job.correlation_id}
-                          className="rounded-md border border-border/50 bg-background/80 p-3 text-xs"
-                        >
-                          <div className="flex flex-wrap items-center justify-between gap-2">
-                            <span className="truncate font-medium text-foreground">
-                              {job.folder_name || "Ohne Ordnername"}
-                            </span>
-                            <StatusChip status={job.ams_status_label} channel="overall" compact />
-                          </div>
-                          <div className="mt-2 space-y-0.5 text-muted">
-                            <p>Correlation ID: {job.correlation_id}</p>
-                            <p>Quelle: {eventTypeLabel(job.source_event_type)}</p>
-                            <p>Last seen: {formatAtsHostSeenAt(job.last_seen_at)}</p>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              </div>
-            )}
+              )}
+            </div>
           </div>
         </div>
       </DialogContent>

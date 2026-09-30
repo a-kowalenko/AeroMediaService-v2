@@ -1995,29 +1995,29 @@ export function SettingsDialog({
                                             </div>
                                         ) : (
                                             <div className="space-y-3">
-                                                <div className="grid gap-3 sm:grid-cols-3">
-                                                    <div className="rounded-lg border border-border/60 bg-muted/15 p-3">
-                                                        <p className="text-[11px] font-semibold uppercase tracking-wide text-muted">
-                                                            Verbundene Clients
+                                                <div className="grid grid-cols-3 gap-2 sm:gap-3">
+                                                    <div className="min-w-0 rounded-lg border border-border/60 bg-muted/15 p-2 sm:p-3">
+                                                        <p className="text-[10px] font-semibold uppercase tracking-wide text-muted sm:text-[11px]">
+                                                            Verbunden
                                                         </p>
-                                                        <p className="mt-1 text-2xl font-semibold text-foreground">
+                                                        <p className="mt-0.5 text-xl font-semibold text-foreground sm:mt-1 sm:text-2xl">
                                                             {connectedAtsHostsCount}
                                                         </p>
                                                     </div>
-                                                    <div className="rounded-lg border border-border/60 bg-muted/15 p-3">
-                                                        <p className="text-[11px] font-semibold uppercase tracking-wide text-muted">
+                                                    <div className="min-w-0 rounded-lg border border-border/60 bg-muted/15 p-2 sm:p-3">
+                                                        <p className="text-[10px] font-semibold uppercase tracking-wide text-muted sm:text-[11px]">
                                                             Aktiv
                                                         </p>
-                                                        <p className="mt-1 text-2xl font-semibold text-foreground">
+                                                        <p className="mt-0.5 text-xl font-semibold text-foreground sm:mt-1 sm:text-2xl">
                                                             {activeAtsHostsCount}
                                                         </p>
                                                     </div>
-                                                    <div className="rounded-lg border border-border/60 bg-muted/15 p-3">
-                                                        <p className="text-[11px] font-semibold uppercase tracking-wide text-muted">
+                                                    <div className="min-w-0 rounded-lg border border-border/60 bg-muted/15 p-2 sm:p-3">
+                                                        <p className="text-[10px] font-semibold uppercase tracking-wide text-muted sm:text-[11px]">
                                                             Sichtbarkeit
                                                         </p>
-                                                        <p className="mt-1 text-sm text-muted">
-                                                            Verbundene ~2 Min. · Aktiv 60 Min. · Inaktiv &gt;30 Tage
+                                                        <p className="mt-0.5 text-[11px] leading-snug text-muted sm:mt-1 sm:text-sm">
+                                                            ~2 Min. · 60 Min. · &gt;30 Tage
                                                         </p>
                                                     </div>
                                                 </div>
@@ -2026,8 +2026,8 @@ export function SettingsDialog({
                                                     <p className="text-xs text-destructive">{atsHostsError}</p>
                                                 ) : null}
 
-                                                <div className="grid gap-3 xl:grid-cols-[minmax(0,0.95fr)_minmax(0,1.25fr)]">
-                                                    <div className="min-w-0 max-h-[min(52vh,28rem)] overflow-y-auto pr-1 [scrollbar-gutter:stable]">
+                                                <div className="grid gap-3 lg:grid-cols-[minmax(0,0.95fr)_minmax(0,1.25fr)]">
+                                                    <div className="min-w-0 max-h-[min(40vh,22rem)] overflow-y-auto pr-1 [scrollbar-gutter:stable] lg:max-h-[min(52vh,28rem)]">
                                                         <AtsHostListSections
                                                             hosts={atsHosts}
                                                             selectedHostId={selectedAtsHostId}
@@ -2037,7 +2037,7 @@ export function SettingsDialog({
                                                         />
                                                     </div>
 
-                                                    <div className="min-w-0 rounded-lg border border-border/60 bg-muted/10 p-4">
+                                                    <div className="min-w-0 rounded-lg border border-border/60 bg-muted/10 p-3 sm:p-4">
                                                         {!selectedAtsHost ? (
                                                             <div className="text-sm text-muted">
                                                                 Client auswählen, um letzte Events und Vorgänge zu sehen.

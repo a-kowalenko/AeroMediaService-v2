@@ -58,7 +58,7 @@ export function atsPresenceChipLabel(host: AtsHostSummary): string {
     case "connected":
       return "Verbunden";
     case "inactive_long":
-      return "Inaktiv (>30 Tage)";
+      return "Inaktiv";
     default:
       return host.is_active ? "Kürzlich aktiv" : "Getrennt";
   }
@@ -109,7 +109,7 @@ export function purgeInactiveLongAtsHostsConfirmMessage(count: number): string {
 /** Row container — avoids primary (brand green) for non-connected hosts. */
 export function atsPresenceRowClass(host: AtsHostSummary, selected: boolean): string {
   const base =
-    "w-full rounded-lg border px-3 py-3 text-left transition-colors";
+    "w-full min-w-0 rounded-lg border px-2.5 py-2.5 text-left transition-colors sm:px-3 sm:py-3";
 
   if (host.degraded_identity) {
     return selected

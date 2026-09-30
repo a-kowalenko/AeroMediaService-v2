@@ -18,6 +18,7 @@ import {
 import { FolderSelectionModal } from "./FolderSelectionModal";
 import { BatchAssignDialog } from "./BatchAssignDialog";
 import { IdAssignReviewDialog } from "./IdAssignReviewDialog";
+import { MediaOptionChips } from "./MediaOptionChips";
 import {
   CustomerLookupChoiceDialog,
   CustomerLookupDiffDialog,
@@ -1146,6 +1147,7 @@ export function CustomersPanel() {
                             ? ` · #${customer.kunden_id}/${customer.booking_id}`
                             : ""}
                         </p>
+                        <MediaOptionChips className="mt-1.5" flags={customer} />
                       </div>
                       {customer.assigned_path.trim() ? (
                         <div className="min-w-0 flex-1 basis-[12rem]">
