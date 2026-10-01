@@ -8,6 +8,8 @@ Patch ohne Unreleased-Text: Notes der Vorgängerversion werden übernommen.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-02
+
 ### Neu
 
 - Einstellung **Betatester** unter Wartung → Software-Update: Vorabversionen anzeigen und per Auto-Update erhalten
@@ -76,17 +78,6 @@ Patch ohne Unreleased-Text: Notes der Vorgängerversion werden übernommen.
 - **Auto-Nachreichen** nur bei beiden IDs und erfolgreichem Vorgänger in der Historie; ohne Treffer wie bisher Erst-Upload
 - SMB Auto-Close ist ein Notnagel — OS-Idle-Timeout und Server-Limits sind nachhaltiger; Standard aus
 - **Opens=0 schließen** ignoriert Idle, nie Opens &gt; 0; Auto-Close bleibt Idle-only
-
-
-
-
-
-
-
-
-
-
-
 
 ## [0.3.0-beta.3] - 2026-10-01
 
