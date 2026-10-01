@@ -23,6 +23,7 @@ Patch ohne Unreleased-Text: Notes der Vorgängerversion werden übernommen.
 - **SMB-Sessions** (Windows): Diagnose im Clients-Dialog; Warnung am Clients-Chip bei zu vielen Server-Sessions
 - Einstellungen unter Allgemein: SMB-**Warnschwelle**, Idle-Minimum und optional **Auto-Close** sicherer Idle-Sessions (standardmäßig aus)
 - Bei fehlenden Rechten: SMB-Sessions **mit Admin-Rechten laden/schließen**, ohne AMS neu zu starten
+- SMB-Sessions: Button **Alle mit Opens=0 schließen** — Idle-Minimum wird ignoriert; Sessions mit offenen Dateien bleiben unberührt (auch mit Admin)
 - Schmale Fenster: Upload-Panel aufklappbar; kompakte **Upload-Leiste** mit Fortschritt
 
 ### Verbessert
@@ -74,6 +75,7 @@ Patch ohne Unreleased-Text: Notes der Vorgängerversion werden übernommen.
 - Ohne Kunden-/Buchungs-ID bleibt die bisherige Kontakt-Zuweisung unverändert
 - **Auto-Nachreichen** nur bei beiden IDs und erfolgreichem Vorgänger in der Historie; ohne Treffer wie bisher Erst-Upload
 - SMB Auto-Close ist ein Notnagel — OS-Idle-Timeout und Server-Limits sind nachhaltiger; Standard aus
+- **Opens=0 schließen** ignoriert Idle, nie Opens &gt; 0; Auto-Close bleibt Idle-only
 
 
 
