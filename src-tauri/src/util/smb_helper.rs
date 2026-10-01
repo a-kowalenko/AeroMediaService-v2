@@ -1,6 +1,6 @@
 //! CLI entry for `ams-smb-helper` (Phase 20d).
 //!
-//! Strict arg whitelist: `list` | `close-id` | `close-safe-idle`.
+//! Strict arg whitelist: `list` | `close-id` | `close-safe-idle` | `close-zero-opens`.
 //! Writes JSON to `--out` (parent-created temp file). No PowerShell.
 
 use std::fs;
@@ -9,8 +9,9 @@ use std::path::{Path, PathBuf};
 use serde::Serialize;
 
 use crate::util::smb_sessions::{
-    close_all_safe_idle, close_session_by_id, collect_snapshot, parse_auto_close_enabled,
-    parse_idle_min_seconds, parse_poll_seconds, parse_warn_threshold, SmbSessionCloseMode,
+    close_all_safe_idle, close_all_zero_opens, close_session_by_id, collect_snapshot,
+    parse_auto_close_enabled, parse_idle_min_seconds, parse_poll_seconds, parse_warn_threshold,
+    SmbSessionCloseMode,
 };
 
 const HELPER_NAME: &str = "ams-smb-helper";
@@ -32,6 +33,7 @@ enum HelperCommand {
     List,
     CloseId,
     CloseSafeIdle,
+    CloseZeroOpens,
 }
 
 #[derive(Debug, Serialize)]
@@ -90,6 +92,13 @@ fn execute(args: &HelperArgs) -> Result<(), String> {
             );
             write_json(&args.out, &report)
         }
+        HelperCommand::CloseZeroOpens => {
+            let report = close_all_zero_opens(
+                SmbSessionCloseMode::ElevatedHelper,
+                &args.monitor_path,
+            );
+            write_json(&args.out, &report)
+        }
     }
 }
 
@@ -117,9 +126,10 @@ fn parse_args(args: &[String]) -> Result<HelperArgs, String> {
         "list" => HelperCommand::List,
         "close-id" => HelperCommand::CloseId,
         "close-safe-idle" => HelperCommand::CloseSafeIdle,
+        "close-zero-opens" => HelperCommand::CloseZeroOpens,
         other => {
             return Err(format!(
-                "Unbekannter Befehl '{other}'. Erlaubt: list | close-id | close-safe-idle"
+                "Unbekannter Befehl '{other}'. Erlaubt: list | close-id | close-safe-idle | close-zero-opens"
             ));
         }
     };
@@ -201,7 +211,7 @@ fn peek_out_path(args: &[String]) -> Option<PathBuf> {
 
 fn usage() -> String {
     format!(
-        "Usage: {HELPER_NAME} <list|close-id|close-safe-idle> --out <file> [options]\n\
+        "Usage: {HELPER_NAME} <list|close-id|close-safe-idle|close-zero-opens> --out <file> [options]\n\
          Options: --idle-min --warn-threshold --poll-seconds --auto-close --monitor-path --session-id"
     )
 }
@@ -281,7 +291,7 @@ pub fn quote_win_arg(arg: &str) -> String {
 /// Build lpParameters string for the helper (no exe name).
 pub fn build_helper_params(command: &str, pairs: &[(&str, &str)]) -> Result<String, String> {
     match command {
-        "list" | "close-id" | "close-safe-idle" => {}
+        "list" | "close-id" | "close-safe-idle" | "close-zero-opens" => {}
         other => return Err(format!("Befehl nicht erlaubt: {other}")),
     }
     let mut parts = vec![command.to_string()];
@@ -289,7 +299,14 @@ pub fn build_helper_params(command: &str, pairs: &[(&str, &str)]) -> Result<Stri
         if !key.starts_with("--") {
             return Err(format!("Flag ungültig: {key}"));
         }
-        if value.chars().any(|c| matches!(c, '&' | '|' | '<' | '>' | '^' | '\n' | '\r' | '`')) {
+        if key == "--session-id" {
+            // Composite keys are `client|user|idx` — `|` is required, not a shell pipe here
+            // (ShellExecuteEx does not invoke cmd.exe). Align with validate_session_id.
+            validate_session_id(value)?;
+        } else if value
+            .chars()
+            .any(|c| matches!(c, '&' | '|' | '<' | '>' | '^' | '\n' | '\r' | '`'))
+        {
             return Err(format!("Wert für {key} enthält unerlaubte Zeichen"));
         }
         parts.push(key.to_string());
@@ -372,6 +389,32 @@ mod tests {
         assert!(p.starts_with("list "));
         assert!(p.contains(r#""C:\Temp\a b.json""#));
         assert!(p.contains("--idle-min 600"));
+    }
+
+    #[test]
+    fn build_params_allows_pipe_in_session_id() {
+        let sid = r"192.168.178.87|andre|0";
+        let p = build_helper_params(
+            "close-id",
+            &[
+                ("--out", r"C:\Temp\out.json"),
+                ("--session-id", sid),
+                ("--idle-min", "600"),
+            ],
+        )
+        .expect("session-id with | must be allowed");
+        assert!(p.contains("--session-id "));
+        assert!(p.contains(sid));
+        assert!(build_helper_params(
+            "close-id",
+            &[("--out", r"C:\Temp\out.json"), ("--session-id", "evil&cmd")]
+        )
+        .is_err());
+        assert!(build_helper_params(
+            "list",
+            &[("--out", r"C:\Temp\out.json"), ("--monitor-path", r"D:\a|b")]
+        )
+        .is_err());
     }
 
     #[test]

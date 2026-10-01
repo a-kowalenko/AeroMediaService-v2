@@ -347,6 +347,17 @@ pub fn elevated_close_safe_idle(
     Ok(report)
 }
 
+pub fn elevated_close_zero_opens(
+    monitor_path: &str,
+) -> Result<SmbSessionCloseReport, ElevateError> {
+    let report: SmbSessionCloseReport = run_elevated_json(
+        "close-zero-opens",
+        &[("--monitor-path", monitor_path)],
+    )?;
+    audit_elevated_report(&report);
+    Ok(report)
+}
+
 fn audit_elevated_report(report: &SmbSessionCloseReport) {
     for d in &report.details {
         let line = format!(

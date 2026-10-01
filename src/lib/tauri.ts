@@ -281,6 +281,16 @@ export function closeSafeIdleSmbSessionsElevated(): Promise<SmbSessionCloseRepor
     return invoke<SmbSessionCloseReport>("close_safe_idle_smb_sessions_elevated");
 }
 
+/** Bulk close Opens=0 (idle ignored); focus share when known. */
+export function closeZeroOpensSmbSessions(): Promise<SmbSessionCloseReport> {
+    return invoke<SmbSessionCloseReport>("close_zero_opens_smb_sessions");
+}
+
+/** Elevated Opens=0 bulk close (UAC). */
+export function closeZeroOpensSmbSessionsElevated(): Promise<SmbSessionCloseReport> {
+    return invoke<SmbSessionCloseReport>("close_zero_opens_smb_sessions_elevated");
+}
+
 /** Auto-Close tick; returns null when disabled in settings. Never elevates (no UAC spam). */
 export function autoCloseSafeIdleSmbSessions(): Promise<SmbSessionCloseReport | null> {
     return invoke<SmbSessionCloseReport | null>("auto_close_safe_idle_smb_sessions");

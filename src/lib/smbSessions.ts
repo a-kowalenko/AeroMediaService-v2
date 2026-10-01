@@ -53,6 +53,11 @@ export function isSmbSessionSafeToClose(
   return row.num_opens === 0 && row.seconds_idle >= min;
 }
 
+/** Opens=0 only (idle ignored). */
+export function isSmbSessionZeroOpensClose(row: SmbSessionRow): boolean {
+  return row.num_opens === 0;
+}
+
 /** Bulk close candidates: Safe-Close + focus share when filter is known. */
 export function isSmbSessionBulkCloseCandidate(
   row: SmbSessionRow,
@@ -64,6 +69,16 @@ export function isSmbSessionBulkCloseCandidate(
   return true;
 }
 
+/** Bulk Opens=0 + focus share when known. */
+export function isSmbSessionBulkZeroOpensCandidate(
+  row: SmbSessionRow,
+  focusShareKnown: boolean,
+): boolean {
+  if (!isSmbSessionZeroOpensClose(row)) return false;
+  if (focusShareKnown) return Boolean(row.on_focus_share);
+  return true;
+}
+
 export function countSafeIdleSmbSessions(
   snapshot: SmbSessionSnapshot | null,
 ): number {
@@ -71,6 +86,16 @@ export function countSafeIdleSmbSessions(
   const focusKnown = Boolean(snapshot.focus_share_name);
   return snapshot.sessions.filter((row) =>
     isSmbSessionBulkCloseCandidate(row, snapshot.idle_min_seconds, focusKnown),
+  ).length;
+}
+
+export function countZeroOpensSmbSessions(
+  snapshot: SmbSessionSnapshot | null,
+): number {
+  if (!snapshot || snapshot.status !== "ok") return 0;
+  const focusKnown = Boolean(snapshot.focus_share_name);
+  return snapshot.sessions.filter((row) =>
+    isSmbSessionBulkZeroOpensCandidate(row, focusKnown),
   ).length;
 }
 
@@ -89,6 +114,23 @@ export function closeSafeIdleSmbSessionsConfirmMessage(
     `Nur Sessions mit Idle ≥ ${idleLabel} und ohne offene Datei-Handles (Opens = 0).`,
     focusLine,
     "Aktive oder geöffnete Sessions bleiben unberührt.",
+    "",
+    "Abbruch ohne Änderung.",
+  ].join("\n");
+}
+
+export function closeZeroOpensSmbSessionsConfirmMessage(
+  count: number,
+  focusShareName: string | null,
+): string {
+  const focusLine = focusShareName
+    ? `Nur Sessions auf Freigabe „${focusShareName}“ (Monitor/aktuell).`
+    : "Share-Filter nicht auflösbar — Opens=0 für alle gelisteten Sessions.";
+  return [
+    `${count} SMB-Session(s) mit Opens = 0 schließen?`,
+    "",
+    "Idle-Minimum wird ignoriert. Sessions mit offenen Datei-Handles (Opens > 0) bleiben unberührt.",
+    focusLine,
     "",
     "Abbruch ohne Änderung.",
   ].join("\n");

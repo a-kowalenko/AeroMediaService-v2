@@ -6,13 +6,14 @@ use crate::commands::ConfigState;
 use crate::storage::ats_presence::AtsPresenceState;
 use crate::storage::logging::log_warn;
 use crate::util::smb_elevate::{
-    elevated_close_by_id, elevated_close_safe_idle, elevated_list_snapshot, ElevateError,
+    elevated_close_by_id, elevated_close_safe_idle, elevated_close_zero_opens,
+    elevated_list_snapshot, ElevateError,
 };
 use crate::util::smb_sessions::{
-    close_all_safe_idle, close_session_by_id, collect_snapshot, parse_auto_close_enabled,
-    parse_idle_min_seconds, parse_poll_seconds, parse_warn_threshold, run_auto_close_if_enabled,
-    should_warn, AtsHostRef, SmbSessionCloseMode, SmbSessionCloseOutcome, SmbSessionCloseReport,
-    SmbSessionQueryStatus, SmbSessionSnapshot,
+    close_all_safe_idle, close_all_zero_opens, close_session_by_id, collect_snapshot,
+    parse_auto_close_enabled, parse_idle_min_seconds, parse_poll_seconds, parse_warn_threshold,
+    run_auto_close_if_enabled, should_warn, AtsHostRef, SmbSessionCloseMode,
+    SmbSessionCloseOutcome, SmbSessionCloseReport, SmbSessionQueryStatus, SmbSessionSnapshot,
 };
 
 fn read_idle_min(config: &ConfigState) -> u64 {
@@ -249,6 +250,29 @@ pub fn close_safe_idle_smb_sessions_elevated(
         return in_process;
     }
     match elevated_close_safe_idle(idle_min_seconds, &monitor_path) {
+        Ok(report) => report,
+        Err(err) => map_elevate_err_to_close(err),
+    }
+}
+
+/// Close all sessions with Opens = 0 (idle ignored) + focus-share when known.
+#[tauri::command]
+pub fn close_zero_opens_smb_sessions(config: State<'_, ConfigState>) -> SmbSessionCloseReport {
+    let monitor_path = read_monitor_path(config.inner());
+    close_all_zero_opens(SmbSessionCloseMode::Manual, &monitor_path)
+}
+
+/// Elevated Opens=0 bulk close (UAC). AMS stays unelevated.
+#[tauri::command]
+pub fn close_zero_opens_smb_sessions_elevated(
+    config: State<'_, ConfigState>,
+) -> SmbSessionCloseReport {
+    let monitor_path = read_monitor_path(config.inner());
+    let in_process = close_all_zero_opens(SmbSessionCloseMode::Manual, &monitor_path);
+    if !in_process.permission_denied {
+        return in_process;
+    }
+    match elevated_close_zero_opens(&monitor_path) {
         Ok(report) => report,
         Err(err) => map_elevate_err_to_close(err),
     }

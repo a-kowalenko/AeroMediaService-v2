@@ -57,6 +57,13 @@ impl SmbSessionCloseMode {
     }
 }
 
+/// Bulk/single close gate: Safe-Idle (default) vs Opens=0 only (idle ignored).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CloseGate {
+    SafeIdle { idle_min_seconds: u64 },
+    ZeroOpens,
+}
+
 /// Lightweight ATS presence identity for SMB client correlation (hostname / label).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AtsHostRef {
@@ -163,6 +170,51 @@ pub fn normalize_smb_client_token(raw: &str) -> String {
     s.to_ascii_lowercase()
 }
 
+/// `NetSessionEnum` returns `sesi2_cname` **without** `\\`; `NetSessionDel` requires
+/// `UncClientName` to begin with `\\` (else `NERR_ClientNameNotFound`).
+pub fn unc_client_name_for_session_del(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if trimmed.starts_with(r"\\") {
+        // Keep existing UNC; avoid turning `\\\\host` into more slashes.
+        let bare = trimmed.trim_start_matches('\\');
+        if bare.is_empty() {
+            return None;
+        }
+        return Some(format!(r"\\{bare}"));
+    }
+    let bare = trimmed.trim_start_matches(['\\', '/']);
+    if bare.is_empty() {
+        return None;
+    }
+    Some(format!(r"\\{bare}"))
+}
+
+/// Identity for `NetSessionDel` (one call closes all sessions for client+user).
+fn session_del_identity_key(row: &SmbSessionRow) -> String {
+    let client = normalize_smb_client_token(&row.client_computer_name);
+    let user = row.client_user_name.trim().to_ascii_lowercase();
+    if client.is_empty() {
+        format!("id:{}", row.session_id)
+    } else {
+        format!("{client}|{user}")
+    }
+}
+
+/// Keep one row per NetSessionDel target (client+user).
+pub fn dedupe_sessions_by_client_user(sessions: &[SmbSessionRow]) -> Vec<SmbSessionRow> {
+    let mut seen = HashSet::new();
+    let mut out = Vec::with_capacity(sessions.len());
+    for row in sessions {
+        if seen.insert(session_del_identity_key(row)) {
+            out.push(row.clone());
+        }
+    }
+    out
+}
+
 /// Pick focus share: path match to `monitor_path`, else share named `aktuell`.
 pub fn pick_focus_share_name(exports: &[ShareExport], monitor_path: &str) -> Option<String> {
     let monitor = monitor_path.trim();
@@ -244,6 +296,11 @@ pub fn is_safe_to_close(row: &SmbSessionRow, idle_min_seconds: u64) -> bool {
     row.num_opens == 0 && row.seconds_idle >= idle_min_seconds
 }
 
+/// Zero-opens close: ignore idle minimum, still never close with open handles.
+pub fn is_zero_opens_close(row: &SmbSessionRow) -> bool {
+    row.num_opens == 0
+}
+
 /// Bulk/Auto close: Safe-Close + focus-share when the share filter is known.
 pub fn is_bulk_close_candidate(
     row: &SmbSessionRow,
@@ -251,6 +308,18 @@ pub fn is_bulk_close_candidate(
     focus_share_known: bool,
 ) -> bool {
     if !is_safe_to_close(row, idle_min_seconds) {
+        return false;
+    }
+    if focus_share_known {
+        row.on_focus_share
+    } else {
+        true
+    }
+}
+
+/// Bulk zero-opens close + focus-share when known (idle ignored).
+pub fn is_bulk_zero_opens_candidate(row: &SmbSessionRow, focus_share_known: bool) -> bool {
+    if !is_zero_opens_close(row) {
         return false;
     }
     if focus_share_known {
@@ -269,6 +338,17 @@ pub fn filter_safe_close_candidates(
     sessions
         .iter()
         .filter(|row| is_bulk_close_candidate(row, idle_min_seconds, focus_share_known))
+        .collect()
+}
+
+/// Sessions with Opens = 0 (+ optional focus); idle minimum ignored.
+pub fn filter_zero_opens_candidates(
+    sessions: &[SmbSessionRow],
+    focus_share_known: bool,
+) -> Vec<&SmbSessionRow> {
+    sessions
+        .iter()
+        .filter(|row| is_bulk_zero_opens_candidate(row, focus_share_known))
         .collect()
 }
 
@@ -474,10 +554,29 @@ pub fn close_session_by_id(
                     message: "Session nicht mehr gefunden (bereits getrennt?).".into(),
                 };
                 audit_close(&detail, mode, idle_min_seconds);
-                return summarize_details(vec![detail], idle_min_seconds, None);
+                return summarize_details(
+                    vec![detail],
+                    CloseGate::SafeIdle {
+                        idle_min_seconds,
+                    },
+                    None,
+                );
             };
-            let detail = close_one_checked(row, idle_min_seconds, mode, false);
-            summarize_details(vec![detail], idle_min_seconds, None)
+            let detail = close_one_checked(
+                row,
+                CloseGate::SafeIdle {
+                    idle_min_seconds,
+                },
+                mode,
+                false,
+            );
+            summarize_details(
+                vec![detail],
+                CloseGate::SafeIdle {
+                    idle_min_seconds,
+                },
+                None,
+            )
         }
         Err(QueryError::Unsupported) => unsupported_close_report(),
         Err(QueryError::PermissionDenied(detail)) => {
@@ -504,11 +603,13 @@ pub fn close_all_safe_idle(
     match query_sessions() {
         Ok(raw) => {
             let sessions = enrich_sessions(raw, &focus_clients, focus_share_known, &[]);
-            let candidates: Vec<SmbSessionRow> =
+            let filtered: Vec<SmbSessionRow> =
                 filter_safe_close_candidates(&sessions, idle_min_seconds, focus_share_known)
                     .into_iter()
                     .cloned()
                     .collect();
+            // NetSessionDel is keyed by client+user (closes all matches); dedupe first.
+            let candidates = dedupe_sessions_by_client_user(&filtered);
             if candidates.is_empty() {
                 let share_note = focus_share_name
                     .as_deref()
@@ -527,9 +628,78 @@ pub fn close_all_safe_idle(
             }
             let details: Vec<_> = candidates
                 .iter()
-                .map(|row| close_one_checked(row, idle_min_seconds, mode, focus_share_known))
+                .map(|row| {
+                    close_one_checked(
+                        row,
+                        CloseGate::SafeIdle {
+                            idle_min_seconds,
+                        },
+                        mode,
+                        focus_share_known,
+                    )
+                })
                 .collect();
-            summarize_details(details, idle_min_seconds, focus_share_name.as_deref())
+            summarize_details(
+                details,
+                CloseGate::SafeIdle {
+                    idle_min_seconds,
+                },
+                focus_share_name.as_deref(),
+            )
+        }
+        Err(QueryError::Unsupported) => unsupported_close_report(),
+        Err(QueryError::PermissionDenied(detail)) => {
+            permission_denied_close_report(&detail, "", mode)
+        }
+        Err(QueryError::Other(detail)) => query_error_close_report(&detail),
+    }
+}
+
+/// Close every session with Opens = 0 (+ focus when known). Idle minimum ignored.
+/// Manual only — never used by Auto-Close.
+pub fn close_all_zero_opens(
+    mode: SmbSessionCloseMode,
+    monitor_path: &str,
+) -> SmbSessionCloseReport {
+    let focus_share_name = resolve_focus_share_name(monitor_path);
+    let focus_share_known = focus_share_name.is_some();
+    let focus_clients = focus_share_name
+        .as_deref()
+        .map(list_focus_share_clients)
+        .unwrap_or_default();
+
+    match query_sessions() {
+        Ok(raw) => {
+            let sessions = enrich_sessions(raw, &focus_clients, focus_share_known, &[]);
+            let filtered: Vec<SmbSessionRow> =
+                filter_zero_opens_candidates(&sessions, focus_share_known)
+                    .into_iter()
+                    .cloned()
+                    .collect();
+            let candidates = dedupe_sessions_by_client_user(&filtered);
+            if candidates.is_empty() {
+                let share_note = focus_share_name
+                    .as_deref()
+                    .map(|s| format!(" auf Freigabe „{s}“"))
+                    .unwrap_or_default();
+                return SmbSessionCloseReport {
+                    closed: 0,
+                    skipped: 0,
+                    failed: 0,
+                    permission_denied: false,
+                    message: format!(
+                        "Keine Opens=0-Kandidaten{share_note} (Sessions mit offenen Handles bleiben)."
+                    ),
+                    details: vec![],
+                };
+            }
+            let details: Vec<_> = candidates
+                .iter()
+                .map(|row| {
+                    close_one_checked(row, CloseGate::ZeroOpens, mode, focus_share_known)
+                })
+                .collect();
+            summarize_details(details, CloseGate::ZeroOpens, focus_share_name.as_deref())
         }
         Err(QueryError::Unsupported) => unsupported_close_report(),
         Err(QueryError::PermissionDenied(detail)) => {
@@ -560,10 +730,15 @@ pub fn run_auto_close_if_enabled(
 
 fn close_one_checked(
     row: &SmbSessionRow,
-    idle_min_seconds: u64,
+    gate: CloseGate,
     mode: SmbSessionCloseMode,
     enforce_focus: bool,
 ) -> SmbSessionCloseDetail {
+    let audit_idle = match gate {
+        CloseGate::SafeIdle { idle_min_seconds } => idle_min_seconds,
+        CloseGate::ZeroOpens => 0,
+    };
+
     if enforce_focus && !row.on_focus_share {
         let detail = SmbSessionCloseDetail {
             session_id: row.session_id.clone(),
@@ -575,11 +750,27 @@ fn close_one_checked(
             message: "Nicht geschlossen: Session liegt nicht auf der Monitor-/aktuell-Freigabe."
                 .into(),
         };
-        audit_close(&detail, mode, idle_min_seconds);
+        audit_close(&detail, mode, audit_idle);
         return detail;
     }
 
-    if !is_safe_to_close(row, idle_min_seconds) {
+    let allowed = match gate {
+        CloseGate::SafeIdle { idle_min_seconds } => {
+            is_safe_to_close(row, idle_min_seconds)
+        }
+        CloseGate::ZeroOpens => is_zero_opens_close(row),
+    };
+    if !allowed {
+        let message = match gate {
+            CloseGate::SafeIdle { idle_min_seconds } => format!(
+                "Nicht geschlossen: Idle {}s / Opens {} (braucht Idle ≥ {idle_min_seconds}s und Opens = 0).",
+                row.seconds_idle, row.num_opens
+            ),
+            CloseGate::ZeroOpens => format!(
+                "Nicht geschlossen: Opens {} (braucht Opens = 0).",
+                row.num_opens
+            ),
+        };
         let detail = SmbSessionCloseDetail {
             session_id: row.session_id.clone(),
             client_computer_name: row.client_computer_name.clone(),
@@ -587,12 +778,9 @@ fn close_one_checked(
             seconds_idle: row.seconds_idle,
             num_opens: row.num_opens,
             outcome: SmbSessionCloseOutcome::SkippedUnsafe,
-            message: format!(
-                "Nicht geschlossen: Idle {}s / Opens {} (braucht Idle ≥ {idle_min_seconds}s und Opens = 0).",
-                row.seconds_idle, row.num_opens
-            ),
+            message,
         };
-        audit_close(&detail, mode, idle_min_seconds);
+        audit_close(&detail, mode, audit_idle);
         return detail;
     }
 
@@ -606,14 +794,16 @@ fn close_one_checked(
             outcome: SmbSessionCloseOutcome::Closed,
             message: "Session geschlossen.".into(),
         },
+        // Do not count as Closed — a wrong UncClientName also yields NERR_ClientNameNotFound.
         Err(DeleteError::AlreadyGone) => SmbSessionCloseDetail {
             session_id: row.session_id.clone(),
             client_computer_name: row.client_computer_name.clone(),
             client_user_name: row.client_user_name.clone(),
             seconds_idle: row.seconds_idle,
             num_opens: row.num_opens,
-            outcome: SmbSessionCloseOutcome::Closed,
-            message: "Session war bereits getrennt.".into(),
+            outcome: SmbSessionCloseOutcome::NotFound,
+            message: "Session nicht gefunden (bereits getrennt oder Client-Name unmatched)."
+                .into(),
         },
         Err(DeleteError::PermissionDenied(msg)) => SmbSessionCloseDetail {
             session_id: row.session_id.clone(),
@@ -643,7 +833,7 @@ fn close_one_checked(
             message: msg,
         },
     };
-    audit_close(&detail, mode, idle_min_seconds);
+    audit_close(&detail, mode, audit_idle);
     detail
 }
 
@@ -673,7 +863,7 @@ fn audit_close(detail: &SmbSessionCloseDetail, mode: SmbSessionCloseMode, idle_m
 
 fn summarize_details(
     details: Vec<SmbSessionCloseDetail>,
-    idle_min_seconds: u64,
+    gate: CloseGate,
     focus_share: Option<&str>,
 ) -> SmbSessionCloseReport {
     let mut closed = 0usize;
@@ -696,20 +886,22 @@ fn summarize_details(
     let share_note = focus_share
         .map(|s| format!(" (Fokus: „{s}“)"))
         .unwrap_or_default();
+    let criteria = match gate {
+        CloseGate::SafeIdle { idle_min_seconds } => {
+            format!("Idle ≥ {idle_min_seconds}s und Opens = 0")
+        }
+        CloseGate::ZeroOpens => "Opens = 0 (Idle-Minimum ignoriert)".to_string(),
+    };
     let message = if permission_denied {
         "Schließen fehlgeschlagen: Administratorrechte erforderlich. AMS muss nicht dauerhaft als Admin laufen — Close ggf. mit erhöhten Rechten erneut versuchen.".into()
     } else if closed > 0 && failed == 0 {
-        format!(
-            "{closed} Idle-Session(s) geschlossen (Idle ≥ {idle_min_seconds}s, Opens = 0){share_note}."
-        )
+        format!("{closed} Session(s) geschlossen ({criteria}){share_note}.")
     } else if closed == 0 && failed == 0 && skipped > 0 {
         format!(
-            "Keine Session geschlossen ({skipped} übersprungen; Kriterien: Idle ≥ {idle_min_seconds}s und Opens = 0){share_note}."
+            "Keine Session geschlossen ({skipped} übersprungen; Kriterien: {criteria}){share_note}."
         )
     } else if details.is_empty() {
-        format!(
-            "Keine Safe-Close-Kandidaten (Idle ≥ {idle_min_seconds}s und Opens = 0){share_note}."
-        )
+        format!("Keine Kandidaten ({criteria}){share_note}.")
     } else {
         format!("{closed} geschlossen, {skipped} übersprungen, {failed} fehlgeschlagen{share_note}.")
     };
@@ -966,12 +1158,17 @@ fn delete_session_windows(client: &str, user: &str) -> Result<(), DeleteError> {
     use windows::Win32::Foundation::{ERROR_ACCESS_DENIED, ERROR_SUCCESS, WIN32_ERROR};
     use windows::Win32::Storage::FileSystem::NetSessionDel;
 
-    // NERR_ClientNameNotFound / NERR_UserNotFound — session already gone.
+    // NERR_ClientNameNotFound / NERR_UserNotFound — session already gone (or bad name).
     const NERR_CLIENT_NAME_NOT_FOUND: u32 = 2312;
     const NERR_USER_NOT_FOUND: u32 = 2221;
 
-    let client_hs = HSTRING::from(client);
-    let user_hs = HSTRING::from(user);
+    let Some(unc_client) = unc_client_name_for_session_del(client) else {
+        return Err(DeleteError::Other(
+            "NetSessionDel: leerer Client-Name".into(),
+        ));
+    };
+    let client_hs = HSTRING::from(unc_client.as_str());
+    let user_hs = HSTRING::from(user.trim());
     let status = unsafe { NetSessionDel(None, &client_hs, &user_hs) };
     let status = WIN32_ERROR(status);
 
@@ -987,7 +1184,7 @@ fn delete_session_windows(client: &str, user: &str) -> Result<(), DeleteError> {
         return Err(DeleteError::AlreadyGone);
     }
     Err(DeleteError::Other(format!(
-        "NetSessionDel fehlgeschlagen (Win32 {})",
+        "NetSessionDel fehlgeschlagen (Win32 {}) für Client {unc_client}",
         status.0
     )))
 }
@@ -1207,6 +1404,22 @@ mod tests {
     }
 
     #[test]
+    fn zero_opens_ignores_idle_but_not_handles() {
+        assert!(is_zero_opens_close(&row(10, 0)));
+        assert!(!is_zero_opens_close(&row(10_000, 1)));
+        let sessions = vec![
+            row_client(r"\\ATS-A", 10, 0, true),
+            row_client(r"\\OTHER", 900, 0, false),
+            row_client(r"\\ATS-B", 5, 2, true),
+        ];
+        let zero = filter_zero_opens_candidates(&sessions, true);
+        assert_eq!(zero.len(), 1);
+        assert_eq!(zero[0].client_computer_name, r"\\ATS-A");
+        assert!(is_bulk_zero_opens_candidate(&sessions[1], false));
+        assert!(!is_bulk_zero_opens_candidate(&sessions[1], true));
+    }
+
+    #[test]
     fn bulk_close_respects_focus_share_when_known() {
         let sessions = vec![
             row_client(r"\\ATS-A", 700, 0, true),
@@ -1262,6 +1475,50 @@ mod tests {
         assert_eq!(normalize_smb_client_token(r"\\Studio-PC"), "studio-pc");
         assert_eq!(normalize_smb_client_token("Studio-PC."), "studio-pc");
         assert_eq!(normalize_smb_client_token("192.168.1.10"), "192.168.1.10");
+    }
+
+    #[test]
+    fn unc_client_name_for_session_del_adds_prefix() {
+        // NetSessionEnum returns bare IP/host; NetSessionDel requires \\.
+        assert_eq!(
+            unc_client_name_for_session_del("192.168.178.87").as_deref(),
+            Some(r"\\192.168.178.87")
+        );
+        assert_eq!(
+            unc_client_name_for_session_del("Studio-PC").as_deref(),
+            Some(r"\\Studio-PC")
+        );
+        assert_eq!(
+            unc_client_name_for_session_del(r"\\Studio-PC").as_deref(),
+            Some(r"\\Studio-PC")
+        );
+        assert_eq!(
+            unc_client_name_for_session_del(r"\\\\Studio-PC").as_deref(),
+            Some(r"\\Studio-PC")
+        );
+        assert_eq!(unc_client_name_for_session_del("").as_deref(), None);
+        assert_eq!(unc_client_name_for_session_del("   ").as_deref(), None);
+    }
+
+    #[test]
+    fn dedupe_sessions_by_client_user_collapses_same_pair() {
+        let sessions = vec![
+            row_client("192.168.178.87", 1692, 0, true),
+            row_client("192.168.178.87", 1691, 0, true),
+            row_client(r"\\192.168.178.87", 1684, 0, true),
+            row_client("10.0.0.2", 800, 0, true),
+        ];
+        // Fix session ids / users for first three to same user (row_client uses "user").
+        let deduped = dedupe_sessions_by_client_user(&sessions);
+        assert_eq!(deduped.len(), 2);
+        assert_eq!(
+            normalize_smb_client_token(&deduped[0].client_computer_name),
+            "192.168.178.87"
+        );
+        assert_eq!(
+            normalize_smb_client_token(&deduped[1].client_computer_name),
+            "10.0.0.2"
+        );
     }
 
     #[test]

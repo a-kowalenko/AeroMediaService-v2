@@ -49,6 +49,7 @@ pub use settings::{
 pub use smb_sessions::{
     auto_close_safe_idle_smb_sessions, close_safe_idle_smb_sessions,
     close_safe_idle_smb_sessions_elevated, close_smb_session, close_smb_session_elevated,
+    close_zero_opens_smb_sessions, close_zero_opens_smb_sessions_elevated,
     get_smb_session_snapshot, get_smb_session_snapshot_elevated,
 };
 pub use upload::{

@@ -1,8 +1,10 @@
 import {useEffect, useMemo, useState} from "react";
 import {
   closeSafeIdleSmbSessionsConfirmMessage,
+  closeZeroOpensSmbSessionsConfirmMessage,
   closeOneSmbSessionConfirmMessage,
   countSafeIdleSmbSessions,
+  countZeroOpensSmbSessions,
   formatSmbDuration,
   isSmbSessionSafeToClose,
   type SmbSessionSnapshot,
@@ -10,6 +12,8 @@ import {
 import {
   closeSafeIdleSmbSessions,
   closeSafeIdleSmbSessionsElevated,
+  closeZeroOpensSmbSessions,
+  closeZeroOpensSmbSessionsElevated,
   closeSmbSession,
   closeSmbSessionElevated,
   getSmbSessionSnapshotElevated,
@@ -50,6 +54,7 @@ export function SmbSessionsSection({
   const view = elevatedSnapshot ?? snapshot;
   const usingElevated = Boolean(elevatedSnapshot);
   const safeCount = useMemo(() => countSafeIdleSmbSessions(view), [view]);
+  const zeroOpensCount = useMemo(() => countZeroOpensSmbSessions(view), [view]);
 
   async function applyCloseReport(report: SmbSessionCloseReport) {
     if (usingElevated) {
@@ -134,6 +139,36 @@ export function SmbSessionsSection({
       const report = usingElevated
         ? await closeSafeIdleSmbSessionsElevated()
         : await closeSafeIdleSmbSessions();
+      await applyCloseReport(report);
+    } catch (err) {
+      showError(
+        err instanceof Error ? err.message : String(err),
+        "SMB-Session schließen",
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function onCloseAllZeroOpens() {
+    if (!view || view.status !== "ok" || zeroOpensCount === 0 || busy) return;
+    const ok = await confirm(
+      closeZeroOpensSmbSessionsConfirmMessage(zeroOpensCount, view.focus_share_name),
+      {
+        title: usingElevated
+          ? "Opens=0-Sessions schließen (Admin)"
+          : "Alle mit Opens=0 schließen",
+        primaryLabel: usingElevated ? "Mit Admin schließen" : "Schließen",
+        secondaryLabel: "Abbrechen",
+        destructive: true,
+      },
+    );
+    if (!ok) return;
+    setBusy(true);
+    try {
+      const report = usingElevated
+        ? await closeZeroOpensSmbSessionsElevated()
+        : await closeZeroOpensSmbSessions();
       await applyCloseReport(report);
     } catch (err) {
       showError(
@@ -248,6 +283,7 @@ export function SmbSessionsSection({
       : "border-border/60 bg-muted/10";
   const idleLabel = formatSmbDuration(view.idle_min_seconds);
   const canClose = view.status === "ok" && safeCount > 0 && !busy;
+  const canCloseZeroOpens = view.status === "ok" && zeroOpensCount > 0 && !busy;
   const focusLabel = view.focus_share_name
     ? `Fokus: „${view.focus_share_name}“`
     : "Fokus: —";
@@ -280,24 +316,46 @@ export function SmbSessionsSection({
             </span>
           ) : null}
           {view.status === "ok" ? (
-            <Button
-              type="button"
-              variant="secondary"
-              size="sm"
-              disabled={!canClose}
-              onClick={() => void onCloseAllSafe()}
-              title={
-                safeCount === 0
-                  ? `Keine Kandidaten (Idle ≥ ${idleLabel}, Opens = 0${
-                      view.focus_share_name
-                        ? `, Fokus „${view.focus_share_name}“`
-                        : ""
-                    })`
-                  : `${safeCount} sichere Idle-Session(s) schließen`
-              }
-            >
-              {usingElevated ? "Idle mit Admin schließen…" : "Idle schließen…"}
-            </Button>
+            <>
+              <Button
+                type="button"
+                variant="secondary"
+                size="sm"
+                disabled={!canClose}
+                onClick={() => void onCloseAllSafe()}
+                title={
+                  safeCount === 0
+                    ? `Keine Kandidaten (Idle ≥ ${idleLabel}, Opens = 0${
+                        view.focus_share_name
+                          ? `, Fokus „${view.focus_share_name}“`
+                          : ""
+                      })`
+                    : `${safeCount} sichere Idle-Session(s) schließen`
+                }
+              >
+                {usingElevated ? "Idle mit Admin schließen…" : "Idle schließen…"}
+              </Button>
+              <Button
+                type="button"
+                variant="secondary"
+                size="sm"
+                disabled={!canCloseZeroOpens}
+                onClick={() => void onCloseAllZeroOpens()}
+                title={
+                  zeroOpensCount === 0
+                    ? `Keine Kandidaten (Opens = 0${
+                        view.focus_share_name
+                          ? `, Fokus „${view.focus_share_name}“`
+                          : ""
+                      })`
+                    : `${zeroOpensCount} Session(s) mit Opens = 0 schließen (Idle ignoriert)`
+                }
+              >
+                {usingElevated
+                  ? "Opens=0 mit Admin schließen…"
+                  : "Alle mit Opens=0 schließen…"}
+              </Button>
+            </>
           ) : null}
         </div>
       </div>
@@ -452,12 +510,13 @@ export function SmbSessionsSection({
       )}
 
       <p className="text-[11px] text-muted">
-        Safe-Close nur bei Idle ≥ {idleLabel} und Opens = 0
+        Safe-Close: Idle ≥ {idleLabel} und Opens = 0. Zusätzlich: „Opens=0“ ignoriert Idle, nie
+        Opens &gt; 0
         {view.focus_share_name
-          ? `; Bulk/Auto nur auf Freigabe „${view.focus_share_name}“`
+          ? `; Bulk nur auf Freigabe „${view.focus_share_name}“`
           : ""}
-        . Auto-Close eleviert nicht (kein UAC-Spam). OS-Idle-Timeout und Server-Limits sind
-        nachhaltiger als App-Kill — dies ist ein Notnagel (Soft-Policy).
+        . Auto-Close eleviert nicht (kein UAC-Spam) und bleibt Idle-only. OS-Idle-Timeout und
+        Server-Limits sind nachhaltiger als App-Kill — dies ist ein Notnagel (Soft-Policy).
       </p>
     </section>
   );
