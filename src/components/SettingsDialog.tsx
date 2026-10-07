@@ -540,6 +540,16 @@ export function SettingsDialog({
         () => groupAtsHostsByPresence(atsHosts).inactiveLong.length,
         [atsHosts],
     );
+    const cloudLookupIssueWarning = useMemo(() => {
+        const hasBase = customApi.custom_api_url.trim().length > 0;
+        const hasKey = customApi.custom_api_bearer_token.trim().length > 0;
+        if (hasBase && hasKey) return null;
+        if (!hasBase) {
+            return "Cloud-Lookup-Fallback (ATS): API-URL fehlt (Fehlercode cloud_base_missing). Secret custom_api_url — Cloud-Admin: Permission „ats_client_token“ am API-Key setzen.";
+        }
+        return "Cloud-Lookup-Fallback (ATS): Bearer Token fehlt (Fehlercode cloud_api_key_missing). Secret custom_api_bearer_token — Cloud-Admin: Permission „ats_client_token“ am API-Key setzen.";
+    }, [customApi.custom_api_url, customApi.custom_api_bearer_token]);
+
     const pathHintsStatus = useMemo(
         () =>
             evaluatePathHints(
@@ -2202,6 +2212,21 @@ export function SettingsDialog({
                                     <>
                                         <SettingsSection title="Skydive Media">
                                             <div className="space-y-3">
+                                                {cloudLookupIssueWarning ? (
+                                                    <div
+                                                        className="flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-950 dark:text-amber-100"
+                                                        role="alert"
+                                                    >
+                                                        <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+                                                        <p>{cloudLookupIssueWarning}</p>
+                                                    </div>
+                                                ) : (
+                                                    <p className="text-xs text-muted">
+                                                        ATS Cloud-Lookup-Fallback nutzt diese API-URL und den
+                                                        Bearer Token (`POST /api/ats/v1/client-token`). Der Key
+                                                        braucht die Permission „ats_client_token“.
+                                                    </p>
+                                                )}
                                                 <Field label="API-URL">
                                                     <Input
                                                         value={customApi.custom_api_url}

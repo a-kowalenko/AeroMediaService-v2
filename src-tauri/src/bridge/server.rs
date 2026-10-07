@@ -1,4 +1,4 @@
-//! Axum LAN server: health, lookup, job status, handoff/ready (Phase 13 / P3).
+//! Axum LAN server: health, lookup, client-token, job status, handoff/ready (Phase 13 / P3 + Phase 22).
 
 use std::net::SocketAddr;
 use std::path::Path;
@@ -15,11 +15,18 @@ use serde_json::{json, Value};
 use tokio::sync::oneshot;
 
 use super::types::{
-    AtsPathsHint, HandoffCancelRequest, HandoffCancelResponse, HandoffReadyRequest,
-    HandoffReadyResponse, HealthResponse, JobStatusResponse, LookupErrorBody, LookupRequest,
-    LookupResponse,
+    AtsPathsHint, ClientTokenErrorResponse, CloudLookupHint, HandoffCancelRequest,
+    HandoffCancelResponse, HandoffReadyRequest, HandoffReadyResponse, HealthResponse,
+    JobStatusResponse, LookupErrorBody, LookupRequest, LookupResponse,
+};
+use crate::cloud::custom_api::ats_client_token::{
+    cloud_lookup_issue_status, issue_client_token, resolve_cloud_issue_credentials,
+    AtsClientIdentity, ClientTokenIssueError,
 };
 use crate::cloud::custom_api::fetch_customer_as_kunde;
+use super::presence::{
+    parse_identity, record_bridge_event, BridgeEventKind, HEADER_INSTANCE_ID,
+};
 use crate::commands::ConfigState;
 use crate::model::handoff::{
     merge_history_cancel_override, read_status_outbox, status_outbox_from_history,
@@ -30,7 +37,6 @@ use crate::model::marker::{normalize_marker_type, ApiMarkerQuery};
 use crate::storage::ats_presence::AtsPresenceState;
 use crate::storage::history::HistoryState;
 use crate::storage::logging;
-use super::presence::{record_bridge_event, BridgeEventKind};
 use super::{ensure_instance_id, resolve_display_name};
 
 /// Callback to interrupt the monitor wait loop (no upload enqueue).
@@ -142,6 +148,7 @@ impl BridgeRuntime {
         let app = Router::new()
             .route("/v1/health", get(health))
             .route("/v1/customer/lookup", post(customer_lookup))
+            .route("/v1/client-token", post(client_token))
             .route("/v1/jobs/{correlation_id}", get(job_status))
             .route("/v1/handoff/ready", post(handoff_ready))
             .route("/v1/handoff/cancel", post(handoff_cancel))
@@ -224,12 +231,20 @@ async fn health(State(state): State<AppState>, headers: HeaderMap) -> Json<Healt
             .get("ats_backup_smb_url", Some(""))
             .unwrap_or_default(),
     );
+    // Phase 22 / A2: advertise cloud-lookup only when Issue creds are fully configured.
+    let issue = cloud_lookup_issue_status();
+    let cloud_lookup = if issue.configured {
+        CloudLookupHint::from_base_url(&issue.cloud_base_url)
+    } else {
+        None
+    };
     let response = Json(HealthResponse::with_paths(
         &state.version,
         monitor_path,
         display_name,
         instance_id,
         ats_paths,
+        cloud_lookup,
     ));
     record_bridge_event(
         &state.presence,
@@ -331,6 +346,105 @@ fn lookup_query_from_body(body: &LookupRequest) -> ApiMarkerQuery {
         booking_id: body.booking_id.trim().to_string(),
         marker_type: normalize_marker_type(Some(body.marker_type.trim())),
     }
+}
+
+/// Phase 22 / A1 — proxy Cloud JWT issue for ATS lookup fallback.
+async fn client_token(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
+    let raw_instance = headers
+        .get(HEADER_INSTANCE_ID)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    let parsed = parse_identity(&headers);
+
+    let identity = match AtsClientIdentity::require_instance_id(
+        raw_instance.as_deref(),
+        Some(parsed.hostname.as_str()),
+        Some(parsed.ats_version.as_str()),
+        Some(parsed.ats_app.as_str()),
+    ) {
+        Ok(id) => id,
+        Err(err) => {
+            return client_token_error_response(&state, &headers, err);
+        }
+    };
+
+    let ams_instance_id = match ensure_instance_id(&state.config) {
+        Ok(id) => id,
+        Err(e) => {
+            return client_token_error_response(
+                &state,
+                &headers,
+                ClientTokenIssueError {
+                    code: "ams_instance_id_missing".into(),
+                    message: format!("AMS bridge_instance_id fehlt: {e}"),
+                    http_status: 500,
+                },
+            );
+        }
+    };
+
+    let creds = match resolve_cloud_issue_credentials() {
+        Ok(c) => c,
+        Err(cfg) => {
+            return client_token_error_response(
+                &state,
+                &headers,
+                ClientTokenIssueError::config(cfg),
+            );
+        }
+    };
+
+    match issue_client_token(&creds, &identity, &ams_instance_id).await {
+        Ok(token) => {
+            record_bridge_event(
+                &state.presence,
+                &headers,
+                BridgeEventKind::ClientToken,
+                "/v1/client-token",
+                "POST",
+                StatusCode::OK,
+                None,
+                None,
+                Some(json!({
+                    "ok": true,
+                    "cloud_base_url": token.cloud_base_url,
+                    "expires_in": token.expires_in,
+                    "scope": token.scope,
+                    // never include access_token in presence payload
+                })),
+            );
+            (StatusCode::OK, Json(token)).into_response()
+        }
+        Err(err) => client_token_error_response(&state, &headers, err),
+    }
+}
+
+fn client_token_error_response(
+    state: &AppState,
+    headers: &HeaderMap,
+    err: ClientTokenIssueError,
+) -> Response {
+    let status = StatusCode::from_u16(err.http_status).unwrap_or(StatusCode::BAD_GATEWAY);
+    record_bridge_event(
+        &state.presence,
+        headers,
+        BridgeEventKind::ClientToken,
+        "/v1/client-token",
+        "POST",
+        status,
+        None,
+        None,
+        Some(json!({
+            "ok": false,
+            "error": { "code": err.code, "message": err.message }
+        })),
+    );
+    (
+        status,
+        Json(ClientTokenErrorResponse::failure(err.code, err.message)),
+    )
+        .into_response()
 }
 
 fn lookup_event_payload(
@@ -674,6 +788,11 @@ mod tests {
 
     #[tokio::test]
     async fn health_requires_token_and_returns_ready_capability() {
+        use crate::storage::secrets::{clear_test_secrets, test_secrets_lock};
+
+        let _lock = test_secrets_lock();
+        clear_test_secrets();
+
         let config = test_config_with_monitor(r"\\test\aktuell");
         let runtime = BridgeRuntime::start(
             "127.0.0.1:0".into(),
@@ -715,9 +834,112 @@ mod tests {
         assert!(body.capabilities.contains(&"ready".into()));
         assert!(body.capabilities.contains(&"handoff-cancel".into()));
         assert!(!body.capabilities.contains(&"paths-v1".into()));
+        assert!(!body.capabilities.contains(&"cloud-lookup-v1".into()));
         assert!(body.ats_paths.is_none());
+        assert!(body.cloud_lookup.is_none());
 
         runtime.shutdown().await;
+        clear_test_secrets();
+    }
+
+    #[tokio::test]
+    async fn health_includes_cloud_lookup_when_issue_configured() {
+        use crate::cloud::custom_api::ats_client_token::{
+            SECRET_CLOUD_API_KEY, SECRET_CLOUD_BASE_URL,
+        };
+        use crate::storage::secrets::{clear_test_secrets, save_secret, test_secrets_lock};
+
+        let _lock = test_secrets_lock();
+        clear_test_secrets();
+        save_secret(SECRET_CLOUD_BASE_URL, "https://cloud.example/api").unwrap();
+        save_secret(SECRET_CLOUD_API_KEY, "kid.secret").unwrap();
+
+        let config = test_config_with_monitor(r"\\test\aktuell");
+        let runtime = BridgeRuntime::start(
+            "127.0.0.1:0".into(),
+            "test-token-xyz".into(),
+            String::new(),
+            "0.1.0-test".into(),
+            config,
+            test_presence(),
+            noop_wake(),
+            noop_cancel(),
+            test_history(),
+        )
+        .await
+        .expect("bind");
+        let base = format!("http://{}", runtime.bind_addr);
+        let client = reqwest::Client::new();
+        let ok = client
+            .get(format!("{base}/v1/health"))
+            .header(header::AUTHORIZATION, "Bearer test-token-xyz")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(ok.status(), StatusCode::OK);
+        let body: HealthResponse = ok.json().await.unwrap();
+        assert!(body.capabilities.contains(&"cloud-lookup-v1".into()));
+        let hint = body.cloud_lookup.expect("cloud_lookup present");
+        assert_eq!(hint.base_url, "https://cloud.example");
+        // Lean health: no tokens in the JSON body.
+        let raw: serde_json::Value = client
+            .get(format!("{base}/v1/health"))
+            .header(header::AUTHORIZATION, "Bearer test-token-xyz")
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert!(raw.get("access_token").is_none());
+        assert!(raw
+            .get("cloud_lookup")
+            .and_then(|v| v.get("access_token"))
+            .is_none());
+
+        runtime.shutdown().await;
+        clear_test_secrets();
+    }
+
+    #[tokio::test]
+    async fn health_omits_cloud_lookup_when_api_key_missing() {
+        use crate::cloud::custom_api::ats_client_token::SECRET_CLOUD_BASE_URL;
+        use crate::storage::secrets::{clear_test_secrets, save_secret, test_secrets_lock};
+
+        let _lock = test_secrets_lock();
+        clear_test_secrets();
+        // Base alone is not enough — Issue requires API key too.
+        save_secret(SECRET_CLOUD_BASE_URL, "https://cloud.example/api").unwrap();
+
+        let config = test_config_with_monitor(r"\\test\aktuell");
+        let runtime = BridgeRuntime::start(
+            "127.0.0.1:0".into(),
+            "test-token-xyz".into(),
+            String::new(),
+            "0.1.0-test".into(),
+            config,
+            test_presence(),
+            noop_wake(),
+            noop_cancel(),
+            test_history(),
+        )
+        .await
+        .expect("bind");
+        let base = format!("http://{}", runtime.bind_addr);
+        let client = reqwest::Client::new();
+        let ok = client
+            .get(format!("{base}/v1/health"))
+            .header(header::AUTHORIZATION, "Bearer test-token-xyz")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(ok.status(), StatusCode::OK);
+        let body: HealthResponse = ok.json().await.unwrap();
+        assert!(!body.capabilities.contains(&"cloud-lookup-v1".into()));
+        assert!(body.cloud_lookup.is_none());
+
+        runtime.shutdown().await;
+        clear_test_secrets();
     }
 
     #[tokio::test]
@@ -1053,5 +1275,174 @@ mod tests {
         assert_eq!(outbox.error.as_ref().unwrap().code, CODE_CANCELLED);
 
         runtime.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn client_token_requires_ats_instance_id() {
+        use crate::cloud::custom_api::ats_client_token::ERR_ATS_INSTANCE_ID_REQUIRED;
+        use crate::storage::secrets::{clear_test_secrets, save_secret, test_secrets_lock};
+
+        let _lock = test_secrets_lock();
+        clear_test_secrets();
+        save_secret("custom_api_url", "https://cloud.example/api").unwrap();
+        save_secret("custom_api_bearer_token", "kid.secret").unwrap();
+
+        let config = test_config_with_monitor(r"\\test\aktuell");
+        let runtime = BridgeRuntime::start(
+            "127.0.0.1:0".into(),
+            "tok".into(),
+            String::new(),
+            "0.1.0".into(),
+            config,
+            test_presence(),
+            noop_wake(),
+            noop_cancel(),
+            test_history(),
+        )
+        .await
+        .unwrap();
+        let base = format!("http://{}", runtime.bind_addr);
+        let client = reqwest::Client::new();
+
+        let resp = client
+            .post(format!("{base}/v1/client-token"))
+            .header(header::AUTHORIZATION, "Bearer tok")
+            .header("X-Ats-Hostname", "Studio-PC")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body: ClientTokenErrorResponse = resp.json().await.unwrap();
+        assert!(!body.ok);
+        assert_eq!(body.error.code, ERR_ATS_INSTANCE_ID_REQUIRED);
+
+        runtime.shutdown().await;
+        clear_test_secrets();
+    }
+
+    #[tokio::test]
+    async fn client_token_reports_missing_cloud_creds() {
+        use crate::cloud::custom_api::ats_client_token::ERR_CLOUD_BASE_MISSING;
+        use crate::storage::secrets::{clear_test_secrets, test_secrets_lock};
+
+        let _lock = test_secrets_lock();
+        clear_test_secrets();
+        let config = test_config_with_monitor(r"\\test\aktuell");
+        let runtime = BridgeRuntime::start(
+            "127.0.0.1:0".into(),
+            "tok".into(),
+            String::new(),
+            "0.1.0".into(),
+            config,
+            test_presence(),
+            noop_wake(),
+            noop_cancel(),
+            test_history(),
+        )
+        .await
+        .unwrap();
+        let base = format!("http://{}", runtime.bind_addr);
+        let client = reqwest::Client::new();
+
+        let resp = client
+            .post(format!("{base}/v1/client-token"))
+            .header(header::AUTHORIZATION, "Bearer tok")
+            .header("X-Ats-Instance-Id", "ats-uuid-1")
+            .header("X-Ats-Hostname", "Studio-PC")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body: ClientTokenErrorResponse = resp.json().await.unwrap();
+        assert_eq!(body.error.code, ERR_CLOUD_BASE_MISSING);
+
+        runtime.shutdown().await;
+        clear_test_secrets();
+    }
+
+    #[tokio::test]
+    async fn client_token_proxies_cloud_issue() {
+        use crate::cloud::custom_api::ats_client_token::{
+            ClientTokenResponse, SECRET_CLOUD_API_KEY, SECRET_CLOUD_BASE_URL,
+        };
+        use crate::storage::secrets::{clear_test_secrets, save_secret, test_secrets_lock};
+        use axum::routing::post;
+        use axum::{Json, Router};
+        use std::net::SocketAddr;
+
+        let _lock = test_secrets_lock();
+        clear_test_secrets();
+
+        let cloud_app = Router::new().route(
+            "/api/ats/v1/client-token",
+            post(|| async {
+                Json(json!({
+                    "access_token": "jwt-from-cloud",
+                    "token_type": "Bearer",
+                    "expires_at": "2026-10-09T12:00:00.000Z",
+                    "expires_in": 172800,
+                    "cloud_base_url": "https://cloud.issued",
+                    "scope": ["customer.lookup"]
+                }))
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
+            .await
+            .unwrap();
+        let cloud_addr = listener.local_addr().unwrap();
+        let (cloud_tx, cloud_rx) = oneshot::channel::<()>();
+        tokio::spawn(async move {
+            axum::serve(listener, cloud_app)
+                .with_graceful_shutdown(async {
+                    let _ = cloud_rx.await;
+                })
+                .await
+                .ok();
+        });
+
+        save_secret(
+            SECRET_CLOUD_BASE_URL,
+            &format!("http://{cloud_addr}/api"),
+        )
+        .unwrap();
+        save_secret(SECRET_CLOUD_API_KEY, "kid.secret").unwrap();
+
+        let config = test_config_with_monitor(r"\\test\aktuell");
+        let runtime = BridgeRuntime::start(
+            "127.0.0.1:0".into(),
+            "tok".into(),
+            String::new(),
+            "0.1.0".into(),
+            config,
+            test_presence(),
+            noop_wake(),
+            noop_cancel(),
+            test_history(),
+        )
+        .await
+        .unwrap();
+        let base = format!("http://{}", runtime.bind_addr);
+        let client = reqwest::Client::new();
+
+        let resp = client
+            .post(format!("{base}/v1/client-token"))
+            .header(header::AUTHORIZATION, "Bearer tok")
+            .header("X-Ats-Instance-Id", "ats-uuid-bridge")
+            .header("X-Ats-Hostname", "Studio-PC")
+            .header("X-Ats-Version", "1.0.0")
+            .header("X-Ats-App", "AeroTandemStudio")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body: ClientTokenResponse = resp.json().await.unwrap();
+        assert_eq!(body.access_token, "jwt-from-cloud");
+        assert_eq!(body.cloud_base_url, "https://cloud.issued");
+        assert_eq!(body.expires_in, 172800);
+        assert_eq!(body.scope, vec!["customer.lookup"]);
+
+        runtime.shutdown().await;
+        let _ = cloud_tx.send(());
+        clear_test_secrets();
     }
 }

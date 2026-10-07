@@ -80,6 +80,13 @@ pub fn clear_test_secrets() {
     with_test_map(|map| map.clear());
 }
 
+/// Hold across tests that mutate the shared in-memory secret map (avoids parallel races).
+#[cfg(test)]
+pub fn test_secrets_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: Mutex<()> = Mutex::new(());
+    LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 #[cfg(test)]
 static TEST_SECRETS: Mutex<Option<HashMap<String, String>>> = Mutex::new(None);
 

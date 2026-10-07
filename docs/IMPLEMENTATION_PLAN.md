@@ -76,7 +76,7 @@
 | SMB-Session-Diagnose & Idle-Cleanup (Windows) | ✅ Phase 20 — Spec unten · **20a–20d** ✅ |
 | Auto-Nachreichen bei gleicher Kunden-/Booking-ID | ✅ Phase 21 — Spec unten · **21a–21d** ✅ |
 
-**Nächste Phase (AMS):** offen (Phase 21 abgeschlossen)  
+**Nächste Phase (AMS):** Phase 22 ✅ (A0–A3) — Partner-Vertrag [`HANDOFF.md`](./HANDOFF.md) §9.4; Cloud C0–C4 Deploy separat; ATS Phase 53  
 **Parallel (ATS):** Phase 13 / **P6b** — Bridge Path Hints; Spec: [`HANDOFF.md`](./HANDOFF.md) §9.3 · ATS = Phase 35; optional Phase-21-Hinweis dokumentiert in 21d
 
 ---
@@ -1526,6 +1526,44 @@ Danach cargo test.
 
 ---
 
+### Phase 22 — ATS Cloud-Lookup-Fallback (Client-Token Bootstrap) ✅
+
+**Spec:** [`ATS_CLOUD_LOOKUP_FALLBACK.md`](./ATS_CLOUD_LOOKUP_FALLBACK.md)  
+**Master:** ATS `docs/CLOUD_LOOKUP_FALLBACK_PLAN.md`  
+**Bridge-Vertrag:** [`HANDOFF.md`](./HANDOFF.md) §9.4  
+**Abhängigkeit:** Cloud-Slices C0–C4 deployed (Betrieb); Bridge §9
+
+**Ziel:** AMS proxied Cloud-JWT-Issue für ATS (`POST /v1/client-token`); Health advertisiert optional `cloud-lookup-v1`. Customer-API-Keys bleiben bei AMS/Cloud.
+
+| Slice | Inhalt | Status |
+|-------|--------|--------|
+| A0 | Cloud-Base / API-Key-Permission `ats_client_token` | ✅ |
+| A1 | `POST /v1/client-token` | ✅ |
+| A2 | Health Hint + Capability `cloud-lookup-v1` | ✅ |
+| A3 | HANDOFF §9.4 + Abnahme | ✅ |
+
+**Manuelle Abnahme (Phase 22 / A3)**
+
+1. Skydive-Media: `custom_api_url` + `custom_api_bearer_token` mit Permission `ats_client_token` gesetzt.
+2. `GET /v1/health` (Bridge-Token): Capability `cloud-lookup-v1` + `cloud_lookup.base_url` (Origin); **kein** Token im Body.
+3. `POST /v1/client-token` mit Bridge-Token + `X-Ats-Instance-Id` → `200` mit `access_token`, `expires_at`/`expires_in`, `cloud_base_url`, `scope`.
+4. Derselbe Call **ohne** `X-Ats-Instance-Id` (oder leer/`unknown:…`) → `400` / `ats_instance_id_required`.
+5. API-Key **ohne** Permission `ats_client_token` → Bridge `502` / `cloud_forbidden` (Cloud 403).
+6. Base oder Key leer → Health ohne `cloud-lookup-v1`; Issue → `503` / `cloud_base_missing` bzw. `cloud_api_key_missing`.
+7. Lookup-Primärweg unverändert: `POST /v1/customer/lookup` funktioniert wie zuvor.
+
+**DoD (Phase 22 gesamt)**
+
+- [x] A0: Creds dokumentiert; klare Fehlercodes bei fehlenden Secrets
+- [x] A1: Bridge `POST /v1/client-token` proxied Cloud; Unit-Tests Identity/Fehler-Mapping
+- [x] A2: Health Hint + `cloud-lookup-v1` nur wenn konfiguriert
+- [x] A3: [`HANDOFF.md`](./HANDOFF.md) §9.4 Partner-Vertrag; Plan-Checkboxen; Abnahme-Checkliste
+- [x] `cargo test` grün
+
+**Nicht-Ziele:** JWT in AMS signieren; Customer-Keys an ATS; Cloud-Lookup-Proxy in AMS; Upload-/Append-Pipeline.
+
+---
+
 ## 10. Teststrategie
 
 - Rust Unit-Tests für Marker, Status, Payload-Builder, Checkpoint-Logik
@@ -1576,3 +1614,4 @@ Updater-Endpoint und Signing: siehe [`docs/RELEASE.md`](./RELEASE.md) (analog Ae
 | 19 | Kundenaufnahme ID-Flow + Job-Ordner-Normalisierung | ✅ 19a–19e |
 | 20 | SMB-Session-Diagnose & Idle-Cleanup (Windows) | ✅ 20a–20d |
 | 21 | Auto-Nachreichen bei gleicher Kunden-/Booking-ID | ✅ 21a–21d |
+| 22 | ATS Cloud-Lookup-Fallback (Client-Token) | ✅ A0–A3 |

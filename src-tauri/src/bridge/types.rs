@@ -15,9 +15,11 @@ pub const CAPABILITY_READY: &str = "ready";
 pub const CAPABILITY_HANDOFF_CANCEL: &str = "handoff-cancel";
 pub const CAPABILITY_APPEND_V1: &str = "append-v1";
 pub const CAPABILITY_PATHS_V1: &str = "paths-v1";
+pub const CAPABILITY_CLOUD_LOOKUP_V1: &str = "cloud-lookup-v1";
 
 /// Base capabilities advertised by AMS (P3 + append + handoff cancel).
 /// `paths-v1` is added dynamically when `ats_primary_smb_url` is set (P6a).
+/// `cloud-lookup-v1` is added when Cloud Issue is configured (Phase 22 / A2).
 pub const P3_CAPABILITIES: [&str; 6] = [
     CAPABILITY_MANIFEST_V1,
     CAPABILITY_STATUS_OUTBOX,
@@ -28,6 +30,25 @@ pub const P3_CAPABILITIES: [&str; 6] = [
 ];
 
 pub type BridgeCapabilities = Vec<String>;
+
+/// Cloud-Lookup hint for ATS (Phase 22 / A2). No tokens — only the public base URL.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct CloudLookupHint {
+    pub base_url: String,
+}
+
+impl CloudLookupHint {
+    /// Hint only when `base_url` is non-empty (caller gates on Issue configured).
+    pub fn from_base_url(base_url: &str) -> Option<Self> {
+        let base_url = base_url.trim();
+        if base_url.is_empty() {
+            return None;
+        }
+        Some(Self {
+            base_url: base_url.to_string(),
+        })
+    }
+}
 
 /// Client-taugliche SMB-Hints für ATS (HANDOFF.md §9.3). Wire-Format bevorzugt `smb://`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -209,6 +230,9 @@ pub struct HealthResponse {
     pub monitor_path: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ats_paths: Option<AtsPathsHint>,
+    /// Present only when Cloud Issue is configured (Phase 22 / A2). Never includes tokens.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cloud_lookup: Option<CloudLookupHint>,
     pub capabilities: BridgeCapabilities,
 }
 
@@ -219,7 +243,7 @@ impl HealthResponse {
         display_name: impl Into<String>,
         instance_id: impl Into<String>,
     ) -> Self {
-        Self::with_paths(version, monitor_path, display_name, instance_id, None)
+        Self::with_paths(version, monitor_path, display_name, instance_id, None, None)
     }
 
     pub fn with_paths(
@@ -228,12 +252,17 @@ impl HealthResponse {
         display_name: impl Into<String>,
         instance_id: impl Into<String>,
         ats_paths: Option<AtsPathsHint>,
+        cloud_lookup: Option<CloudLookupHint>,
     ) -> Self {
         let mut capabilities: BridgeCapabilities =
             P3_CAPABILITIES.iter().map(|s| (*s).to_string()).collect();
         let ats_paths = ats_paths.filter(|p| !p.primary_smb_url.trim().is_empty());
         if ats_paths.is_some() {
             capabilities.push(CAPABILITY_PATHS_V1.to_string());
+        }
+        let cloud_lookup = cloud_lookup.filter(|c| !c.base_url.trim().is_empty());
+        if cloud_lookup.is_some() {
+            capabilities.push(CAPABILITY_CLOUD_LOOKUP_V1.to_string());
         }
         Self {
             online: true,
@@ -242,6 +271,7 @@ impl HealthResponse {
             instance_id: instance_id.into(),
             monitor_path: monitor_path.into(),
             ats_paths,
+            cloud_lookup,
             capabilities,
         }
     }
@@ -411,6 +441,25 @@ impl HandoffCancelResponse {
     }
 }
 
+/// Error envelope for `POST /v1/client-token` (success uses flat Cloud-mapped fields).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ClientTokenErrorResponse {
+    pub ok: bool,
+    pub error: LookupErrorBody,
+}
+
+impl ClientTokenErrorResponse {
+    pub fn failure(code: impl Into<String>, message: impl Into<String>) -> Self {
+        Self {
+            ok: false,
+            error: LookupErrorBody {
+                code: code.into(),
+                message: message.into(),
+            },
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -436,6 +485,8 @@ mod tests {
         assert!(h.capabilities.iter().any(|c| c == "ready"));
         assert!(h.capabilities.iter().any(|c| c == "handoff-cancel"));
         assert!(!h.capabilities.iter().any(|c| c == "paths-v1"));
+        assert!(h.cloud_lookup.is_none());
+        assert!(!h.capabilities.iter().any(|c| c == "cloud-lookup-v1"));
     }
 
     #[test]
@@ -446,11 +497,14 @@ mod tests {
             "Dropzone",
             "id-1",
             AtsPathsHint::from_settings(r"\\169.254.169.254\aktuell", "smb://host/aktuell-backup"),
+            None,
         );
         assert!(with.capabilities.iter().any(|c| c == "paths-v1"));
         let paths = with.ats_paths.expect("ats_paths");
         assert_eq!(paths.primary_smb_url, "smb://169.254.169.254/aktuell");
         assert_eq!(paths.backup_smb_url, "smb://host/aktuell-backup");
+        assert!(with.cloud_lookup.is_none());
+        assert!(!with.capabilities.iter().any(|c| c == "cloud-lookup-v1"));
 
         let without = HealthResponse::with_paths(
             "0.1.0",
@@ -458,9 +512,45 @@ mod tests {
             "Dropzone",
             "id-1",
             AtsPathsHint::from_settings("", "smb://host/backup"),
+            None,
         );
         assert!(without.ats_paths.is_none());
         assert!(!without.capabilities.iter().any(|c| c == "paths-v1"));
+    }
+
+    #[test]
+    fn health_cloud_lookup_v1_only_when_hint_set() {
+        let with = HealthResponse::with_paths(
+            "0.1.0",
+            r"\\host\aktuell",
+            "Dropzone",
+            "id-1",
+            None,
+            CloudLookupHint::from_base_url("https://cloud.example"),
+        );
+        assert!(with.capabilities.iter().any(|c| c == "cloud-lookup-v1"));
+        let hint = with.cloud_lookup.as_ref().expect("cloud_lookup");
+        assert_eq!(hint.base_url, "https://cloud.example");
+        // Lean: no token fields on HealthResponse / CloudLookupHint.
+        let json = serde_json::to_value(&with).unwrap();
+        assert!(json.get("access_token").is_none());
+        assert_eq!(
+            json.get("cloud_lookup")
+                .and_then(|v| v.get("base_url"))
+                .and_then(|v| v.as_str()),
+            Some("https://cloud.example")
+        );
+
+        let without = HealthResponse::with_paths(
+            "0.1.0",
+            r"\\host\aktuell",
+            "Dropzone",
+            "id-1",
+            None,
+            CloudLookupHint::from_base_url("  "),
+        );
+        assert!(without.cloud_lookup.is_none());
+        assert!(!without.capabilities.iter().any(|c| c == "cloud-lookup-v1"));
     }
 
     #[test]

@@ -15,6 +15,7 @@ pub const HEADER_APP: &str = "x-ats-app";
 pub enum BridgeEventKind {
     Health,
     CustomerLookup,
+    ClientToken,
     JobStatus,
     HandoffReady,
     HandoffCancel,
@@ -25,6 +26,7 @@ impl BridgeEventKind {
         match self {
             BridgeEventKind::Health => "health",
             BridgeEventKind::CustomerLookup => "customer_lookup",
+            BridgeEventKind::ClientToken => "client_token",
             BridgeEventKind::JobStatus => "job_status",
             BridgeEventKind::HandoffReady => "handoff_ready",
             BridgeEventKind::HandoffCancel => "handoff_cancel",

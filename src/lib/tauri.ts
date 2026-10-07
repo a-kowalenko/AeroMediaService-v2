@@ -939,6 +939,21 @@ export function disconnectCustomApi(): Promise<ConnectResult> {
     return invoke<ConnectResult>("disconnect_custom_api");
 }
 
+/** Phase 22 / A0 — Cloud base + API key readiness for ATS client-token issue. */
+export type CloudLookupIssueStatus = {
+    configured: boolean;
+    has_base_url: boolean;
+    has_api_key: boolean;
+    cloud_base_url: string;
+    error_code: string | null;
+    warning: string | null;
+    required_permission: string;
+};
+
+export function getCloudLookupIssueStatus(): Promise<CloudLookupIssueStatus> {
+    return invoke<CloudLookupIssueStatus>("get_cloud_lookup_issue_status");
+}
+
 export function connectActiveCloud(): Promise<ConnectResult> {
     return invoke<ConnectResult>("connect_active_cloud");
 }

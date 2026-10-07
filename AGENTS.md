@@ -103,9 +103,10 @@ Vollständiges Mapping: `@docs/MIGRATION.md`
 - ✅ Phase 19: Kundenaufnahme ID-Flow + Job-Ordner-Normalisierung — Spec in `@docs/IMPLEMENTATION_PLAN.md` · **19a–19e** ✅
 - ✅ Phase 20: SMB-Session-Diagnose & Idle-Cleanup (Windows) — Spec in `@docs/IMPLEMENTATION_PLAN.md` · **20a–20d** ✅
 - ✅ Phase 21: Auto-Nachreichen bei gleicher Kunden-/Booking-ID — Spec in `@docs/IMPLEMENTATION_PLAN.md` · **21a–21d** ✅; Handoff §6.1b
+- ✅ Phase 22: ATS Cloud-Lookup-Fallback — Spec [`ATS_CLOUD_LOOKUP_FALLBACK.md`](docs/ATS_CLOUD_LOOKUP_FALLBACK.md) · Bridge [`HANDOFF.md`](docs/HANDOFF.md) §9.4 · **A0–A3** ✅
 
-**Nächster Schritt (AMS):** offen (Phase 21 abgeschlossen)  
-**Parallel (ATS):** Phase 13 / **P6b** — Bridge Path Hints (`amsPathHints`) — Spec: `@docs/HANDOFF.md` §9.3
+**Nächster Schritt (AMS):** — (Phase 22 abgeschlossen; Cloud C0–C4 Deploy separat)  
+**Parallel (ATS):** Phase 13 / **P6b** — Bridge Path Hints (`amsPathHints`) — Spec: `@docs/HANDOFF.md` §9.3; Phase 53 Cloud-Lookup nach AMS §9.4
 
 ---
 
@@ -118,15 +119,9 @@ Legacy: [Pfade aus Phase X im Plan]
 Nur Phase X. Danach cargo test && npm run tauri dev.
 ```
 
-Auto-Nachreichen (Phase 21): abgeschlossen (21a–21d).
+Cloud-Lookup-Fallback (Phase 22): abgeschlossen (A0–A3); Vertrag `HANDOFF.md` §9.4.
 
-```
-Implementiere Phase 21 Teilphase 21d aus @docs/IMPLEMENTATION_PLAN.md
-Regeln: @AGENTS.md
-Nur 21d (History/UX-Hinweise, HANDOFF §6.1b, Cloud-Checklist im Plan).
-Optional ATS nur dokumentieren oder Minimal-Hinweis — kein Pflicht-ATS-Feature in dieser Session.
-Danach cargo test.
-```
+Auto-Nachreichen (Phase 21): abgeschlossen (21a–21d).
 
 Handoff (Phase 13 / P6):
 

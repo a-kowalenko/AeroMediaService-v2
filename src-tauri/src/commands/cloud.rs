@@ -3,6 +3,7 @@
 use serde::Serialize;
 use tauri::State;
 
+use crate::cloud::custom_api::{cloud_lookup_issue_status, CloudLookupIssueStatus};
 use crate::cloud::{
     guards::{self, OauthIdentityOutcome},
     oauth::OauthStart, CloudClient, CloudState, DropboxAccountInfo, DropboxPool, DropboxSecretKeys,
@@ -63,6 +64,12 @@ impl ConnectResult {
             code_verifier: Some(start.code_verifier),
         }
     }
+}
+
+/// Phase 22 / A0 — whether Cloud base + API key are ready for ATS client-token issue.
+#[tauri::command]
+pub fn get_cloud_lookup_issue_status() -> CloudLookupIssueStatus {
+    cloud_lookup_issue_status()
 }
 
 fn selected_cloud(config: &ConfigState) -> String {

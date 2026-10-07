@@ -254,8 +254,9 @@ Beispiel:
 
 | Methode | Pfad | Zweck |
 |---------|------|--------|
-| `GET` | `/v1/health` | online, Version, `display_name`, `instance_id`, `monitor_path`, optional `ats_paths`, `capabilities[]` |
-| `POST` | `/v1/customer/lookup` | Preflight; AMS → bestehende Customer-API |
+| `GET` | `/v1/health` | online, Version, `display_name`, `instance_id`, `monitor_path`, optional `ats_paths`, optional `cloud_lookup`, `capabilities[]` |
+| `POST` | `/v1/customer/lookup` | Preflight; AMS → bestehende Customer-API (**Primärweg** Lookup) |
+| `POST` | `/v1/client-token` | **Phase 22 ✅:** Cloud-JWT für ATS-Lookup-Fallback (Bootstrap-Proxy) — siehe §9.4 |
 | `GET` | `/v1/jobs/{correlation_id}` | Status (Spiegel Outbox / History) |
 | `POST` | `/v1/handoff/ready` | Monitor wake / Priorität — **kein** Upload-Bypass |
 
@@ -343,9 +344,115 @@ Profile haben eigene `login`/`password`. Ablauf:
 Guest/leer ok → nichts abfragen. Quiet-Poll ändert keine Credentials.
 
 Capabilities statt harter Versionskopplung, z. B.  
-`["manifest-v1","status-outbox","lookup","ready","append-v1","paths-v1"]`.
+`["manifest-v1","status-outbox","lookup","ready","append-v1","paths-v1"]`  
+(+ optional `cloud-lookup-v1`, siehe §9.4).
 
 Breaking Changes → `/v2`; additive Felder in `/v1` erlaubt.
+
+### 9.4 Cloud-Lookup Client-Token (Phase 22)
+
+**Ziel:** ATS soll Customer-Lookup nutzen können, wenn die Bridge später offline ist — **ohne** Customer-API-Keys in ATS. Cloud stellt das JWT aus; AMS ist nur Bootstrap-Proxy nach erfolgreicher Bridge-Auth.
+
+**Vollständige Spec:** [`ATS_CLOUD_LOOKUP_FALLBACK.md`](./ATS_CLOUD_LOOKUP_FALLBACK.md) · Master: ATS `docs/CLOUD_LOOKUP_FALLBACK_PLAN.md`.
+
+#### Leitregeln
+
+| # | Regel |
+|---|--------|
+| 1 | Lookup-**Primärweg** bleibt `POST /v1/customer/lookup` (Customer-API-Secrets nur bei AMS) |
+| 2 | Cloud signed JWT; AMS signiert **nicht** |
+| 3 | ATS bekommt nur scoped JWT (`customer.lookup`) + `cloud_base_url` — keine Customer-API-Keys |
+| 4 | Token-Issue nur über Bridge-Auth + Pflicht-Header `X-Ats-Instance-Id` |
+| 5 | Health bleibt schlank: **keine** Tokens in `/v1/health`; ATS ruft `/v1/client-token` gezielt (fehlend / Rest &lt; 24 h) |
+
+#### AMS-Secrets (Reuse Skydive Media)
+
+| Keyring-Key | Zweck |
+|-------------|--------|
+| `custom_api_url` | Cloud-Base (oft `https://…/api`); Origin → `cloud_base_url` für ATS |
+| `custom_api_bearer_token` | Cloud-API-Key (`keyId.secret`); **muss** Permission `ats_client_token` haben |
+
+Cloud-Issue-Pfad (nur AMS → Cloud): `POST {origin}/api/ats/v1/client-token`.
+
+#### `GET /v1/health` — Hint + Capability
+
+Wenn Issue-Creds vollständig konfiguriert (`custom_api_url` **und** `custom_api_bearer_token`):
+
+```json
+{
+  "online": true,
+  "version": "…",
+  "display_name": "…",
+  "instance_id": "…",
+  "monitor_path": "…",
+  "cloud_lookup": { "base_url": "https://…" },
+  "capabilities": [
+    "manifest-v1", "status-outbox", "lookup", "ready",
+    "handoff-cancel", "append-v1", "cloud-lookup-v1"
+  ]
+}
+```
+
+- Capability `cloud-lookup-v1` **nur** wenn Hint gesetzt (Base+Key vorhanden).
+- Feld weglassen / nicht setzen, wenn Creds fehlen — kein leeres Objekt, keine Tokens.
+- `paths-v1` / `ats_paths` bleiben unabhängig (P6).
+
+#### `POST /v1/client-token`
+
+**Auth:** wie alle `/v1/*` — Bridge-Token Pflicht.  
+**Request-Body:** leer / ignoriert. Identität kommt aus Headern:
+
+| Header | Pflicht | Bedeutung |
+|--------|---------|-----------|
+| `X-Ats-Instance-Id` | **ja** | stabile ATS-Installations-UUID (nicht leer, nicht `unknown:…`) |
+| `X-Ats-Hostname` | optional | Anzeige / Audit |
+| `X-Ats-Version` | optional | ATS-Version |
+| `X-Ats-App` | optional | Default `AeroTandemStudio` |
+
+AMS proxied zu Cloud mit `ats_instance_id`, `ams_server_instance_id` (= Bridge `instance_id`), optional Hostname/Version/App.
+
+**Success `200`** (flach, Cloud-mapped):
+
+```json
+{
+  "access_token": "<jwt>",
+  "token_type": "Bearer",
+  "expires_at": "2026-10-09T12:00:00.000Z",
+  "expires_in": 172800,
+  "cloud_base_url": "https://…",
+  "scope": ["customer.lookup"]
+}
+```
+
+**Fehler** (`ok: false` + `error: { code, message }`):
+
+| HTTP | `error.code` | Wann |
+|------|--------------|------|
+| 400 | `ats_instance_id_required` | fehlender/leerer/`unknown:` Instance-Header |
+| 503 | `cloud_base_missing` | Secret `custom_api_url` leer |
+| 503 | `cloud_api_key_missing` | Secret `custom_api_bearer_token` leer |
+| 502 | `cloud_unauthorized` | Cloud 401 (Key ungültig) |
+| 502 | `cloud_forbidden` | Cloud 403 (Permission `ats_client_token` fehlt) |
+| 502 | `cloud_unreachable` | Transport / Cloud down |
+| 502 | `cloud_issue_failed` | sonstige Cloud-Issue-Fehler |
+
+Token **nie** in Logs oder Presence-Payloads.
+
+#### ATS-Verhalten (Partner: Phase 53 / T0+)
+
+| Situation | Verhalten |
+|-----------|-----------|
+| Bridge connected + Capability `lookup` | Lookup über AMS `POST /v1/customer/lookup` |
+| Bridge ok + `cloud-lookup-v1`; kein Token oder Rest &lt; 24 h | `POST /v1/client-token`; persistieren `{ access_token, expires_at, cloud_base_url, ams_server_instance_id }` |
+| Bridge offline, Token gültig, Cloud erreichbar | Lookup direkt Cloud (`POST …/api/ats/v1/customer/lookup` mit JWT) |
+| Sonst | Buchungssuche offline — kein Customer-Key in ATS |
+
+#### Non-Goals (Bridge)
+
+- JWT in AMS signieren
+- Customer-API-Keys an ATS
+- Cloud-Lookup-Proxy in AMS (ATS spricht Cloud direkt)
+- Token bei jedem Quiet-Health-Poll erzwingen
 
 ---
 
@@ -380,6 +487,7 @@ Breaking Changes → `/v2`; additive Felder in `/v1` erlaubt.
 - optional Bridge enable + Token
 - `bridge_display_name` (Default leer → PC-Name)
 - `bridge_instance_id` (automatisch)
+- Phase 22 / §9.4: Secrets `custom_api_url` + `custom_api_bearer_token` (Permission `ats_client_token`) für Client-Token-Issue — kein neuer Setting-Key
 
 ### Betrieb
 
@@ -405,6 +513,7 @@ Windows: UNC (`\\host\aktuell`) und `smb://` sind beide gültige Operator-Eingab
 | **P6** | Bridge Path Hints: AMS publiziert `ats_paths` + `paths-v1`; ATS übernimmt als Suggest/Profil (kein Failover) | AMS + ATS (ATS = Phase 35) |
 | **Phase 15** ✅ | Append/Nachreichen: `kind=append` + Parent-Gate + Worker-Route | AMS + ATS |
 | **Phase 21** ✅ | Auto-Nachreichen gleiche Kunden-/Booking-ID (§6.1b; 21a–21d) | AMS (ATS optional) |
+| **Phase 22** ✅ | Cloud-Lookup Client-Token: §9.4 + Health `cloud-lookup-v1` (A0–A3) | AMS (ATS = Phase 53) |
 
 **P6-Slices (eine pro Session):** P6a ✅ AMS Settings+Health → P6b ATS DTO+Diff → P6c ATS UX+Credentials → P6d optional Drift-Warnung.
 
@@ -418,6 +527,7 @@ Windows: UNC (`\\host\aktuell`) und `smb://` sind beide gültige Operator-Eingab
 - Gate: `file_missing`, `size_mismatch`, Legacy ohne Manifest
 - Ignore: `.ams-handoff` wird nicht als Job gescannt
 - P6a: Health `ats_paths` + `paths-v1` nur bei Primär; UNC→`smb://`; mDNS `paths=1`
+- Phase 22: `/v1/client-token` Identity-Pflicht + Fehler-Mapping; Health `cloud-lookup-v1` nur wenn Issue konfiguriert
 - Regression: bestehende Marker- / Monitor- / Upload-Tests grün
 
 ---
@@ -442,6 +552,6 @@ Windows: UNC (`\\host\aktuell`) und `smb://` sind beide gültige Operator-Eingab
 ## 15. Partner-Repo
 
 ATS-Implementierung: `C:\Users\Kowalenko\PycharmProjects\AeroTandemStudio-v2`  
-(Export-Job / Marker-Schreiben; Vorgang-History für `correlation_id` / Status-UI; ab P6 / ATS Phase 35: Path-Hints-Übernahme.)
+(Export-Job / Marker-Schreiben; Vorgang-History für `correlation_id` / Status-UI; ab P6 / ATS Phase 35: Path-Hints-Übernahme; ab Phase 53: Cloud-Lookup-Fallback nach §9.4.)
 
 Dieses Dokument ist die gemeinsame Spec; bei Drift gilt die neuere abgestimmte Version in AMS `docs/HANDOFF.md` als Referenz, bis ATS eine Kopie/Verlinkung führt.
