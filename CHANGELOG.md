@@ -21,6 +21,22 @@ Patch ohne Unreleased-Text: Notes der Vorgängerversion werden übernommen.
 
 - Cloud-Admin: am API-Key die Permission **ats_client_token** setzen (Preset „ATS Client-Token (AMS)“); ohne Key bleibt die bisherige Bridge-Kundensuche unverändert
 
+
+## [0.4.0-beta.1] - 2026-10-08
+
+### Neu
+
+- **Cloud-Lookup für Schnittplätze**: Mit konfiguriertem Skydive-Media-Zugang stellt AMS Schnittplätzen einen Cloud-Zugang zur Buchungssuche bereit — Fallback, wenn die lokale Kundensuche nicht ausreicht
+- Der Bridge-Anzeigename wird an die Cloud mitgegeben, damit Schnittplatz-Instanzen dort dem AMS-Rechner zugeordnet werden können
+
+### Verbessert
+
+- Einstellungen unter **Skydive Media**: Warnhinweis, wenn API-URL oder Bearer Token fehlen (Cloud-Lookup für Schnittplätze sonst nicht möglich)
+
+### Hinweis
+
+- Cloud-Admin: am API-Key die Permission **ats_client_token** setzen (Preset „ATS Client-Token (AMS)“); ohne Key bleibt die bisherige Bridge-Kundensuche unverändert
+
 ## [0.3.0] - 2026-10-02
 
 ### Neu
