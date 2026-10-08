@@ -133,6 +133,9 @@ impl AtsClientIdentity {
 pub struct CloudClientTokenRequest {
     pub ats_instance_id: String,
     pub ams_server_instance_id: String,
+    /// Human-readable AMS instance label (Cloud Admin UI). Omitted when empty → Cloud keeps prior name.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub ams_name: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub ats_hostname: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -142,10 +145,15 @@ pub struct CloudClientTokenRequest {
 }
 
 impl CloudClientTokenRequest {
-    pub fn build(identity: &AtsClientIdentity, ams_server_instance_id: &str) -> Self {
+    pub fn build(
+        identity: &AtsClientIdentity,
+        ams_server_instance_id: &str,
+        ams_name: &str,
+    ) -> Self {
         Self {
             ats_instance_id: identity.ats_instance_id.clone(),
             ams_server_instance_id: ams_server_instance_id.trim().to_string(),
+            ams_name: ams_name.trim().to_string(),
             ats_hostname: identity.ats_hostname.clone(),
             ats_version: identity.ats_version.clone(),
             ats_app: identity.ats_app.clone(),
@@ -437,6 +445,7 @@ pub async fn issue_client_token(
     creds: &CloudIssueCredentials,
     identity: &AtsClientIdentity,
     ams_server_instance_id: &str,
+    ams_name: &str,
 ) -> Result<ClientTokenResponse, ClientTokenIssueError> {
     issue_client_token_at_url(
         &creds.issue_url,
@@ -444,6 +453,7 @@ pub async fn issue_client_token(
         &creds.cloud_base_url,
         identity,
         ams_server_instance_id,
+        ams_name,
     )
     .await
 }
@@ -455,8 +465,9 @@ pub async fn issue_client_token_at_url(
     fallback_cloud_base_url: &str,
     identity: &AtsClientIdentity,
     ams_server_instance_id: &str,
+    ams_name: &str,
 ) -> Result<ClientTokenResponse, ClientTokenIssueError> {
-    let body = CloudClientTokenRequest::build(identity, ams_server_instance_id);
+    let body = CloudClientTokenRequest::build(identity, ams_server_instance_id, ams_name);
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(ISSUE_TIMEOUT_SECS))
         .build()
@@ -635,14 +646,34 @@ mod tests {
             ats_version: "2.0.0".into(),
             ats_app: "AeroTandemStudio".into(),
         };
-        let body = CloudClientTokenRequest::build(&identity, " ams-9 ");
+        let body = CloudClientTokenRequest::build(&identity, " ams-9 ", " Dropzone Nord ");
         assert_eq!(
             serde_json::to_value(&body).unwrap(),
             json!({
                 "ats_instance_id": "ats-1",
                 "ams_server_instance_id": "ams-9",
+                "ams_name": "Dropzone Nord",
                 "ats_hostname": "Studio-PC",
                 "ats_version": "2.0.0",
+                "ats_app": "AeroTandemStudio",
+            })
+        );
+    }
+
+    #[test]
+    fn builds_cloud_request_body_omits_empty_ams_name() {
+        let identity = AtsClientIdentity {
+            ats_instance_id: "ats-1".into(),
+            ats_hostname: String::new(),
+            ats_version: String::new(),
+            ats_app: "AeroTandemStudio".into(),
+        };
+        let body = CloudClientTokenRequest::build(&identity, "ams-9", "  ");
+        assert_eq!(
+            serde_json::to_value(&body).unwrap(),
+            json!({
+                "ats_instance_id": "ats-1",
+                "ams_server_instance_id": "ams-9",
                 "ats_app": "AeroTandemStudio",
             })
         );
@@ -760,6 +791,7 @@ mod tests {
             "https://fallback",
             &identity,
             "ams-inst",
+            "Studio Upload",
         )
         .await
         .unwrap();
@@ -773,6 +805,7 @@ mod tests {
         let sent = state.last_body.lock().unwrap().clone().unwrap();
         assert_eq!(sent.ats_instance_id, "ats-inst");
         assert_eq!(sent.ams_server_instance_id, "ams-inst");
+        assert_eq!(sent.ams_name, "Studio Upload");
 
         let _ = shutdown.send(());
     }
@@ -792,6 +825,7 @@ mod tests {
             "https://fallback",
             &identity,
             "ams-inst",
+            "",
         )
         .await
         .unwrap_err();

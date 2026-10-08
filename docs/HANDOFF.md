@@ -409,7 +409,7 @@ Wenn Issue-Creds vollständig konfiguriert (`custom_api_url` **und** `custom_api
 | `X-Ats-Version` | optional | ATS-Version |
 | `X-Ats-App` | optional | Default `AeroTandemStudio` |
 
-AMS proxied zu Cloud mit `ats_instance_id`, `ams_server_instance_id` (= Bridge `instance_id`), optional Hostname/Version/App.
+AMS proxied zu Cloud mit `ats_instance_id`, `ams_server_instance_id` (= Bridge `instance_id`), optional Hostname/Version/App, sowie optional `ams_name` (= Bridge-Display-Name: Setting `bridge_display_name` → Hostname → Default). Leer/weggelassen → Cloud behält den bisherigen Namen in `ats_client_instances.ams_name`.
 
 **Success `200`** (flach, Cloud-mapped):
 

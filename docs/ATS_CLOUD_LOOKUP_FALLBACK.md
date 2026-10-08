@@ -59,7 +59,7 @@ Kein neuer Setting-Key: **Reuse** der Skydive-Media-Secrets.
 
 - Bridge-Auth wie andere `/v1/*`-Routen
 - Liest `X-Ats-Instance-Id` (+ Hostname/Version/App)
-- Ruft Cloud C1 auf; mapped Response an ATS:
+- Ruft Cloud C1 auf (Body inkl. optional `ams_name` = Bridge-Display-Name); mapped Response an ATS:
 
 ```json
 {

@@ -395,7 +395,10 @@ async fn client_token(State(state): State<AppState>, headers: HeaderMap) -> impl
         }
     };
 
-    match issue_client_token(&creds, &identity, &ams_instance_id).await {
+    // Same human label as Health / mDNS (bridge_display_name → hostname → default).
+    let ams_name = resolve_display_name(&state.config);
+
+    match issue_client_token(&creds, &identity, &ams_instance_id, &ams_name).await {
         Ok(token) => {
             record_bridge_event(
                 &state.presence,
