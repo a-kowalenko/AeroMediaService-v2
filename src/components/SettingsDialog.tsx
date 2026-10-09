@@ -1775,7 +1775,7 @@ export function SettingsDialog({
                                                                 bridge_display_name: e.target.value,
                                                             }))
                                                         }
-                                                        placeholder="z. B. Video-PC GEra (leer = PC-Name)"
+                                                        placeholder="z. B. Video-PC Gera (leer = PC-Name)"
                                                         maxLength={64}
                                                     />
                                                 </Field>
