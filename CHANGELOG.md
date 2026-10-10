@@ -8,6 +8,8 @@ Patch ohne Unreleased-Text: Notes der Vorgängerversion werden übernommen.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-10
+
 ### Neu
 
 - **Cloud-Lookup für Schnittplätze**: Mit konfiguriertem Skydive-Media-Zugang stellt AMS Schnittplätzen einen Cloud-Zugang zur Buchungssuche bereit — Fallback, wenn die lokale Kundensuche nicht ausreicht
@@ -20,7 +22,6 @@ Patch ohne Unreleased-Text: Notes der Vorgängerversion werden übernommen.
 ### Hinweis
 
 - Cloud-Admin: am API-Key die Permission **ats_client_token** setzen (Preset „ATS Client-Token (AMS)“); ohne Key bleibt die bisherige Bridge-Kundensuche unverändert
-
 
 ## [0.4.0-beta.1] - 2026-10-08
 
