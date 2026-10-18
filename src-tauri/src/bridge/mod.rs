@@ -141,6 +141,10 @@ impl BridgeState {
         if crate::cloud::custom_api::cloud_lookup_issue_status().configured {
             caps.push(types::CAPABILITY_CLOUD_LOOKUP_V1);
         }
+        if crate::cloud::custom_api::ats_diagnostics::cloud_diagnostics_ingest_status().configured
+        {
+            caps.push(types::CAPABILITY_DIAGNOSTICS_V1);
+        }
         logging::log_info(&format!(
             "AMS-Bridge gestartet auf {} (capabilities: {:?})",
             status.bind_addr, caps

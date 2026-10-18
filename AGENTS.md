@@ -104,9 +104,10 @@ Vollständiges Mapping: `@docs/MIGRATION.md`
 - ✅ Phase 20: SMB-Session-Diagnose & Idle-Cleanup (Windows) — Spec in `@docs/IMPLEMENTATION_PLAN.md` · **20a–20d** ✅
 - ✅ Phase 21: Auto-Nachreichen bei gleicher Kunden-/Booking-ID — Spec in `@docs/IMPLEMENTATION_PLAN.md` · **21a–21d** ✅; Handoff §6.1b
 - ✅ Phase 22: ATS Cloud-Lookup-Fallback — Spec [`ATS_CLOUD_LOOKUP_FALLBACK.md`](docs/ATS_CLOUD_LOOKUP_FALLBACK.md) · Bridge [`HANDOFF.md`](docs/HANDOFF.md) §9.4 · **A0–A3** ✅
+- ✅ Phase 23: ATS Client-Diagnostik (Bridge-Forward) — Spec [`ATS_CLIENT_DIAGNOSTICS.md`](docs/ATS_CLIENT_DIAGNOSTICS.md) · Bridge [`HANDOFF.md`](docs/HANDOFF.md) §9.5 · **B0–B3** ✅
 
-**Nächster Schritt (AMS):** — (Phase 22 abgeschlossen; Cloud C0–C4 Deploy separat)  
-**Parallel (ATS):** Phase 13 / **P6b** — Bridge Path Hints (`amsPathHints`) — Spec: `@docs/HANDOFF.md` §9.3; Phase 53 Cloud-Lookup nach AMS §9.4
+**Nächster Schritt (AMS):** — (Phase 23 abgeschlossen; Cloud D0–D2 Ingest + optional [`CLOUD_APPEND_CONTRACT.md`](docs/CLOUD_APPEND_CONTRACT.md) C0–C4 Deploy im Partner-Repo — kein weiterer AMS-Feature-Slice)  
+**Parallel (ATS):** Phase 13 / **P6b** — Bridge Path Hints — Spec: `@docs/HANDOFF.md` §9.3; Phase 53 Cloud-Lookup; Phase 57 Client-Diagnostik nach AMS §9.5
 
 ---
 

@@ -2,7 +2,8 @@
 
 > **Partner-Plan:** Master in ATS `docs/CLOUD_LOOKUP_FALLBACK_PLAN.md`  
 > Bridge-Basis: [`HANDOFF.md`](./HANDOFF.md) §9  
-> **Deploy:** nach Cloud-Slices C0–C4; vor ATS Phase 53.
+> **Deploy:** nach Cloud-Slices C0–C4; vor ATS Phase 53.  
+> **Diagnostik (Phase 23 / ATS 57):** [`ATS_CLIENT_DIAGNOSTICS.md`](./ATS_CLIENT_DIAGNOSTICS.md)
 
 **Status:** ✅ A0–A3  
 **Ziel:** Nach erfolgreicher Bridge-Auth stellt AMS für die ATS-Instanz ein Cloud-Client-JWT aus (Cloud issue proxyen) und liefert die `cloud_base_url`. Customer-API-Keys bleiben in AMS/Cloud — ATS bekommt nur das JWT.

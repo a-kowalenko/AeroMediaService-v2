@@ -16,10 +16,12 @@ pub const CAPABILITY_HANDOFF_CANCEL: &str = "handoff-cancel";
 pub const CAPABILITY_APPEND_V1: &str = "append-v1";
 pub const CAPABILITY_PATHS_V1: &str = "paths-v1";
 pub const CAPABILITY_CLOUD_LOOKUP_V1: &str = "cloud-lookup-v1";
+pub const CAPABILITY_DIAGNOSTICS_V1: &str = "diagnostics-v1";
 
 /// Base capabilities advertised by AMS (P3 + append + handoff cancel).
 /// `paths-v1` is added dynamically when `ats_primary_smb_url` is set (P6a).
 /// `cloud-lookup-v1` is added when Cloud Issue is configured (Phase 22 / A2).
+/// `diagnostics-v1` is added when Cloud diagnostics ingest creds are configured (Phase 23 / B2).
 pub const P3_CAPABILITIES: [&str; 6] = [
     CAPABILITY_MANIFEST_V1,
     CAPABILITY_STATUS_OUTBOX,
@@ -47,6 +49,23 @@ impl CloudLookupHint {
         Some(Self {
             base_url: base_url.to_string(),
         })
+    }
+}
+
+/// Diagnostics ingest hint for ATS (Phase 23 / B2). No secrets — only configuration flag.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DiagnosticsHint {
+    pub configured: bool,
+}
+
+impl DiagnosticsHint {
+    /// Present on health only when ingest base + API key are configured (caller gates).
+    pub fn when_configured(configured: bool) -> Option<Self> {
+        if configured {
+            Some(Self { configured: true })
+        } else {
+            None
+        }
     }
 }
 
@@ -233,6 +252,9 @@ pub struct HealthResponse {
     /// Present only when Cloud Issue is configured (Phase 22 / A2). Never includes tokens.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cloud_lookup: Option<CloudLookupHint>,
+    /// Present only when Cloud diagnostics ingest is configured (Phase 23 / B2). Never includes secrets.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diagnostics: Option<DiagnosticsHint>,
     pub capabilities: BridgeCapabilities,
 }
 
@@ -243,7 +265,15 @@ impl HealthResponse {
         display_name: impl Into<String>,
         instance_id: impl Into<String>,
     ) -> Self {
-        Self::with_paths(version, monitor_path, display_name, instance_id, None, None)
+        Self::with_paths(
+            version,
+            monitor_path,
+            display_name,
+            instance_id,
+            None,
+            None,
+            None,
+        )
     }
 
     pub fn with_paths(
@@ -253,6 +283,7 @@ impl HealthResponse {
         instance_id: impl Into<String>,
         ats_paths: Option<AtsPathsHint>,
         cloud_lookup: Option<CloudLookupHint>,
+        diagnostics: Option<DiagnosticsHint>,
     ) -> Self {
         let mut capabilities: BridgeCapabilities =
             P3_CAPABILITIES.iter().map(|s| (*s).to_string()).collect();
@@ -264,6 +295,10 @@ impl HealthResponse {
         if cloud_lookup.is_some() {
             capabilities.push(CAPABILITY_CLOUD_LOOKUP_V1.to_string());
         }
+        let diagnostics = diagnostics.filter(|d| d.configured);
+        if diagnostics.is_some() {
+            capabilities.push(CAPABILITY_DIAGNOSTICS_V1.to_string());
+        }
         Self {
             online: true,
             version: version.into(),
@@ -272,6 +307,7 @@ impl HealthResponse {
             monitor_path: monitor_path.into(),
             ats_paths,
             cloud_lookup,
+            diagnostics,
             capabilities,
         }
     }
@@ -487,6 +523,8 @@ mod tests {
         assert!(!h.capabilities.iter().any(|c| c == "paths-v1"));
         assert!(h.cloud_lookup.is_none());
         assert!(!h.capabilities.iter().any(|c| c == "cloud-lookup-v1"));
+        assert!(h.diagnostics.is_none());
+        assert!(!h.capabilities.iter().any(|c| c == "diagnostics-v1"));
     }
 
     #[test]
@@ -497,6 +535,7 @@ mod tests {
             "Dropzone",
             "id-1",
             AtsPathsHint::from_settings(r"\\169.254.169.254\aktuell", "smb://host/aktuell-backup"),
+            None,
             None,
         );
         assert!(with.capabilities.iter().any(|c| c == "paths-v1"));
@@ -513,6 +552,7 @@ mod tests {
             "id-1",
             AtsPathsHint::from_settings("", "smb://host/backup"),
             None,
+            None,
         );
         assert!(without.ats_paths.is_none());
         assert!(!without.capabilities.iter().any(|c| c == "paths-v1"));
@@ -527,6 +567,7 @@ mod tests {
             "id-1",
             None,
             CloudLookupHint::from_base_url("https://cloud.example"),
+            None,
         );
         assert!(with.capabilities.iter().any(|c| c == "cloud-lookup-v1"));
         let hint = with.cloud_lookup.as_ref().expect("cloud_lookup");
@@ -548,9 +589,50 @@ mod tests {
             "id-1",
             None,
             CloudLookupHint::from_base_url("  "),
+            None,
         );
         assert!(without.cloud_lookup.is_none());
         assert!(!without.capabilities.iter().any(|c| c == "cloud-lookup-v1"));
+    }
+
+    #[test]
+    fn health_diagnostics_v1_only_when_hint_set() {
+        let with = HealthResponse::with_paths(
+            "0.1.0",
+            r"\\host\aktuell",
+            "Dropzone",
+            "id-1",
+            None,
+            None,
+            DiagnosticsHint::when_configured(true),
+        );
+        assert!(with.capabilities.iter().any(|c| c == "diagnostics-v1"));
+        let hint = with.diagnostics.as_ref().expect("diagnostics");
+        assert!(hint.configured);
+        let json = serde_json::to_value(&with).unwrap();
+        assert_eq!(
+            json.get("diagnostics")
+                .and_then(|v| v.get("configured"))
+                .and_then(|v| v.as_bool()),
+            Some(true)
+        );
+        assert!(json.get("api_key").is_none());
+        assert!(json
+            .get("diagnostics")
+            .and_then(|v| v.get("api_key"))
+            .is_none());
+
+        let without = HealthResponse::with_paths(
+            "0.1.0",
+            r"\\host\aktuell",
+            "Dropzone",
+            "id-1",
+            None,
+            None,
+            DiagnosticsHint::when_configured(false),
+        );
+        assert!(without.diagnostics.is_none());
+        assert!(!without.capabilities.iter().any(|c| c == "diagnostics-v1"));
     }
 
     #[test]

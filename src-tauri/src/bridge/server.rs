@@ -1,4 +1,4 @@
-//! Axum LAN server: health, lookup, client-token, job status, handoff/ready (Phase 13 / P3 + Phase 22).
+//! Axum LAN server: health, lookup, client-token, diagnostics, job status, handoff/ready (Phase 13 / P3 + Phase 22/23).
 
 use std::net::SocketAddr;
 use std::path::Path;
@@ -16,12 +16,17 @@ use tokio::sync::oneshot;
 
 use super::types::{
     AtsPathsHint, ClientTokenErrorResponse, CloudLookupHint, HandoffCancelRequest,
-    HandoffCancelResponse, HandoffReadyRequest, HandoffReadyResponse, HealthResponse,
+    DiagnosticsHint, HandoffCancelResponse, HandoffReadyRequest, HandoffReadyResponse,
+    HealthResponse,
     JobStatusResponse, LookupErrorBody, LookupRequest, LookupResponse,
 };
 use crate::cloud::custom_api::ats_client_token::{
     cloud_lookup_issue_status, issue_client_token, resolve_cloud_issue_credentials,
     AtsClientIdentity, ClientTokenIssueError,
+};
+use crate::cloud::custom_api::ats_diagnostics::{
+    cloud_diagnostics_ingest_status, forward_diagnostics_events,
+    resolve_cloud_diagnostics_credentials, DiagnosticsIngestError,
 };
 use crate::cloud::custom_api::fetch_customer_as_kunde;
 use super::presence::{
@@ -149,6 +154,7 @@ impl BridgeRuntime {
             .route("/v1/health", get(health))
             .route("/v1/customer/lookup", post(customer_lookup))
             .route("/v1/client-token", post(client_token))
+            .route("/v1/diagnostics/events", post(diagnostics_events))
             .route("/v1/jobs/{correlation_id}", get(job_status))
             .route("/v1/handoff/ready", post(handoff_ready))
             .route("/v1/handoff/cancel", post(handoff_cancel))
@@ -238,6 +244,9 @@ async fn health(State(state): State<AppState>, headers: HeaderMap) -> Json<Healt
     } else {
         None
     };
+    // Phase 23 / B2: advertise diagnostics-v1 when ingest creds are configured (same secrets as Issue).
+    let ingest = cloud_diagnostics_ingest_status();
+    let diagnostics = DiagnosticsHint::when_configured(ingest.configured);
     let response = Json(HealthResponse::with_paths(
         &state.version,
         monitor_path,
@@ -245,6 +254,7 @@ async fn health(State(state): State<AppState>, headers: HeaderMap) -> Json<Healt
         instance_id,
         ats_paths,
         cloud_lookup,
+        diagnostics,
     ));
     record_bridge_event(
         &state.presence,
@@ -446,6 +456,119 @@ fn client_token_error_response(
     (
         status,
         Json(ClientTokenErrorResponse::failure(err.code, err.message)),
+    )
+        .into_response()
+}
+
+/// Phase 23 / B1 — forward ATS diagnostics batch to Cloud ingest (1:1 JSON body).
+async fn diagnostics_events(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> impl IntoResponse {
+    let raw_instance = headers
+        .get(HEADER_INSTANCE_ID)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    let parsed = parse_identity(&headers);
+
+    if let Err(err) = AtsClientIdentity::require_instance_id(
+        raw_instance.as_deref(),
+        Some(parsed.hostname.as_str()),
+        Some(parsed.ats_version.as_str()),
+        Some(parsed.ats_app.as_str()),
+    ) {
+        return diagnostics_events_error_response(&state, &headers, err);
+    }
+
+    let creds = match resolve_cloud_diagnostics_credentials() {
+        Ok(c) => c,
+        Err(cfg) => {
+            return diagnostics_events_ingest_error_response(
+                &state,
+                &headers,
+                DiagnosticsIngestError::config(cfg),
+            );
+        }
+    };
+
+    match forward_diagnostics_events(&creds, &body).await {
+        Ok(resp) => {
+            record_bridge_event(
+                &state.presence,
+                &headers,
+                BridgeEventKind::DiagnosticsEvents,
+                "/v1/diagnostics/events",
+                "POST",
+                StatusCode::OK,
+                None,
+                None,
+                Some(json!({
+                    "ok": resp.ok,
+                    "accepted": resp.accepted,
+                    "duplicates": resp.duplicates,
+                })),
+            );
+            (StatusCode::OK, Json(resp)).into_response()
+        }
+        Err(err) => diagnostics_events_ingest_error_response(&state, &headers, err),
+    }
+}
+
+fn diagnostics_events_error_response(
+    state: &AppState,
+    headers: &HeaderMap,
+    err: ClientTokenIssueError,
+) -> Response {
+    diagnostics_events_route_error(
+        state,
+        headers,
+        err.http_status,
+        &err.code,
+        &err.message,
+    )
+}
+
+fn diagnostics_events_ingest_error_response(
+    state: &AppState,
+    headers: &HeaderMap,
+    err: DiagnosticsIngestError,
+) -> Response {
+    diagnostics_events_route_error(
+        state,
+        headers,
+        err.http_status,
+        &err.code,
+        &err.message,
+    )
+}
+
+fn diagnostics_events_route_error(
+    state: &AppState,
+    headers: &HeaderMap,
+    http_status: u16,
+    code: &str,
+    message: &str,
+) -> Response {
+    let status = StatusCode::from_u16(http_status).unwrap_or(StatusCode::BAD_GATEWAY);
+    record_bridge_event(
+        &state.presence,
+        headers,
+        BridgeEventKind::DiagnosticsEvents,
+        "/v1/diagnostics/events",
+        "POST",
+        status,
+        None,
+        None,
+        Some(json!({
+            "ok": false,
+            "error": { "code": code, "message": message }
+        })),
+    );
+    (
+        status,
+        Json(ClientTokenErrorResponse::failure(code, message)),
     )
         .into_response()
 }
@@ -838,8 +961,10 @@ mod tests {
         assert!(body.capabilities.contains(&"handoff-cancel".into()));
         assert!(!body.capabilities.contains(&"paths-v1".into()));
         assert!(!body.capabilities.contains(&"cloud-lookup-v1".into()));
+        assert!(!body.capabilities.contains(&"diagnostics-v1".into()));
         assert!(body.ats_paths.is_none());
         assert!(body.cloud_lookup.is_none());
+        assert!(body.diagnostics.is_none());
 
         runtime.shutdown().await;
         clear_test_secrets();
@@ -882,8 +1007,11 @@ mod tests {
         assert_eq!(ok.status(), StatusCode::OK);
         let body: HealthResponse = ok.json().await.unwrap();
         assert!(body.capabilities.contains(&"cloud-lookup-v1".into()));
+        assert!(body.capabilities.contains(&"diagnostics-v1".into()));
         let hint = body.cloud_lookup.expect("cloud_lookup present");
         assert_eq!(hint.base_url, "https://cloud.example");
+        let diag = body.diagnostics.expect("diagnostics present");
+        assert!(diag.configured);
         // Lean health: no tokens in the JSON body.
         let raw: serde_json::Value = client
             .get(format!("{base}/v1/health"))
@@ -898,6 +1026,16 @@ mod tests {
         assert!(raw
             .get("cloud_lookup")
             .and_then(|v| v.get("access_token"))
+            .is_none());
+        assert_eq!(
+            raw.get("diagnostics")
+                .and_then(|v| v.get("configured"))
+                .and_then(|v| v.as_bool()),
+            Some(true)
+        );
+        assert!(raw
+            .get("diagnostics")
+            .and_then(|v| v.get("api_key"))
             .is_none());
 
         runtime.shutdown().await;
@@ -939,7 +1077,9 @@ mod tests {
         assert_eq!(ok.status(), StatusCode::OK);
         let body: HealthResponse = ok.json().await.unwrap();
         assert!(!body.capabilities.contains(&"cloud-lookup-v1".into()));
+        assert!(!body.capabilities.contains(&"diagnostics-v1".into()));
         assert!(body.cloud_lookup.is_none());
+        assert!(body.diagnostics.is_none());
 
         runtime.shutdown().await;
         clear_test_secrets();
@@ -1447,5 +1587,338 @@ mod tests {
         runtime.shutdown().await;
         let _ = cloud_tx.send(());
         clear_test_secrets();
+    }
+
+    #[tokio::test]
+    async fn diagnostics_events_requires_ats_instance_id() {
+        use crate::cloud::custom_api::ats_client_token::ERR_ATS_INSTANCE_ID_REQUIRED;
+        use crate::storage::secrets::{clear_test_secrets, save_secret, test_secrets_lock};
+
+        let _lock = test_secrets_lock();
+        clear_test_secrets();
+        save_secret("custom_api_url", "https://cloud.example/api").unwrap();
+        save_secret("custom_api_bearer_token", "kid.secret").unwrap();
+
+        let config = test_config_with_monitor(r"\\test\aktuell");
+        let runtime = BridgeRuntime::start(
+            "127.0.0.1:0".into(),
+            "tok".into(),
+            String::new(),
+            "0.1.0".into(),
+            config,
+            test_presence(),
+            noop_wake(),
+            noop_cancel(),
+            test_history(),
+        )
+        .await
+        .unwrap();
+        let base = format!("http://{}", runtime.bind_addr);
+        let client = reqwest::Client::new();
+
+        let resp = client
+            .post(format!("{base}/v1/diagnostics/events"))
+            .header(header::AUTHORIZATION, "Bearer tok")
+            .header("X-Ats-Hostname", "Studio-PC")
+            .json(&json!({ "events": [] }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body: ClientTokenErrorResponse = resp.json().await.unwrap();
+        assert!(!body.ok);
+        assert_eq!(body.error.code, ERR_ATS_INSTANCE_ID_REQUIRED);
+
+        runtime.shutdown().await;
+        clear_test_secrets();
+    }
+
+    #[tokio::test]
+    async fn diagnostics_events_reports_missing_cloud_creds() {
+        use crate::cloud::custom_api::ats_client_token::ERR_CLOUD_BASE_MISSING;
+        use crate::storage::secrets::{clear_test_secrets, test_secrets_lock};
+
+        let _lock = test_secrets_lock();
+        clear_test_secrets();
+        let config = test_config_with_monitor(r"\\test\aktuell");
+        let runtime = BridgeRuntime::start(
+            "127.0.0.1:0".into(),
+            "tok".into(),
+            String::new(),
+            "0.1.0".into(),
+            config,
+            test_presence(),
+            noop_wake(),
+            noop_cancel(),
+            test_history(),
+        )
+        .await
+        .unwrap();
+        let base = format!("http://{}", runtime.bind_addr);
+        let client = reqwest::Client::new();
+
+        let resp = client
+            .post(format!("{base}/v1/diagnostics/events"))
+            .header(header::AUTHORIZATION, "Bearer tok")
+            .header("X-Ats-Instance-Id", "ats-uuid-1")
+            .header("X-Ats-Hostname", "Studio-PC")
+            .json(&json!({ "events": [] }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body: ClientTokenErrorResponse = resp.json().await.unwrap();
+        assert_eq!(body.error.code, ERR_CLOUD_BASE_MISSING);
+
+        runtime.shutdown().await;
+        clear_test_secrets();
+    }
+
+    #[tokio::test]
+    async fn diagnostics_events_proxies_body_to_cloud() {
+        use crate::cloud::custom_api::ats_client_token::{
+            SECRET_CLOUD_API_KEY, SECRET_CLOUD_BASE_URL,
+        };
+        use crate::cloud::custom_api::DiagnosticsIngestResponse;
+        use crate::storage::secrets::{clear_test_secrets, save_secret, test_secrets_lock};
+        use axum::extract::State;
+        use axum::http::HeaderMap;
+        use axum::routing::post;
+        use axum::{Json, Router};
+        use std::net::SocketAddr;
+        use std::sync::{Arc, Mutex};
+
+        let _lock = test_secrets_lock();
+        clear_test_secrets();
+
+        #[derive(Clone)]
+        struct MockState {
+            last_auth: Arc<Mutex<Option<String>>>,
+            last_body: Arc<Mutex<Option<Value>>>,
+        }
+
+        async fn mock_ingest(
+            State(state): State<MockState>,
+            headers: HeaderMap,
+            Json(body): Json<Value>,
+        ) -> Json<Value> {
+            let auth = headers
+                .get("authorization")
+                .and_then(|v| v.to_str().ok())
+                .map(|s| s.to_string());
+            *state.last_auth.lock().unwrap() = auth;
+            *state.last_body.lock().unwrap() = Some(body);
+            Json(json!({ "ok": true, "accepted": 2, "duplicates": 1 }))
+        }
+
+        let mock_state = MockState {
+            last_auth: Arc::new(Mutex::new(None)),
+            last_body: Arc::new(Mutex::new(None)),
+        };
+        let cloud_app = Router::new()
+            .route(
+                "/api/ats/v1/diagnostics/events",
+                post(mock_ingest),
+            )
+            .with_state(mock_state.clone());
+        let listener = tokio::net::TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
+            .await
+            .unwrap();
+        let cloud_addr = listener.local_addr().unwrap();
+        let (cloud_tx, cloud_rx) = oneshot::channel::<()>();
+        tokio::spawn(async move {
+            axum::serve(listener, cloud_app)
+                .with_graceful_shutdown(async {
+                    let _ = cloud_rx.await;
+                })
+                .await
+                .ok();
+        });
+
+        save_secret(
+            SECRET_CLOUD_BASE_URL,
+            &format!("http://{cloud_addr}/api"),
+        )
+        .unwrap();
+        save_secret(SECRET_CLOUD_API_KEY, "kid.secret").unwrap();
+
+        let config = test_config_with_monitor(r"\\test\aktuell");
+        let runtime = BridgeRuntime::start(
+            "127.0.0.1:0".into(),
+            "tok".into(),
+            String::new(),
+            "0.1.0".into(),
+            config,
+            test_presence(),
+            noop_wake(),
+            noop_cancel(),
+            test_history(),
+        )
+        .await
+        .unwrap();
+        let base = format!("http://{}", runtime.bind_addr);
+        let client = reqwest::Client::new();
+
+        let batch = json!({
+            "events": [{
+                "event_id": "ev-bridge-1",
+                "severity": "warning",
+                "message": "from ats"
+            }]
+        });
+
+        let resp = client
+            .post(format!("{base}/v1/diagnostics/events"))
+            .header(header::AUTHORIZATION, "Bearer tok")
+            .header("X-Ats-Instance-Id", "ats-uuid-diag")
+            .header("X-Ats-Hostname", "Studio-PC")
+            .header("X-Ats-Version", "1.0.0")
+            .header("X-Ats-App", "AeroTandemStudio")
+            .json(&batch)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body: DiagnosticsIngestResponse = resp.json().await.unwrap();
+        assert!(body.ok);
+        assert_eq!(body.accepted, 2);
+        assert_eq!(body.duplicates, 1);
+        assert_eq!(
+            mock_state.last_auth.lock().unwrap().as_deref(),
+            Some("Bearer kid.secret")
+        );
+        assert_eq!(
+            mock_state.last_body.lock().unwrap().clone().unwrap(),
+            batch
+        );
+
+        runtime.shutdown().await;
+        let _ = cloud_tx.send(());
+        clear_test_secrets();
+    }
+
+    async fn diagnostics_bridge_with_mock_cloud(
+        cloud_status: u16,
+        cloud_body: Value,
+    ) -> (ClientTokenErrorResponse, oneshot::Sender<()>) {
+        use crate::cloud::custom_api::ats_client_token::{
+            SECRET_CLOUD_API_KEY, SECRET_CLOUD_BASE_URL,
+        };
+        use crate::storage::secrets::{clear_test_secrets, save_secret};
+        use axum::http::StatusCode as AxumStatus;
+        use axum::routing::post;
+        use axum::{Json, Router};
+        use std::net::SocketAddr;
+
+        clear_test_secrets();
+
+        let cloud_app = Router::new().route(
+            "/api/ats/v1/diagnostics/events",
+            post(move || {
+                let body = cloud_body.clone();
+                async move {
+                    (
+                        AxumStatus::from_u16(cloud_status)
+                            .unwrap_or(AxumStatus::INTERNAL_SERVER_ERROR),
+                        Json(body),
+                    )
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
+            .await
+            .unwrap();
+        let cloud_addr = listener.local_addr().unwrap();
+        let (cloud_tx, cloud_rx) = oneshot::channel::<()>();
+        tokio::spawn(async move {
+            axum::serve(listener, cloud_app)
+                .with_graceful_shutdown(async {
+                    let _ = cloud_rx.await;
+                })
+                .await
+                .ok();
+        });
+
+        save_secret(
+            SECRET_CLOUD_BASE_URL,
+            &format!("http://{cloud_addr}/api"),
+        )
+        .unwrap();
+        save_secret(SECRET_CLOUD_API_KEY, "kid.secret").unwrap();
+
+        let config = test_config_with_monitor(r"\\test\aktuell");
+        let runtime = BridgeRuntime::start(
+            "127.0.0.1:0".into(),
+            "tok".into(),
+            String::new(),
+            "0.1.0".into(),
+            config,
+            test_presence(),
+            noop_wake(),
+            noop_cancel(),
+            test_history(),
+        )
+        .await
+        .unwrap();
+        let base = format!("http://{}", runtime.bind_addr);
+        let client = reqwest::Client::new();
+
+        let resp = client
+            .post(format!("{base}/v1/diagnostics/events"))
+            .header(header::AUTHORIZATION, "Bearer tok")
+            .header("X-Ats-Instance-Id", "ats-uuid-diag")
+            .json(&json!({ "events": [] }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_GATEWAY);
+        let body: ClientTokenErrorResponse = resp.json().await.unwrap();
+
+        runtime.shutdown().await;
+        clear_test_secrets();
+        (body, cloud_tx)
+    }
+
+    #[tokio::test]
+    async fn diagnostics_events_maps_cloud_403() {
+        use crate::cloud::custom_api::ats_client_token::ERR_CLOUD_FORBIDDEN;
+        use crate::storage::secrets::test_secrets_lock;
+
+        let _lock = test_secrets_lock();
+        let (body, cloud_tx) = diagnostics_bridge_with_mock_cloud(
+            403,
+            json!({ "error": "no permission" }),
+        )
+        .await;
+        assert_eq!(body.error.code, ERR_CLOUD_FORBIDDEN);
+        let _ = cloud_tx.send(());
+    }
+
+    #[tokio::test]
+    async fn diagnostics_events_maps_cloud_401() {
+        use crate::cloud::custom_api::ats_client_token::ERR_CLOUD_UNAUTHORIZED;
+        use crate::storage::secrets::test_secrets_lock;
+
+        let _lock = test_secrets_lock();
+        let (body, cloud_tx) = diagnostics_bridge_with_mock_cloud(
+            401,
+            json!({ "error": "bad key" }),
+        )
+        .await;
+        assert_eq!(body.error.code, ERR_CLOUD_UNAUTHORIZED);
+        let _ = cloud_tx.send(());
+    }
+
+    #[tokio::test]
+    async fn diagnostics_events_maps_cloud_429() {
+        use crate::cloud::custom_api::ats_diagnostics::ERR_CLOUD_INGEST_FAILED;
+        use crate::storage::secrets::test_secrets_lock;
+
+        let _lock = test_secrets_lock();
+        let (body, cloud_tx) =
+            diagnostics_bridge_with_mock_cloud(429, json!({ "error": "slow down" })).await;
+        assert_eq!(body.error.code, ERR_CLOUD_INGEST_FAILED);
+        assert!(body.error.message.contains("429"));
+        let _ = cloud_tx.send(());
     }
 }

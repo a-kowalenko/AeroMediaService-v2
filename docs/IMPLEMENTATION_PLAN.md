@@ -76,7 +76,8 @@
 | SMB-Session-Diagnose & Idle-Cleanup (Windows) | ✅ Phase 20 — Spec unten · **20a–20d** ✅ |
 | Auto-Nachreichen bei gleicher Kunden-/Booking-ID | ✅ Phase 21 — Spec unten · **21a–21d** ✅ |
 
-**Nächste Phase (AMS):** Phase 22 ✅ (A0–A3) — Partner-Vertrag [`HANDOFF.md`](./HANDOFF.md) §9.4; Cloud C0–C4 Deploy separat; ATS Phase 53  
+**Nächste Phase (AMS):** — (Phase 23 ✅ abgeschlossen; **Cloud D0–D2/D2-Ingest** + optional [`CLOUD_APPEND_CONTRACT.md`](./CLOUD_APPEND_CONTRACT.md) C0–C4 Deploy im Partner-Repo — kein weiterer AMS-Feature-Slice)  
+**Erledigt:** Phase 23 ✅ (B0–B3) ATS Client-Diagnostik — [`HANDOFF.md`](./HANDOFF.md) §9.5 · Spec [`ATS_CLIENT_DIAGNOSTICS.md`](./ATS_CLIENT_DIAGNOSTICS.md); Phase 22 ✅ (A0–A3) — §9.4; ATS Phase 53 / 57 parallel  
 **Parallel (ATS):** Phase 13 / **P6b** — Bridge Path Hints; Spec: [`HANDOFF.md`](./HANDOFF.md) §9.3 · ATS = Phase 35; optional Phase-21-Hinweis dokumentiert in 21d
 
 ---
@@ -1564,6 +1565,53 @@ Danach cargo test.
 
 ---
 
+### Phase 23 — ATS Client-Diagnostik (Bridge-Forward) ✅
+
+**Spec:** [`ATS_CLIENT_DIAGNOSTICS.md`](./ATS_CLIENT_DIAGNOSTICS.md)  
+**Master:** ATS `docs/CLIENT_DIAGNOSTICS_PLAN.md`  
+**Bridge-Vertrag:** [`HANDOFF.md`](./HANDOFF.md) §9.5  
+**Abhängigkeit:** Cloud D0–D2 deployed (Betrieb); Bridge §9
+
+**Ziel:** `POST /v1/diagnostics/events` (Bridge-Auth) → Cloud Ingest; Capability `diagnostics-v1`.
+
+| Slice | Inhalt | Status |
+|-------|--------|--------|
+| B0 | Cloud-Forward-Client (`ats_diagnostics_ingest`) | ✅ |
+| B1 | Bridge `POST /v1/diagnostics/events` | ✅ |
+| B2 | Health + Capability `diagnostics-v1` | ✅ |
+| B3 | HANDOFF §9.5 + Abnahme | ✅ |
+
+**Manuelle Abnahme (Phase 23 / B3)**
+
+Vollständige Checkliste: [`ATS_CLIENT_DIAGNOSTICS.md`](./ATS_CLIENT_DIAGNOSTICS.md) § „Manuelle Abnahme (B3)“ · Partner-Vertrag: [`HANDOFF.md`](./HANDOFF.md) §9.5.
+
+1. Cloud-Key mit `ats_diagnostics_ingest` (+ weiterhin `ats_client_token` für Lookup-Issue).
+2. `GET /v1/health`: Capability `diagnostics-v1` + `diagnostics.configured`.
+3. `POST /v1/diagnostics/events` mit Bridge-Token + `X-Ats-Instance-Id` → `200` mit `ok`, `accepted`, `duplicates`.
+4. Cloud Admin: Event sichtbar, **`ingress=ams_bridge`**.
+5. API-Key **ohne** Permission `ats_diagnostics_ingest` → Bridge **`502`** / **`cloud_forbidden`**.
+6. `POST /v1/client-token` unverändert funktionsfähig; `scope` enthält ggf. beide Scopes (Cloud D0).
+
+**DoD (Phase 23 gesamt)**
+
+- [x] B0: Cloud-Forward testbar (URL, Auth, Status-Mapping)
+- [x] B1: Bridge-Route + Identity-Pflicht + Fehler-Envelope
+- [x] B2: Health `diagnostics-v1` + `diagnostics.configured` ohne Secrets
+- [x] B3: HANDOFF §9.5 + Plan-Checkboxen; Abnahme referenziert
+- [x] `cargo test` grün
+
+**Nicht-Ziele:** Lokale AMS-Persistenz der Events; JWT-Signatur in AMS.
+
+**Agent-Prompt (abgeschlossen — nur Referenz):**
+
+```
+Implementiere Slice B3 aus docs/ATS_CLIENT_DIAGNOSTICS.md
+Regeln: @AGENTS.md
+Nur B3 (Docs + Abnahme). Danach cargo test.
+```
+
+---
+
 ## 10. Teststrategie
 
 - Rust Unit-Tests für Marker, Status, Payload-Builder, Checkpoint-Logik
@@ -1615,3 +1663,4 @@ Updater-Endpoint und Signing: siehe [`docs/RELEASE.md`](./RELEASE.md) (analog Ae
 | 20 | SMB-Session-Diagnose & Idle-Cleanup (Windows) | ✅ 20a–20d |
 | 21 | Auto-Nachreichen bei gleicher Kunden-/Booking-ID | ✅ 21a–21d |
 | 22 | ATS Cloud-Lookup-Fallback (Client-Token) | ✅ A0–A3 |
+| 23 | ATS Client-Diagnostik (Bridge-Forward) | ✅ B0–B3 |

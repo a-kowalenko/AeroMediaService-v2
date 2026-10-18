@@ -257,6 +257,7 @@ Beispiel:
 | `GET` | `/v1/health` | online, Version, `display_name`, `instance_id`, `monitor_path`, optional `ats_paths`, optional `cloud_lookup`, `capabilities[]` |
 | `POST` | `/v1/customer/lookup` | Preflight; AMS → bestehende Customer-API (**Primärweg** Lookup) |
 | `POST` | `/v1/client-token` | **Phase 22 ✅:** Cloud-JWT für ATS-Lookup-Fallback (Bootstrap-Proxy) — siehe §9.4 |
+| `POST` | `/v1/diagnostics/events` | **Phase 23 ✅:** Diagnostik-Batch an Cloud (Bridge-Forward, 1:1 Body) — siehe §9.5 |
 | `GET` | `/v1/jobs/{correlation_id}` | Status (Spiegel Outbox / History) |
 | `POST` | `/v1/handoff/ready` | Monitor wake / Priorität — **kein** Upload-Bypass |
 
@@ -345,7 +346,7 @@ Guest/leer ok → nichts abfragen. Quiet-Poll ändert keine Credentials.
 
 Capabilities statt harter Versionskopplung, z. B.  
 `["manifest-v1","status-outbox","lookup","ready","append-v1","paths-v1"]`  
-(+ optional `cloud-lookup-v1`, siehe §9.4).
+(+ optional `cloud-lookup-v1`, siehe §9.4; + optional `diagnostics-v1`, siehe §9.5).
 
 Breaking Changes → `/v2`; additive Felder in `/v1` erlaubt.
 
@@ -454,6 +455,134 @@ Token **nie** in Logs oder Presence-Payloads.
 - Cloud-Lookup-Proxy in AMS (ATS spricht Cloud direkt)
 - Token bei jedem Quiet-Health-Poll erzwingen
 
+### 9.5 ATS Client-Diagnostik (Bridge-Forward, Phase 23)
+
+**Ziel:** ATS sendet Diagnostik-Batches über die Bridge; AMS leitet sie mit dem Skydive-Media-API-Key an Cloud weiter. **Kein** zweites JWT in AMS, **keine** lokale AMS-Persistenz — Cloud ist Sink. AMS fügt **keine** PII zum Body hinzu (1:1 ATS JSON).
+
+**Vollständige Spec / Abnahme:** [`ATS_CLIENT_DIAGNOSTICS.md`](./ATS_CLIENT_DIAGNOSTICS.md) · Master: ATS `docs/CLIENT_DIAGNOSTICS_PLAN.md` · Cloud-Ingest: D2 (`POST …/diagnostics/events`).
+
+#### Leitregeln
+
+| # | Regel |
+|---|--------|
+| 1 | Bridge-Route `POST /v1/diagnostics/events` — Auth wie Lookup/Client-Token |
+| 2 | Cloud-Call: `POST {origin}/api/ats/v1/diagnostics/events` mit `Authorization: Bearer {custom_api_bearer_token}` |
+| 3 | API-Key-Permission **`ats_diagnostics_ingest`** (kann derselbe Key wie `ats_client_token` sein, wenn beide Permissions gesetzt) |
+| 4 | Health: Capability **`diagnostics-v1`** + optionales `diagnostics: { "configured": true }` wenn Base **und** Key gesetzt — **keine** Secrets |
+| 5 | Request-Body Bridge → Cloud **unverändert** (ATS-Batch); Cloud setzt `ingress=ams_bridge` serverseitig |
+| 6 | `POST /v1/client-token` (§9.4) bleibt unverändert; Cloud `scope` kann nach D0 mehrere Scopes enthalten |
+
+#### AMS-Secrets (Reuse Skydive Media)
+
+| Keyring-Key | Zweck |
+|-------------|--------|
+| `custom_api_url` | Cloud-Base (wie §9.4) |
+| `custom_api_bearer_token` | Cloud-API-Key; **muss** Permission `ats_diagnostics_ingest` haben für erfolgreichen Ingest |
+
+Modul: `src-tauri/src/cloud/custom_api/ats_diagnostics.rs`.
+
+#### `GET /v1/health` — Capability + Hint
+
+Wenn Ingest-Creds vollständig (`custom_api_url` **und** `custom_api_bearer_token`):
+
+```json
+{
+  "online": true,
+  "capabilities": [
+    "manifest-v1", "status-outbox", "lookup", "ready",
+    "cloud-lookup-v1", "diagnostics-v1"
+  ],
+  "cloud_lookup": { "base_url": "https://…" },
+  "diagnostics": { "configured": true }
+}
+```
+
+- `diagnostics-v1` **nur** wenn Hint gesetzt (Base+Key vorhanden) — fehlende Cloud-Permission wird erst beim POST erkannt (Cloud 403 → Bridge `cloud_forbidden`).
+- Feld `diagnostics` weglassen, wenn Creds fehlen.
+- Unabhängig von `paths-v1` / `cloud-lookup-v1` (jeweils eigene Gates).
+
+#### `POST /v1/diagnostics/events`
+
+**Auth:** Bridge-Token Pflicht (wie alle `/v1/*`).
+
+**Request-Body:** ATS-Batch **1:1** (Beispiel-Skizze — vollständiges Schema = ATS/Cloud D2):
+
+```json
+{
+  "events": [
+    {
+      "event_id": "ev-bridge-1",
+      "severity": "warning",
+      "message": "from ats"
+    }
+  ]
+}
+```
+
+Weitere Felder pro Event gemäß ATS/Cloud-Vertrag; AMS validiert den Body nicht und reichert ihn nicht an.
+
+**Identität (Header, Pflicht wie Client-Token):**
+
+| Header | Pflicht | Bedeutung |
+|--------|---------|-----------|
+| `X-Ats-Instance-Id` | **ja** | stabile ATS-Installations-UUID |
+| `X-Ats-Hostname` | optional | Anzeige / Presence |
+| `X-Ats-Version` | optional | ATS-Version |
+| `X-Ats-App` | optional | Default `AeroTandemStudio` |
+
+Header dienen Bridge-Presence/Audit; sie werden **nicht** in den Cloud-Body gemischt.
+
+**Success `200`** (Cloud-mapped, flach):
+
+```json
+{
+  "ok": true,
+  "accepted": 2,
+  "duplicates": 1
+}
+```
+
+**Fehler** (`ok: false` + `error: { code, message }`):
+
+| HTTP | `error.code` | Wann |
+|------|--------------|------|
+| 400 | `ats_instance_id_required` | fehlender/leerer/`unknown:` Instance-Header |
+| 503 | `cloud_base_missing` | Secret `custom_api_url` leer |
+| 503 | `cloud_api_key_missing` | Secret `custom_api_bearer_token` leer |
+| 502 | `cloud_unauthorized` | Cloud 401 (Key ungültig) |
+| 502 | `cloud_forbidden` | Cloud 403 (Permission `ats_diagnostics_ingest` fehlt) |
+| 502 | `cloud_unreachable` | Transport / Timeout / Cloud down |
+| 502 | `cloud_ingest_failed` | Cloud 400/413/422/429 oder sonstige Ingest-Fehler |
+
+Diagnostik ist kein Hot-Path — AMS nutzt konservative Timeouts (~30 s).
+
+#### ATS-Verhalten (Partner: Phase 57 / R4)
+
+| Situation | Verhalten |
+|-----------|-----------|
+| Bridge ok + Capability `diagnostics-v1` | Diagnostik-Batches über `POST /v1/diagnostics/events` |
+| Capability fehlt | Primärweg Diagnostik über AMS nicht verfügbar — Fallback laut ATS-Plan (direkt Cloud / Queue) |
+| Bridge `502` / `cloud_forbidden` | Key-Permission `ats_diagnostics_ingest` in Cloud-Admin prüfen |
+
+#### Manuelle Abnahme (Phase 23 / B3)
+
+Checkliste (Staging/Betrieb): [`ATS_CLIENT_DIAGNOSTICS.md`](./ATS_CLIENT_DIAGNOSTICS.md) § „Manuelle Abnahme (B3)“.
+
+Kurz:
+
+1. Cloud-Key mit `ats_diagnostics_ingest` (+ weiterhin `ats_client_token` für Lookup-Issue).
+2. `GET /v1/health`: `diagnostics-v1` + `diagnostics.configured`.
+3. `POST /v1/diagnostics/events` mit Bridge-Token + Identity → `200`.
+4. Cloud Admin: Event sichtbar, **`ingress=ams_bridge`**.
+5. Key **ohne** Permission → Bridge **`502`** / **`cloud_forbidden`**.
+6. `POST /v1/client-token` unverändert; `scope` ggf. mehrere Einträge (Cloud D0).
+
+#### Non-Goals (Diagnostik)
+
+- Events in AMS-SQLite speichern
+- JWT in AMS signieren
+- Lookup-/Upload-Pipeline ändern
+
 ---
 
 ## 10. Kompatibilitätsmodi
@@ -487,7 +616,7 @@ Token **nie** in Logs oder Presence-Payloads.
 - optional Bridge enable + Token
 - `bridge_display_name` (Default leer → PC-Name)
 - `bridge_instance_id` (automatisch)
-- Phase 22 / §9.4: Secrets `custom_api_url` + `custom_api_bearer_token` (Permission `ats_client_token`) für Client-Token-Issue — kein neuer Setting-Key
+- Phase 22 / §9.4 + Phase 23 / §9.5: Secrets `custom_api_url` + `custom_api_bearer_token` (Permissions `ats_client_token`, `ats_diagnostics_ingest`) — kein neuer Setting-Key
 
 ### Betrieb
 
@@ -514,6 +643,7 @@ Windows: UNC (`\\host\aktuell`) und `smb://` sind beide gültige Operator-Eingab
 | **Phase 15** ✅ | Append/Nachreichen: `kind=append` + Parent-Gate + Worker-Route | AMS + ATS |
 | **Phase 21** ✅ | Auto-Nachreichen gleiche Kunden-/Booking-ID (§6.1b; 21a–21d) | AMS (ATS optional) |
 | **Phase 22** ✅ | Cloud-Lookup Client-Token: §9.4 + Health `cloud-lookup-v1` (A0–A3) | AMS (ATS = Phase 53) |
+| **Phase 23** ✅ | Client-Diagnostik Bridge-Forward: §9.5 + Health `diagnostics-v1` (B0–B3) | AMS (ATS = Phase 57) |
 
 **P6-Slices (eine pro Session):** P6a ✅ AMS Settings+Health → P6b ATS DTO+Diff → P6c ATS UX+Credentials → P6d optional Drift-Warnung.
 
@@ -528,6 +658,7 @@ Windows: UNC (`\\host\aktuell`) und `smb://` sind beide gültige Operator-Eingab
 - Ignore: `.ams-handoff` wird nicht als Job gescannt
 - P6a: Health `ats_paths` + `paths-v1` nur bei Primär; UNC→`smb://`; mDNS `paths=1`
 - Phase 22: `/v1/client-token` Identity-Pflicht + Fehler-Mapping; Health `cloud-lookup-v1` nur wenn Issue konfiguriert
+- Phase 23: `/v1/diagnostics/events` Body-Proxy + Fehler-Mapping; Health `diagnostics-v1` + `diagnostics.configured` nur wenn Ingest-Creds gesetzt
 - Regression: bestehende Marker- / Monitor- / Upload-Tests grün
 
 ---
@@ -552,6 +683,6 @@ Windows: UNC (`\\host\aktuell`) und `smb://` sind beide gültige Operator-Eingab
 ## 15. Partner-Repo
 
 ATS-Implementierung: `C:\Users\Kowalenko\PycharmProjects\AeroTandemStudio-v2`  
-(Export-Job / Marker-Schreiben; Vorgang-History für `correlation_id` / Status-UI; ab P6 / ATS Phase 35: Path-Hints-Übernahme; ab Phase 53: Cloud-Lookup-Fallback nach §9.4.)
+(Export-Job / Marker-Schreiben; Vorgang-History für `correlation_id` / Status-UI; ab P6 / ATS Phase 35: Path-Hints-Übernahme; ab Phase 53: Cloud-Lookup-Fallback nach §9.4; ab Phase 57: Client-Diagnostik über §9.5.)
 
 Dieses Dokument ist die gemeinsame Spec; bei Drift gilt die neuere abgestimmte Version in AMS `docs/HANDOFF.md` als Referenz, bis ATS eine Kopie/Verlinkung führt.

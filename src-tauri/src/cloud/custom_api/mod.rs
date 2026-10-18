@@ -2,6 +2,7 @@
 //! Port of the upload kernel from legacy `services/custom_api_client.py` (no notify/history).
 
 pub mod ats_client_token;
+pub mod ats_diagnostics;
 pub mod auth;
 pub mod orders;
 pub mod upload;
@@ -22,6 +23,11 @@ use crate::storage::logging;
 use crate::upload::control::UploadControl;
 
 pub use ats_client_token::{cloud_lookup_issue_status, CloudLookupIssueStatus};
+pub use ats_diagnostics::{
+    cloud_diagnostics_ingest_status, forward_diagnostics_events,
+    resolve_cloud_diagnostics_credentials, CloudDiagnosticsIngestStatus,
+    DiagnosticsIngestError, DiagnosticsIngestResponse,
+};
 pub use orders::{fetch_customer_as_kunde, fetch_customer_as_kunde_with_extras, lookup_customer_url};
 
 pub const CHUNK_BYTES: usize = 4 * 1024 * 1024;
