@@ -16,7 +16,7 @@
 | # | Thema | Entscheidung |
 |---|--------|----------------|
 | 1 | Bridge-Route | `POST /v1/diagnostics/events` (Bridge-Token + ATS-Identity) |
-| 2 | Cloud-Call | `POST {origin}/api/ats/v1/diagnostics/events` mit `custom_api_bearer_token` |
+| 2 | Cloud-Call | `POST {origin}/api/ats/v1/diagnostics/events/bridge` mit `custom_api_bearer_token` + Header `X-Ats-Instance-Id` (von Bridge) |
 | 3 | Permission | Cloud-API-Key: **`ats_diagnostics_ingest`** (neben `ats_client_token`) |
 | 4 | Health | Capability **`diagnostics-v1`** wenn Base + Key konfiguriert |
 | 5 | Body | 1:1 ATS JSON durchreichen; AMS setzt keine PII hinzu |
@@ -35,7 +35,7 @@ Reuse Skydive-Media / Custom-API wie Phase 22:
 
 | Konstante | Wert |
 |-----------|------|
-| Cloud-Pfad | `POST {origin}/api/ats/v1/diagnostics/events` |
+| Cloud-Pfad | `POST {origin}/api/ats/v1/diagnostics/events/bridge` (API-Key; JWT direkt: ohne `/bridge`) |
 | Modul | `src-tauri/src/cloud/custom_api/ats_diagnostics.rs` |
 | Fehlercodes | `cloud_base_missing`, `cloud_api_key_missing`, `cloud_forbidden`, `cloud_unreachable`, `cloud_ingest_failed`, … |
 

@@ -459,14 +459,14 @@ Token **nie** in Logs oder Presence-Payloads.
 
 **Ziel:** ATS sendet Diagnostik-Batches über die Bridge; AMS leitet sie mit dem Skydive-Media-API-Key an Cloud weiter. **Kein** zweites JWT in AMS, **keine** lokale AMS-Persistenz — Cloud ist Sink. AMS fügt **keine** PII zum Body hinzu (1:1 ATS JSON).
 
-**Vollständige Spec / Abnahme:** [`ATS_CLIENT_DIAGNOSTICS.md`](./ATS_CLIENT_DIAGNOSTICS.md) · Master: ATS `docs/CLIENT_DIAGNOSTICS_PLAN.md` · Cloud-Ingest: D2 (`POST …/diagnostics/events`).
+**Vollständige Spec / Abnahme:** [`ATS_CLIENT_DIAGNOSTICS.md`](./ATS_CLIENT_DIAGNOSTICS.md) · Master: ATS `docs/CLIENT_DIAGNOSTICS_PLAN.md` · Cloud-Ingest: D2b (`POST …/diagnostics/events/bridge`).
 
 #### Leitregeln
 
 | # | Regel |
 |---|--------|
 | 1 | Bridge-Route `POST /v1/diagnostics/events` — Auth wie Lookup/Client-Token |
-| 2 | Cloud-Call: `POST {origin}/api/ats/v1/diagnostics/events` mit `Authorization: Bearer {custom_api_bearer_token}` |
+| 2 | Cloud-Call: `POST {origin}/api/ats/v1/diagnostics/events/bridge` mit `Authorization: Bearer {custom_api_bearer_token}` |
 | 3 | API-Key-Permission **`ats_diagnostics_ingest`** (kann derselbe Key wie `ats_client_token` sein, wenn beide Permissions gesetzt) |
 | 4 | Health: Capability **`diagnostics-v1`** + optionales `diagnostics: { "configured": true }` wenn Base **und** Key gesetzt — **keine** Secrets |
 | 5 | Request-Body Bridge → Cloud **unverändert** (ATS-Batch); Cloud setzt `ingress=ams_bridge` serverseitig |
@@ -530,7 +530,7 @@ Weitere Felder pro Event gemäß ATS/Cloud-Vertrag; AMS validiert den Body nicht
 | `X-Ats-Version` | optional | ATS-Version |
 | `X-Ats-App` | optional | Default `AeroTandemStudio` |
 
-Header dienen Bridge-Presence/Audit; sie werden **nicht** in den Cloud-Body gemischt.
+Header dienen Bridge-Presence/Audit; der ATS-Body bleibt **1:1**. Beim Cloud-Forward (D2b) setzt AMS **`X-Ats-Instance-Id`** auf den HTTP-Request (Pflicht für Cloud-Bridge-Ingest).
 
 **Success `200`** (Cloud-mapped, flach):
 

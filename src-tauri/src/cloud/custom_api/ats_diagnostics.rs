@@ -1,8 +1,8 @@
 //! Phase 23 / B0 — Cloud diagnostics ingest forward (AMS API key → Cloud D2).
 //!
 //! Reuses Skydive-Media secrets (`custom_api_url`, `custom_api_bearer_token`).
-//! Cloud endpoint: `POST {origin}/api/ats/v1/diagnostics/events`
-//! (Permission `ats_diagnostics_ingest`). ATS JSON body is forwarded 1:1.
+//! Cloud endpoint: `POST {origin}/api/ats/v1/diagnostics/events/bridge`
+//! (API key + Permission `ats_diagnostics_ingest`; Cloud D2b). ATS JSON body is forwarded 1:1.
 
 use std::time::Duration;
 
@@ -21,7 +21,7 @@ use crate::storage::secrets::{self, SecretError};
 pub const CLOUD_PERMISSION_ATS_DIAGNOSTICS_INGEST: &str = "ats_diagnostics_ingest";
 
 /// Relative path on the Cloud origin (after stripping trailing `/api`).
-pub const CLOUD_DIAGNOSTICS_EVENTS_PATH: &str = "/api/ats/v1/diagnostics/events";
+pub const CLOUD_DIAGNOSTICS_EVENTS_PATH: &str = "/api/ats/v1/diagnostics/events/bridge";
 
 /// Bridge/API error for other Cloud ingest failures.
 pub const ERR_CLOUD_INGEST_FAILED: &str = "cloud_ingest_failed";
@@ -269,12 +269,16 @@ pub fn map_cloud_ingest_response(value: &Value) -> Result<DiagnosticsIngestRespo
     })
 }
 
-/// Forward ATS diagnostics batch JSON to Cloud with AMS API key.
+/// Cloud D2b expects `X-Ats-Instance-Id` (ATS batch body has no top-level instance id).
+pub const HEADER_ATS_INSTANCE_ID: &str = "X-Ats-Instance-Id";
+
+/// Forward ATS diagnostics batch JSON to Cloud with AMS API key + ATS instance header.
 pub async fn forward_diagnostics_events(
     creds: &CloudDiagnosticsCredentials,
     body: &Value,
+    ats_instance_id: &str,
 ) -> Result<DiagnosticsIngestResponse, DiagnosticsIngestError> {
-    forward_diagnostics_events_at_url(&creds.ingest_url, &creds.api_key, body).await
+    forward_diagnostics_events_at_url(&creds.ingest_url, &creds.api_key, body, ats_instance_id).await
 }
 
 /// Same as [`forward_diagnostics_events`] but with explicit URL (tests / overrides).
@@ -282,7 +286,17 @@ pub async fn forward_diagnostics_events_at_url(
     ingest_url: &str,
     api_key: &str,
     body: &Value,
+    ats_instance_id: &str,
 ) -> Result<DiagnosticsIngestResponse, DiagnosticsIngestError> {
+    let ats_instance_id = ats_instance_id.trim();
+    if ats_instance_id.is_empty() {
+        return Err(DiagnosticsIngestError {
+            code: ERR_CLOUD_INGEST_FAILED.into(),
+            message: "Cloud Diagnostik-Forward: X-Ats-Instance-Id fehlt.".into(),
+            http_status: 503,
+        });
+    }
+
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(INGEST_TIMEOUT_SECS))
         .build()
@@ -291,6 +305,7 @@ pub async fn forward_diagnostics_events_at_url(
     let response = client
         .post(ingest_url)
         .header("Authorization", format!("Bearer {api_key}"))
+        .header(HEADER_ATS_INSTANCE_ID, ats_instance_id)
         .header("Content-Type", "application/json")
         .json(body)
         .send()
@@ -373,7 +388,7 @@ mod tests {
         assert_eq!(c.cloud_base_url, "https://host.example");
         assert_eq!(
             c.ingest_url,
-            "https://host.example/api/ats/v1/diagnostics/events"
+            "https://host.example/api/ats/v1/diagnostics/events/bridge"
         );
     }
 
@@ -403,7 +418,7 @@ mod tests {
         let c = resolve_cloud_diagnostics_credentials().unwrap();
         assert_eq!(
             c.ingest_url,
-            "https://cloud.test/api/ats/v1/diagnostics/events"
+            "https://cloud.test/api/ats/v1/diagnostics/events/bridge"
         );
         assert!(cloud_diagnostics_ingest_status().configured);
         clear_test_secrets();
@@ -439,6 +454,7 @@ mod tests {
     #[derive(Clone)]
     struct MockCloudState {
         last_auth: Arc<Mutex<Option<String>>>,
+        last_instance_id: Arc<Mutex<Option<String>>>,
         last_body: Arc<Mutex<Option<Value>>>,
         status: u16,
         body: Value,
@@ -453,7 +469,12 @@ mod tests {
             .get("authorization")
             .and_then(|v| v.to_str().ok())
             .map(|s| s.to_string());
+        let instance_id = headers
+            .get(HEADER_ATS_INSTANCE_ID)
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_string());
         *state.last_auth.lock().unwrap() = auth;
+        *state.last_instance_id.lock().unwrap() = instance_id;
         *state.last_body.lock().unwrap() = Some(body);
         (
             StatusCode::from_u16(state.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
@@ -467,13 +488,14 @@ mod tests {
     ) -> (String, oneshot::Sender<()>, MockCloudState) {
         let state = MockCloudState {
             last_auth: Arc::new(Mutex::new(None)),
+            last_instance_id: Arc::new(Mutex::new(None)),
             last_body: Arc::new(Mutex::new(None)),
             status,
             body,
         };
         let app = Router::new()
             .route(
-                "/api/ats/v1/diagnostics/events",
+                CLOUD_DIAGNOSTICS_EVENTS_PATH,
                 post(mock_cloud_ingest),
             )
             .with_state(state.clone());
@@ -508,8 +530,14 @@ mod tests {
                 "message": "test"
             }]
         });
-        let ingest_url = format!("{base}/api/ats/v1/diagnostics/events");
-        let resp = forward_diagnostics_events_at_url(&ingest_url, "kid.secret", &batch)
+        let instance_id = "11111111-2222-4333-8444-555555555555";
+        let ingest_url = format!("{base}{CLOUD_DIAGNOSTICS_EVENTS_PATH}");
+        let resp = forward_diagnostics_events_at_url(
+            &ingest_url,
+            "kid.secret",
+            &batch,
+            instance_id,
+        )
             .await
             .unwrap();
 
@@ -519,6 +547,10 @@ mod tests {
         assert_eq!(
             state.last_auth.lock().unwrap().as_deref(),
             Some("Bearer kid.secret")
+        );
+        assert_eq!(
+            state.last_instance_id.lock().unwrap().as_deref(),
+            Some(instance_id)
         );
         assert_eq!(
             state.last_body.lock().unwrap().clone().unwrap(),
@@ -533,9 +565,10 @@ mod tests {
         let (base, shutdown, _) =
             start_mock_cloud(403, json!({"error": "no permission"})).await;
         let err = forward_diagnostics_events_at_url(
-            &format!("{base}/api/ats/v1/diagnostics/events"),
+            &format!("{base}{CLOUD_DIAGNOSTICS_EVENTS_PATH}"),
             "kid.secret",
             &json!({"events": []}),
+            "11111111-2222-4333-8444-555555555555",
         )
         .await
         .unwrap_err();

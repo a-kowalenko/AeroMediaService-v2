@@ -473,14 +473,15 @@ async fn diagnostics_events(
         .filter(|s| !s.is_empty());
     let parsed = parse_identity(&headers);
 
-    if let Err(err) = AtsClientIdentity::require_instance_id(
+    let identity = match AtsClientIdentity::require_instance_id(
         raw_instance.as_deref(),
         Some(parsed.hostname.as_str()),
         Some(parsed.ats_version.as_str()),
         Some(parsed.ats_app.as_str()),
     ) {
-        return diagnostics_events_error_response(&state, &headers, err);
-    }
+        Ok(id) => id,
+        Err(err) => return diagnostics_events_error_response(&state, &headers, err),
+    };
 
     let creds = match resolve_cloud_diagnostics_credentials() {
         Ok(c) => c,
@@ -493,7 +494,7 @@ async fn diagnostics_events(
         }
     };
 
-    match forward_diagnostics_events(&creds, &body).await {
+    match forward_diagnostics_events(&creds, &body, &identity.ats_instance_id).await {
         Ok(resp) => {
             record_bridge_event(
                 &state.presence,
@@ -1694,6 +1695,7 @@ mod tests {
         #[derive(Clone)]
         struct MockState {
             last_auth: Arc<Mutex<Option<String>>>,
+            last_instance_id: Arc<Mutex<Option<String>>>,
             last_body: Arc<Mutex<Option<Value>>>,
         }
 
@@ -1706,18 +1708,24 @@ mod tests {
                 .get("authorization")
                 .and_then(|v| v.to_str().ok())
                 .map(|s| s.to_string());
+            let instance_id = headers
+                .get(crate::cloud::custom_api::ats_diagnostics::HEADER_ATS_INSTANCE_ID)
+                .and_then(|v| v.to_str().ok())
+                .map(|s| s.to_string());
             *state.last_auth.lock().unwrap() = auth;
+            *state.last_instance_id.lock().unwrap() = instance_id;
             *state.last_body.lock().unwrap() = Some(body);
             Json(json!({ "ok": true, "accepted": 2, "duplicates": 1 }))
         }
 
         let mock_state = MockState {
             last_auth: Arc::new(Mutex::new(None)),
+            last_instance_id: Arc::new(Mutex::new(None)),
             last_body: Arc::new(Mutex::new(None)),
         };
         let cloud_app = Router::new()
             .route(
-                "/api/ats/v1/diagnostics/events",
+                crate::cloud::custom_api::ats_diagnostics::CLOUD_DIAGNOSTICS_EVENTS_PATH,
                 post(mock_ingest),
             )
             .with_state(mock_state.clone());
@@ -1788,6 +1796,10 @@ mod tests {
             Some("Bearer kid.secret")
         );
         assert_eq!(
+            mock_state.last_instance_id.lock().unwrap().as_deref(),
+            Some("ats-uuid-diag")
+        );
+        assert_eq!(
             mock_state.last_body.lock().unwrap().clone().unwrap(),
             batch
         );
@@ -1813,7 +1825,7 @@ mod tests {
         clear_test_secrets();
 
         let cloud_app = Router::new().route(
-            "/api/ats/v1/diagnostics/events",
+            crate::cloud::custom_api::ats_diagnostics::CLOUD_DIAGNOSTICS_EVENTS_PATH,
             post(move || {
                 let body = cloud_body.clone();
                 async move {
